@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Offline harness for magpie-opencode.sh. Fake HOME, stub binaries,
-# STATUS_URL served by a stub curl. Nothing touches the network.
+# Offline harness for magpie-opencode.sh. Fake HOME, stub binaries only.
+# Nothing touches the network.
 set -u
 umask 077
 
@@ -31,7 +31,7 @@ file_ok() { if [ -e "$2" ]; then ok "$1"; else no "$1"; fi; }
 nofile_ok() { if [ ! -e "$2" ]; then ok "$1"; else no "$1"; fi; }
 
 # Linux only: the stub archives carry linux builds (macOS gets live
-# tests, spec 9). Exit 77 marks "skipped, not failed".
+# tests, spec 8). Exit 77 marks "skipped, not failed".
 if [ "$(uname)" != "Linux" ]; then
   echo "harness: Linux-only host required - skipped" >&2
   exit 77
@@ -129,13 +129,6 @@ exit 0
 EOS
   cat > "$FAKE_BIN/curl" <<'EOS'
 #!/bin/sh
-case "$*" in
-  *--data-binary*)
-    cat >> "$STATE/feed.txt"
-    printf '\n' >> "$STATE/feed.txt"
-    exit 0
-    ;;
-esac
 prev=""
 out=""
 url=""
@@ -226,7 +219,6 @@ EOS
       -e 's|^NONO_VERSION=.*|NONO_VERSION="9.9.9"|' \
       -e "s|^$PIN_OC=.*|$PIN_OC=\"$OC_SHA\"|" \
       -e "s|^$PIN_NONO=.*|$PIN_NONO=\"$NONO_SHA\"|" \
-      -e 's|^STATUS_URL=.*|STATUS_URL="http://feed.test"|' \
       "$SCRIPT" > "$ENV/magpie.sh"
   chmod +x "$ENV/magpie.sh"
 }
@@ -277,7 +269,6 @@ run_fn() {
       export "$a"
     done
     . "$SCRIPT"
-    STATUS_URL="http://feed.test"
     fill_pins
     magpie_arm_traps
     mkdir -p "$FAKE_HOME/magpie"
@@ -303,7 +294,6 @@ make_installed() {
   echo '{"model":"hu/llm3"}' > "$FAKE_HOME/.config/opencode/opencode.json"
   echo '{}' > "$FAKE_HOME/.config/nono/packages/nolabs-ai/opencode/package.json"
   echo "marker" > "$FAKE_HOME/magpie/.setup-finished"
-  echo "Test123" > "$FAKE_HOME/.magpie-course-handle"
 }
 
 map_target
@@ -366,7 +356,6 @@ kill "$LIVEPID" 2>/dev/null
 ret_is "live lock exits 0" 0
 grep_ok "heads-up line" "$STATE/screen.txt" "already running in another window"
 cnt_is "single line" "already running" "$STATE/screen.txt" 1
-nofile_ok "no feed traffic" "$STATE/feed.txt"
 file_ok "other lock untouched" "$FAKE_HOME/magpie/.setup.lock/pid"
 new_env
 mkdir -p "$FAKE_HOME/magpie/.setup.lock"
@@ -397,7 +386,6 @@ new_env
 FN_BODY='magpie_sudo_warm' run_fn STUB_SUDO_N_OK=0 STUB_SUDO_V_FAILS=99
 ret_is "sudo cap blocks" 1
 grep_ok "help block at cap" "$STATE/screen.txt" "##"
-grep_ok "feed sudo fail" "$STATE/feed.txt" "FAIL sudo (password never accepted)"
 cnt_is "6 rounds" "Password not accepted" "$STATE/screen.txt" 6
 new_env
 FN_BODY='magpie_sudo_warm' run_fn STUB_SUDO_N_OK=1
@@ -496,18 +484,9 @@ grep_ok "nono OK line" "$S" "OK: nono 9.9.9 installed"
 grep_ok "profile OK line" "$S" "OK: nono profile opencode pulled"
 grep_ok "clone OK line" "$S" "OK: magpie cloned"
 grep_ok "PATH note opencode" "$S" "Added opencode to PATH"
-grep_ok "code name printed" "$S" "code name:"
 cnt_is "exactly 4 heads-ups" "installing" "$S" 4
 grep_no "apt skipped no heads-up" "$S" "apt update"
 grep_no "no help block" "$S" "##"
-F="$STATE/feed.txt"
-for line in "setup-essential: start" "setup-essential: opencode installed" \
-  "setup-essential: nono installed" "setup-essential: profile pulled" \
-  "setup-essential: magpie cloned" "setup-essential: run finished"; do
-  grep_ok "feed has: $line" "$F" "$line"
-done
-hd=$(cat "$FAKE_HOME/.magpie-course-handle")
-cnt_is "all feed lines carry handle" "^$hd |" "$F" 6
 file_ok "marker written" "$FAKE_HOME/magpie/.setup-finished"
 grep_ok "marker has versions" "$FAKE_HOME/magpie/.setup-finished" "nono-stub 9.9.9"
 file_ok "opencode installed exec" "$FAKE_HOME/.opencode/bin/opencode"
@@ -527,15 +506,12 @@ head -n 1 "$STATE/sudo.log" | grep -q "^sudo -n true$" \
 grep_no "no apt run (skipped)" "$STATE/sudo.log" "apt-get"
 
 # second run: fast path
-feed_before=$(wc -l < "$STATE/feed.txt")
 run_e2e
 ret_is "second run exits 0" 0
 cnt_is "no heads-ups on fast path" "installing" "$STATE/screen.txt" 0
-feed_after=$(wc -l < "$STATE/feed.txt")
-[ "$feed_before" = "$feed_after" ] && ok "fast path touches no feed" || no "fast path touches no feed"
 grep_ok "fast path logged" "$FAKE_HOME/magpie/setup-log.txt" "fast path: essentials found"
 grep_ok "launch called again" "$STATE/launch.txt" "launch#2"
-grep_no "handle not reprinted" "$STATE/screen.txt" "code name"
+grep_no "no code name on screen" "$STATE/screen.txt" "code name"
 run_e2e MAGPIE_FORCE_SETUP=1
 ret_is "FORCE_SETUP reruns setup" 0
 cnt_is "all steps skip (0 heads-ups)" "installing" "$STATE/screen.txt" 0
@@ -552,8 +528,7 @@ S="$STATE/screen.txt"
 grep_ok "help block" "$S" "##"
 grep_ok "failed step named" "$S" "FAILED STEP (twice, reproducible): opencode install"
 grep_ok "wifi hint" "$S" "Wi-Fi"
-grep_ok "feed pass 1" "$STATE/feed.txt" "FAIL opencode install (pass 1)"
-grep_ok "feed reproducible" "$STATE/feed.txt" "FAIL opencode install (reproducible)"
+grep_no "no code name in help block" "$S" "code name"
 cnt_is "retry heads-up once per pass" "retrying automatically" "$S" 1
 cnt_is "failing step logged in both passes" "step failed after retries" "$FAKE_HOME/magpie/setup-log.txt" 2
 n=$(cat "$STATE/dl_count_cli-$OC_TARGET-9.9.9.tgz" 2>/dev/null || echo 0)
@@ -595,7 +570,6 @@ grep_ok "repair heads-up" "$STATE/screen.txt" "startup problem, repairing automa
 grep_ok "force pull ran in repair" "$STATE/nono.log" "pull --force nolabs-ai/opencode"
 file_ok "config force-written in repair" "$FAKE_HOME/.config/opencode/opencode.json.bak"
 cnt_is "exactly two launches" "launch#" "$STATE/launch.txt" 2
-grep_ok "repair re-reports start" "$STATE/feed.txt" "setup-essential: start"
 grep_no "no lock conflict during repair" "$STATE/screen.txt" "already running"
 
 new_env
@@ -623,14 +597,12 @@ ret_is "smoke failure blocks" 1
 grep_ok "step named" "$STATE/screen.txt" "FAILED STEP (twice, reproducible): sandbox smoke"
 grep_ok "landlock hint on linux" "$STATE/screen.txt" "wsl --update"
 nofile_ok "marker not written" "$FAKE_HOME/magpie/.setup-finished"
-grep_ok "feed pass1 smoke" "$STATE/feed.txt" "FAIL sandbox smoke (pass 1)"
 new_env
 make_installed
 rm -f "$FAKE_HOME/magpie/.setup-finished"
 run_e2e MAGPIE_FORCE_SETUP=1
 ret_is "smoke pass writes marker" 0
 file_ok "marker written" "$FAKE_HOME/magpie/.setup-finished"
-grep_ok "run finished feed" "$STATE/feed.txt" "setup-essential: run finished"
 
 # ============================================================
 sec "E2E magpie dir guards"
@@ -711,13 +683,12 @@ sec "sourced step_failed: in-process pass 2"
 new_env
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; magpie_step_failed teststep' run_fn
 ret_is "in-process pass 2 completes setup" 0
-grep_ok "pass 1 reported" "$STATE/feed.txt" "FAIL teststep (pass 1)"
 grep_ok "auto retry heads-up" "$STATE/screen.txt" "retrying automatically"
-grep_ok "run finished after pass 2" "$STATE/feed.txt" "setup-essential: run finished"
+file_ok "marker written after pass 2" "$FAKE_HOME/magpie/.setup-finished"
 new_env
 FN_BODY='MAGPIE_PASS=2 magpie_step_failed teststep' run_fn
 ret_is "pass 2 failure blocks" 1
-grep_ok "reproducible feed line" "$STATE/feed.txt" "FAIL teststep (reproducible)"
+grep_ok "help block after pass 2" "$STATE/screen.txt" "##"
 
 new_env
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; magpie_install_nono' run_fn STUB_BAD_NONO=1

@@ -1,18 +1,13 @@
 #!/bin/sh
 # MAgPIE course: essential setup + daily launcher. Standalone, safe to rerun.
-# Day one: installs opencode + nono + HU config + nono profile + magpie
+# Bootstrapping: installs opencode + nono + HU config + nono profile + magpie
 # clone, then opens opencode inside the nono sandbox in ~/magpie.
-# Later days: starts the sandbox directly - no sudo, no network, no feed.
+# Regular (bootstrapping finished): starts the sandbox directly - no sudo, no network.
 # Works on macOS (Apple Silicon and Intel) and WSL Ubuntu. Valid POSIX sh.
 
 # ============================================================
-# PINNED BLOCK - machine-filled at implementation time.
 # Re-pin per asset: curl -fsSL <url> | sha256sum (macOS: shasum -a 256)
-# While any value is "TBD" the script refuses to run.
 # ============================================================
-
-# Live status feed. Set to "" to disable all uploading.
-STATUS_URL="https://ntfy.sh/magpie-course-cb3363c15a75"
 
 OPENCODE_VERSION="2.2.7"
 OPENCODE_SHA256_DARWIN_ARM64="8d4f90c5b23faa724ba1c877d8358072bbb6565c33b8d8b5dca7c7644c4de0bf"
@@ -45,11 +40,7 @@ MAGPIE_SUDO_RETRY_SECS="${MAGPIE_SUDO_RETRY_SECS:-2}"
 # it at a local repository.
 MAGPIE_MAGPIE_URL="${MAGPIE_MAGPIE_URL:-https://github.com/magpiemodel/magpie.git}"
 
-MAGPIE_HANDLE_FILE="$HOME/.magpie-course-handle"
-MAGPIE_HANDLE=""
-MAGPIE_HANDLE_NEW=0
-
-# ---------------- screen, log, feed ----------------
+# ---------------- screen, log ----------------
 
 magpie_now() {
   date +%H:%M:%S
@@ -70,51 +61,6 @@ magpie_log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1"
 }
 
-magpie_init_handle() {
-  if [ -n "$MAGPIE_HANDLE" ]; then
-    return 0
-  fi
-  if [ -f "$MAGPIE_HANDLE_FILE" ]; then
-    MAGPIE_HANDLE=$(cat "$MAGPIE_HANDLE_FILE")
-    return 0
-  fi
-  animals="Fox Otter Zebra Gecko Panda Koala Walrus Lynx Heron Bison \
-Mantis Puffin Cobra Yak Lemur Impala Orca Badger Falcon Manatee \
-Tapir Sloth Okapi Pangolin Narwhal Coyote Ibex Quokka Dingo Gibbon \
-Tarsier Jerboa Kestrel Marmot Ocelot Platypus Rhea Urchin Vulture \
-Wombat Toad Crane Hare Eagle Snake Turtle Parrot Hedgehog Beaver \
-Llama Alpaca Toucan Pelican Ferret"
-  seed=$( { date +%s 2>/dev/null || echo 1; uname -a 2>/dev/null; echo "$$"; } \
-    | cksum | cut -d ' ' -f 1)
-  total=0
-  for a in $animals; do
-    total=$((total + 1))
-  done
-  pick=$((seed % total + 1))
-  n=$((100 + (seed / total) % 900))
-  i=0
-  name=""
-  for a in $animals; do
-    i=$((i + 1))
-    if [ "$i" -eq "$pick" ]; then
-      name=$a
-    fi
-  done
-  MAGPIE_HANDLE="$name$n"
-  printf '%s\n' "$MAGPIE_HANDLE" > "$MAGPIE_HANDLE_FILE" 2>/dev/null || true
-  MAGPIE_HANDLE_NEW=1
-}
-
-magpie_report() {
-  if [ -z "$STATUS_URL" ] || ! command -v curl >/dev/null 2>&1; then
-    return 0
-  fi
-  magpie_init_handle
-  printf '%s' "$MAGPIE_HANDLE | $(uname -s) $(uname -m) | $1" \
-    | curl -m 5 -s -o /dev/null --data-binary @- "$STATUS_URL" 2>/dev/null || true
-  return 0
-}
-
 # ---------------- error handling ----------------
 
 magpie_sys_string() {
@@ -126,17 +72,10 @@ magpie_sys_string() {
 }
 
 # Final verdict: help block to fd 4 + saved file + exit 1.
-# $1 step text, $2 hint (landlock|clt|wifi|sudo|""), $3 feed override.
+# $1 step text, $2 hint (landlock|clt|wifi|sudo|"").
 magpie_fail() {
   step=$1
   hint=${2:-}
-  feed=${3:-}
-  magpie_init_handle
-  if [ -n "$feed" ]; then
-    magpie_report "setup-essential: FAIL $feed"
-  else
-    magpie_report "setup-essential: FAIL $step (reproducible)"
-  fi
   hint_line=""
   case $hint in
     landlock)
@@ -156,8 +95,8 @@ magpie_fail() {
   {
     printf 'I am a beginner setting up MAgPIE. Fix the FAIL line below.\n'
     printf 'Tell me exactly what to type in the terminal, one command at a time.\n'
-    printf 'System: %s | %s | code name: %s\n' \
-      "$(magpie_sys_string)" "$(uname -m)" "$MAGPIE_HANDLE"
+    printf 'System: %s | %s\n' \
+      "$(magpie_sys_string)" "$(uname -m)"
     printf 'FAILED STEP (twice, reproducible): %s | %s\n' \
       "$step" "$(tail -n 1 "$HOME/magpie/setup-log.txt" 2>/dev/null)"
     printf -- '--- last 25 log lines ---\n'
@@ -186,7 +125,6 @@ magpie_step_failed() {
   if [ "${MAGPIE_PASS:-1}" = "2" ]; then
     magpie_fail "$step" "$hint"
   fi
-  magpie_report "setup-essential: FAIL $step (pass 1)"
   magpie_say "[$(magpie_now)] - something failed, retrying automatically in $MAGPIE_PASS_SECS s"
   sleep "$MAGPIE_PASS_SECS"
   if [ -n "${MAGPIE_SELF:-}" ]; then
@@ -260,7 +198,7 @@ magpie_sudo_warm() {
     magpie_say "Password not accepted - try again"
     sleep "$MAGPIE_SUDO_RETRY_SECS"
   done
-  magpie_fail "password was never accepted" "sudo" "sudo (password never accepted)"
+  magpie_fail "password was never accepted" "sudo"
 }
 
 # ---------------- lock + traps ----------------
@@ -331,8 +269,7 @@ magpie_require_pins() {
     "$NONO_SHA256_AARCH64_APPLE_DARWIN" "$NONO_SHA256_X86_64_APPLE_DARWIN" \
     "$NONO_SHA256_AARCH64_UNKNOWN_LINUX_GNU" "$NONO_SHA256_X86_64_UNKNOWN_LINUX_GNU"; do
     if [ -z "$v" ] || [ "$v" = "TBD" ]; then
-      magpie_fail "script incomplete: pinned versions/checksums missing" \
-        "" "pins missing"
+      magpie_fail "script incomplete: pinned versions/checksums missing"
     fi
   done
 }
@@ -537,7 +474,6 @@ magpie_install_opencode() {
   fi
   magpie_fix_bin_path opencode
   magpie_say "OK: opencode $OPENCODE_VERSION installed"
-  magpie_report "setup-essential: opencode installed"
 }
 
 # ---------------- nono ----------------
@@ -597,7 +533,6 @@ magpie_install_nono() {
   fi
   magpie_fix_bin_path nono
   magpie_say "OK: nono $NONO_VERSION installed"
-  magpie_report "setup-essential: nono installed"
 }
 
 # ---------------- opencode config ----------------
@@ -664,7 +599,6 @@ magpie_pull_nono_profile() {
     magpie_step_failed "nono profile pull" "wifi"
   fi
   magpie_say "OK: nono profile opencode pulled"
-  magpie_report "setup-essential: profile pulled"
 }
 
 # ---------------- magpie clone ----------------
@@ -722,7 +656,6 @@ magpie_clone_magpie() {
     magpie_step_failed "magpie clone" "wifi"
   fi
   magpie_say "OK: magpie cloned"
-  magpie_report "setup-essential: magpie cloned"
 }
 
 # ---------------- sandbox smoke test + marker ----------------
@@ -746,7 +679,6 @@ magpie_sandbox_smoke_step() {
     nono --version 2>/dev/null || true
     opencode --version 2>/dev/null || true
   } > "$HOME/magpie/.setup-finished"
-  magpie_report "setup-essential: run finished"
 }
 
 # ---------------- launch ----------------
@@ -816,18 +748,11 @@ magpie_fast_path_ok() {
 
 magpie_setup_path() {
   if [ "$(id -u)" = "0" ]; then
-    magpie_fail "do not run as root - run: bash ~/magpie-opencode.sh" \
-      "" "ran as root"
+    magpie_fail "do not run as root - run: bash ~/magpie-opencode.sh"
   fi
   magpie_require_pins
   magpie_check_disk
   magpie_take_lock
-  magpie_report "setup-essential: start"
-  magpie_init_handle
-  if [ "$MAGPIE_HANDLE_NEW" = "1" ]; then
-    magpie_say "Your course support code name: $MAGPIE_HANDLE"
-    MAGPIE_HANDLE_NEW=0
-  fi
   if [ -z "${MAGPIE_REPAIR:-}" ]; then
     magpie_sudo_warm
   fi

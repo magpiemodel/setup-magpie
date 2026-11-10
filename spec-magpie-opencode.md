@@ -21,8 +21,8 @@ pandoc, renv, sandbox self-check gate.
 Works on macOS (Apple Silicon and Intel) and WSL Ubuntu. No Homebrew -
 Homebrew 5 refuses Intel Macs, which broke one student.
 
-Support model is unchanged: ntfy feed + code name, `##` help block feeds
-the LLM.
+Support model: the student pastes the `##` help block into an LLM. No
+ntfy status feed, no code name - nothing is uploaded anywhere.
 
 ## 2. Design decisions
 
@@ -51,9 +51,8 @@ the LLM.
   day (6.10).
 - Users do not read terminal output. The full run goes to a log file.
   Only these ever reach the screen: `[HH:MM:SS]` heads-up lines before
-  slow steps, `OK:` lines (tool installed + in PATH), the code-name
-  line, the password-retry and auto-retry lines, and the `##` help
-  block.
+  slow steps, `OK:` lines (tool installed + in PATH), the password-retry
+  and auto-retry lines, and the `##` help block.
 - Resilience extras: disk guard (< 4 GB free = abort with cleanup hint),
   setup-path lock so two windows cannot install at once, `INT`/`TERM`
   traps so Ctrl+C always reaps the keep-alive loop.
@@ -66,10 +65,9 @@ the LLM.
   No bash-only syntax anywhere (no `[[ ]]`, no arrays, no process
   substitution). All paths absolute via `$HOME`; the starting directory
   never matters.
-- ntfy feed + animal code name are kept, but the "NOTE IT DOWN / press
-  Enter" prompt is gone: the name is printed as one line and never
-  confirmed. Feed reports only happen on the setup path - daily starts
-  must not spam the course feed.
+- No course-support extras: the ntfy status feed and the animal code name
+  are gone. Nothing is uploaded, and the `##` help block is the only
+  support channel.
 - HU LLM service is preselected by `"model": "hu/llm3"` in the opencode
   config. It cannot be tested off HU network - not part of any check.
 
@@ -81,7 +79,6 @@ the LLM.
 
 ## 4. Pinned block (top of file, machine-filled - not hand-edited per course)
 
-- `STATUS_URL` - ntfy topic ("" disables uploading), as in the full scripts.
 - `OPENCODE_VERSION` + sha256 of the four npm target archives (see 6.3).
 - `NONO_VERSION` + sha256 of the four release tarballs (see 6.4).
 - Filled by the implementer when the script is written and tested, not
@@ -115,7 +112,7 @@ Order of operations:
    unused, nono does not route HU - the endpoint needs no real credential).
 4. If neither `MAGPIE_FORCE_SETUP=1` nor `MAGPIE_REPAIR=1` is set and
    the fast path passes (6.1): launch opencode (6.11). The fast path
-   skips all of the following: no lock, no disk check, no sudo, no feed.
+   skips all of the following: no lock, no disk check, no sudo.
    `MAGPIE_REPAIR=1` must skip the fast path - the marker is still
    present after a quick-fail, so honoring it here would relaunch the
    broken sandbox and never run the repair (6.11).
@@ -123,7 +120,7 @@ Order of operations:
    GB via `df -Pk ~/magpie`, below 4 the help block aborts with the
    per-OS hint ("free space in WINDOWS (C: drive)" / "empty the Trash
    and delete big files"). Then take the lock (below) - only after it is
-   held: feed `start`, handle line, sudo (6.2), steps.
+   held: sudo (6.2), steps.
 6. End of setup path (all steps green): sandbox smoke test (6.10), write
    the marker, then launch opencode (6.11).
 
@@ -154,9 +151,8 @@ and the fast path re-checks the essentials anyway (6.1).
 ## 6. Steps
 
 Every step is skip-if-done. Every check is local (stat / `command -v`) -
-no network in a skip decision. All feed lines carry the
-`setup-essential: ` prefix (full list in 8); check blocks of the full
-scripts are not part of this script.
+no network in a skip decision. Check blocks of the full scripts are not
+part of this script.
 
 Before every slow step that actually RUNS (never on a skip), print one
 heads-up to the screen: `say_progress` writes
@@ -189,8 +185,8 @@ re-pull in 6.8):
 - `~/.config/opencode/opencode.json` exists
 
 On success: one timestamped launch line appended to the log, then launch
-opencode as a child (6.11). No sudo, no network, no feed, no
-`nono profile list` call - the checks are only stat/PATH lookups, so the
+opencode as a child (6.11). No sudo, no network, no `nono profile list`
+call - the checks are only stat/PATH lookups, so the
 start is near-instant.
 
 The marker is a shortcut, not a gate: if it exists but a check fails, the
@@ -390,10 +386,9 @@ env, opencode would silently lose the HU provider - catch it before
 writing the marker). No network, no HU call, about one second. Output
 goes to the log.
 
-Wrapped in the retry helper (7.2) and the pass rule (7.3); the feed line
-on a reproducible failure is `FAIL sandbox smoke`. Only after it passes:
-write `~/magpie/.setup-finished` (timestamp + versions, content per 6.1)
-and report `setup-essential: run finished`.
+Wrapped in the retry helper (7.2) and the pass rule (7.3); a reproducible
+failure names the step `sandbox smoke`. Only after it passes: write
+`~/magpie/.setup-finished` (timestamp + versions, content per 6.1).
 
 ### 6.11 Launch (both paths)
 
@@ -434,8 +429,7 @@ outcome:
 
 The sudo timestamp and the keep-alive loop survive the repair exec just
 like they survive pass 2 (tty cache + pidfile, 6.2/7.3). The repair
-counts as a setup run: it reports `setup-essential: start` and the usual
-lines to the feed.
+counts as a setup run.
 
 ## 7. Error handling
 
@@ -460,8 +454,7 @@ wreckage. All attempt lines go to the log only.
 
 When a step still fails after 7.2:
 
-1. Log the failure, report `setup-essential: FAIL <step> (pass 1)` to
-   the feed.
+1. Log the failure.
 2. Print one calm heads-up (fd 4):
    `[HH:MM:SS] - something failed, retrying automatically in N s`
    (N = `MAGPIE_PASS_SECS`, default 30).
@@ -484,19 +477,19 @@ When a step still fails after 7.2:
 ### 7.4 Help block (only output on failure)
 
 Printed to fd 4 and saved to `~/magpie/setup-help.txt`, in the `##`
-copy-paste frame, same shape as the full scripts:
+copy-paste frame used by the full scripts (their code-name field is
+dropped):
 
 ```
 I am a beginner setting up MAgPIE. Fix the FAIL line below.
 Tell me exactly what to type in the terminal, one command at a time.
-System: <PRETTY_NAME or sw_vers> | <arch> | code name: <handle>
+System: <PRETTY_NAME or sw_vers> | <arch>
 FAILED STEP (twice, reproducible): <step> | <last error line>
 --- last 25 log lines ---
 ```
 
-Feed: `setup-essential: FAIL <step> (reproducible)`. The marker is not
-written, so the next run starts on the setup path again - rerunning
-remains the universal fix.
+The marker is not written, so the next run starts on the setup path
+again - rerunning remains the universal fix.
 
 The block ends with one hint when it fits the failure:
 
@@ -516,29 +509,13 @@ Not part of the retry machinery. sudo's own 3 tries, then the "try
 again" line, loop cap 6, then the help block (reason:
 "password was never accepted").
 
-## 8. Feed protocol
-
-Same topic (`STATUS_URL`), same format
-`<handle> | <OS arch> | <text>`, same animal+3-digits handle file
-(`~/.magpie-course-handle`) shared with the full course scripts - a
-student who ran either gets the same code name everywhere.
-Lines: `setup-essential: start`, `opencode installed`, `nono installed`,
-`profile pulled`, `magpie cloned`, `run finished` (= smoke test passed,
-marker written, launching), `FAIL <step> (pass 1)`,
-`FAIL <step> (reproducible)` - `<step>` also covers `sandbox smoke` -
-plus `FAIL sudo (password never accepted)` for the sudo-loop cap, which
-skips the pass machinery.
-A launch repair re-reports the setup lines (it is a setup run).
-Code name printed once (fd 4) on first creation, never confirmed, never
-blocks. Setup path only - fast-path starts never touch the feed.
-
-## 9. Verification plan
+## 8. Verification plan
 
 The script must stay sourceable for tests (definitions above the entry
 call, guarded by `MAGPIE_SOURCED` as in the full scripts).
 
 Offline harness (fake `$HOME`, stub `curl/apt/git/softwareupdate/sudo/df/
-tar/nono/opencode`, `STATUS_URL=""`), like the existing
+tar/nono/opencode`), like the existing
 `.tmp/test-path-export.sh`:
 
 - syntax: `bash -n`, `dash -n`, and a `zsh -n` pass; shellcheck when
@@ -561,7 +538,7 @@ tar/nono/opencode`, `STATUS_URL=""`), like the existing
 - PATH: dedupe over two runs; both tools visible in the same run
   (final launch uses a stub `nono` that records its PATH).
 - smoke test: stub `nono run` exits 1 -> retries, pass 2, help block, and
-  the marker is NOT written; exits 0 -> marker written + `run finished`.
+  the marker is NOT written; exits 0 -> marker written.
 - launch quick-fail: stub `nono run` exits non-zero in <15 s -> exactly
   one repair run (`MAGPIE_REPAIR=1 MAGPIE_PASS=2`), then relaunch; the
   repair must actually run the steps - assert `nono pull --force` and
@@ -580,8 +557,8 @@ tar/nono/opencode`, `STATUS_URL=""`), like the existing
   dir with one foreign file -> error block.
 - disk: stubbed `df` below 4 GB -> help block, no install attempt;
   above -> untouched.
-- lock: live second instance -> single heads-up line, exit 0, no feed
-  traffic, no installs; stale lock (dead pid) -> reclaimed silently;
+- lock: live second instance -> single heads-up line, exit 0,
+  no installs; stale lock (dead pid) -> reclaimed silently;
   pass-2 exec and in-process second pass -> lock seen as self-owned,
   setup continues (must NOT exit with "already running").
 - traps: SIGINT mid-setup -> EXIT trap ran -> keep-alive pid gone
@@ -596,7 +573,7 @@ Live tests (must): WSL Ubuntu end to end; Intel Mac + Apple Silicon Mac
 each once (CLT unattended install, Gatekeeper behavior of the curl'd
 binaries, zsh rc). HU provider answer: one machine on HU network.
 
-## 10. Teacher to-do before the session
+## 9. Teacher to-do before the session
 
 0. No student handout for this script (the old `SETUP.md` flow does not
    apply): the screen output is the handout. Students know one command,
@@ -605,8 +582,7 @@ binaries, zsh rc). HU provider answer: one machine on HU network.
    implementation time (4). Before distributing, run the file once with
    `MAGPIE_FORCE_SETUP=1` - the placeholder guard proves the pins are
    real, the live tests prove the checksums match.
-2. Keep `STATUS_URL` matching the full scripts.
-3. Run the live tests in 9.
+2. Run the live tests in 8.
 
 Day-one expectation on screen, for projecting: one password prompt
 (never re-asked), heads-up lines per real step, `OK:` lines, then
