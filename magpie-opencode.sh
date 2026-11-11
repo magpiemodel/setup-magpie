@@ -16,6 +16,7 @@ OPENCODE_SHA256_LINUX_ARM64="7e74ceb64fe5704ff2fdef3dee45866efcb580d71f182a6cae2
 OPENCODE_SHA256_LINUX_X64="d65935464f93f07913633f977cb99723af64eeff6ae7a822722ce89bedabdd45"
 
 NONO_VERSION="0.81.0"
+NONO_PACK_VERSION="0.4.2"
 NONO_SHA256_AARCH64_APPLE_DARWIN="728b1deefbf6390c9b74fc982efbded1e1c4b37b99dcdefa2e07266dfef4d9e9"
 NONO_SHA256_X86_64_APPLE_DARWIN="f795aa88faaf75975ffc600eb870e7c9f2b52ba2035df5087ec972a0252afd40"
 NONO_SHA256_AARCH64_UNKNOWN_LINUX_GNU="a4d87ddb0917ef96224bcc41a2587318d7d0e92441e7ff454696e5980c9f7924"
@@ -208,7 +209,7 @@ magpie_arm_traps() {
   trap 'magpie_cleanup' EXIT
 }
 
-magpie_cleanup() {
+magpie_stop_keepalive() {
   pidfile="$HOME/magpie/.keepalive.pid"
   if [ -f "$pidfile" ]; then
     pid=$(cat "$pidfile" 2>/dev/null || echo "")
@@ -217,6 +218,10 @@ magpie_cleanup() {
     fi
     rm -f "$pidfile"
   fi
+}
+
+magpie_cleanup() {
+  magpie_stop_keepalive
   lock="$HOME/magpie/.setup.lock"
   if [ -f "$lock/pid" ] && [ "$(cat "$lock/pid" 2>/dev/null)" = "$$" ]; then
     rm -rf "$lock"
@@ -265,7 +270,7 @@ magpie_check_disk() {
 magpie_require_pins() {
   for v in "$OPENCODE_VERSION" "$OPENCODE_SHA256_DARWIN_ARM64" \
     "$OPENCODE_SHA256_DARWIN_X64" "$OPENCODE_SHA256_LINUX_ARM64" \
-    "$OPENCODE_SHA256_LINUX_X64" "$NONO_VERSION" \
+    "$OPENCODE_SHA256_LINUX_X64" "$NONO_VERSION" "$NONO_PACK_VERSION" \
     "$NONO_SHA256_AARCH64_APPLE_DARWIN" "$NONO_SHA256_X86_64_APPLE_DARWIN" \
     "$NONO_SHA256_AARCH64_UNKNOWN_LINUX_GNU" "$NONO_SHA256_X86_64_UNKNOWN_LINUX_GNU"; do
     if [ -z "$v" ] || [ "$v" = "TBD" ]; then
@@ -580,25 +585,52 @@ EOF
 
 # ---------------- nono profile ----------------
 
-magpie_nono_pull() {
-  if [ -n "${MAGPIE_REPAIR:-}" ]; then
-    nono pull --force nolabs-ai/opencode
-  else
-    nono pull nolabs-ai/opencode
-  fi
+magpie_nono_pack_version() {
+  sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' \
+    "$HOME/.config/nono/packages/nolabs-ai/opencode/package.json" 2>/dev/null \
+    | head -n 1
 }
 
+# Pull the pinned pack version (MAGPIE_PACK_FORCE: existing install).
+# The installed package.json must then report exactly the pin.
+magpie_nono_pull() {
+  ref="nolabs-ai/opencode@$NONO_PACK_VERSION"
+  if [ -n "${MAGPIE_PACK_FORCE:-}" ]; then
+    nono pull --force "$ref" || return 1
+  else
+    nono pull "$ref" || return 1
+  fi
+  if [ "$(magpie_nono_pack_version)" != "$NONO_PACK_VERSION" ]; then
+    magpie_log "nono pack wrong version after pull: got $(magpie_nono_pack_version), want $NONO_PACK_VERSION"
+    return 1
+  fi
+  return 0
+}
+
+# The pack defines the sandbox, so the version is pinned like the
+# binaries: same pull on every machine, no silent registry drift.
 magpie_pull_nono_profile() {
   marker="$HOME/.config/nono/packages/nolabs-ai/opencode/package.json"
-  if [ -f "$marker" ] && [ -z "${MAGPIE_REPAIR:-}" ]; then
-    magpie_log "nono profile opencode: already pulled"
-    return 0
+  MAGPIE_PACK_FORCE=""
+  if [ -n "${MAGPIE_REPAIR:-}" ]; then
+    MAGPIE_PACK_FORCE=1
+  elif [ -f "$marker" ]; then
+    if [ "$(magpie_nono_pack_version)" = "$NONO_PACK_VERSION" ]; then
+      magpie_log "nono profile opencode: already pulled"
+      return 0
+    fi
+    magpie_log "nono pack version drift: got $(magpie_nono_pack_version), want $NONO_PACK_VERSION"
+    MAGPIE_PACK_FORCE=1
   fi
   magpie_say_progress "nono profile" "about 1 min"
   if ! magpie_retry 3 magpie_nono_pull; then
     magpie_step_failed "nono profile pull" "wifi"
   fi
-  magpie_say "OK: nono profile opencode pulled"
+  # Pin keeps the pack out of `nono update`: the sandbox policy stays
+  # exactly as pinned until this script raises the pin. Best effort.
+  nono pin nolabs-ai/opencode >/dev/null 2>&1 \
+    || magpie_log "nono pack pin failed - updates not blocked, tell the TA"
+  magpie_say "OK: nono profile opencode pulled ($NONO_PACK_VERSION)"
 }
 
 # ---------------- magpie clone ----------------
@@ -684,6 +716,9 @@ magpie_sandbox_smoke_step() {
 # ---------------- launch ----------------
 
 magpie_launch() {
+  # No warm sudo credential may live on while opencode runs: the
+  # sandboxed agent must never be able to reuse it.
+  magpie_stop_keepalive
   if ! command -v opencode >/dev/null 2>&1 && [ -x "$HOME/.opencode/bin/opencode" ]; then
     export PATH="$HOME/.opencode/bin:$PATH"
   fi
@@ -740,6 +775,9 @@ magpie_fast_path_ok() {
   if [ ! -f "$HOME/.config/nono/packages/nolabs-ai/opencode/package.json" ]; then
     return 1
   fi
+  if [ "$(magpie_nono_pack_version)" != "$NONO_PACK_VERSION" ]; then
+    return 1
+  fi
   if [ ! -f "$HOME/.config/opencode/opencode.json" ]; then
     return 1
   fi
@@ -753,9 +791,6 @@ magpie_setup_path() {
   magpie_require_pins
   magpie_check_disk
   magpie_take_lock
-  if [ -z "${MAGPIE_REPAIR:-}" ]; then
-    magpie_sudo_warm
-  fi
   magpie_step_os_base
   magpie_install_opencode
   magpie_install_nono

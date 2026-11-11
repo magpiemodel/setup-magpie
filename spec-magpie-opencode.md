@@ -34,10 +34,12 @@ ntfy status feed, no code name - nothing is uploaded anywhere.
 - No `curl | bash` anywhere. Every download is a pinned, sha256-checked
   release archive. The extracted binary is placed and chmod'ed by this
   script only.
-- Sudo is asked exactly once, blind, at the start of the setup path -
-  and only when the setup path actually runs. The fast path and the
-  launch repair never touch it (a repair asks only if a sudo step must
-  run). A keep-alive loop prevents timeout re-prompts.
+- Sudo is asked ONLY when a sudo-requiring step actually runs (apt or
+  CLT install) - never upfront, so machines that already have
+  git+curl/CLT see no password prompt at all. Asked blind, in a retry
+  loop. The keep-alive loop prevents timeout re-prompts during that step
+  but is stopped before any opencode launch: no warm sudo credential may
+  exist while the sandboxed agent runs.
 - Mistyped password = ask again, in a loop; never an error block.
 - Errors are only reported when reproducible: every failing step first
   gets in-run retries, then a second full pass in a fresh process. Only a
@@ -81,6 +83,9 @@ ntfy status feed, no code name - nothing is uploaded anywhere.
 
 - `OPENCODE_VERSION` + sha256 of the four npm target archives (see 6.3).
 - `NONO_VERSION` + sha256 of the four release tarballs (see 6.4).
+- `NONO_PACK_VERSION` - the pinned `nolabs-ai/opencode` pack version
+  (see 6.8): the pack defines the sandbox, so it is pinned like the
+  binaries. No checksum needed: nono verifies the pack signature itself.
 - Filled by the implementer when the script is written and tested, not
   by the teacher: for each asset URL,
   `curl -fsSL <url> | sha256sum` (macOS: `shasum -a 256`).
@@ -120,7 +125,8 @@ Order of operations:
    GB via `df -Pk ~/magpie`, below 4 the help block aborts with the
    per-OS hint ("free space in WINDOWS (C: drive)" / "empty the Trash
    and delete big files"). Then take the lock (below) - only after it is
-   held: sudo (6.2), steps.
+   held: steps. sudo is asked inside the apt/CLT step bodies only, when
+   they actually run (6.2).
 6. End of setup path (all steps green): sandbox smoke test (6.10), write
    the marker, then launch opencode (6.11).
 
@@ -180,8 +186,9 @@ re-pull in 6.8):
 - `opencode` resolves: `command -v`, else `~/.opencode/bin/opencode`
   executable
 - `nono` resolves: `command -v`, else `~/.nono/bin/nono` executable
-- `~/.config/nono/packages/nolabs-ai/opencode/package.json` exists
-  (the pulled profile is in place)
+- `~/.config/nono/packages/nolabs-ai/opencode/package.json` exists AND
+  its `version` equals the pinned `NONO_PACK_VERSION` (the pulled
+  profile is in place, at the right version)
 - `~/.config/opencode/opencode.json` exists
 
 On success: one timestamped launch line appended to the log, then launch
@@ -210,17 +217,15 @@ path (escape hatch for the TA).
   `sudo -v` again. Cap 6 rounds; then help block.
 - Keep-alive: started only when a sudo ask happened. Background loop
   `sudo -n true` every 60 s, self-exit after 90 iterations. Writes its
-  pid to `~/magpie/.keepalive.pid`; the main script kills that pid on
-  EXIT; before spawning, a live pid is detected with `kill -0` (a
-  second pass must not stack loops).
-- When is sudo asked: on a plain setup path (not repair) it is always
-  taken upfront, right after the lock - one prompt at the start, never
-  mid-run (teacher choice). In repair mode (6.11) the upfront ask is
-  SKIPPED - the daily repair must never blind-prompt; sudo is invoked
-  only if a sudo-requiring step actually runs (apt or CLT), which then
-  goes through this same loop.
-- The script deliberately does not run as root: dotfiles and configs
-  must stay user-owned.
+  pid to `~/magpie/.keepalive.pid`; before spawning, a live pid is
+  detected with `kill -0` (a second pass must not stack loops). Stopped
+  on EXIT and ALWAYS at the start of the launch step (6.11): the
+  sandboxed opencode must never find a warm sudo credential.
+- When is sudo asked: only inside a sudo-requiring step that actually
+  runs (apt or CLT) - both bodies warm up through this same loop first.
+  Machines that skip those steps (git+curl present, CLT installed) see
+  zero prompts, also on day one. The script deliberately does not run as
+  root: dotfiles and configs must stay user-owned.
 
 ### 6.3 opencode
 
@@ -322,18 +327,33 @@ one log line.
 for the run, and the launched opencode inherits it. A leftover line from
 the full course scripts is harmless.
 
-### 6.8 nono profile
+### 6.8 nono profile (pinned pack version)
 
-- Skip when `~/.config/nono/packages/nolabs-ai/opencode/package.json`
-  exists.
-- In repair mode (`MAGPIE_REPAIR=1`) the skip NEVER applies: run
-  `nono pull --force nolabs-ai/opencode` regardless. A half-broken
-  pulled package looks "present" to the check above and is a known
-  cause of sandbox quick-fails; the re-pull is the cure.
-- Otherwise `nono pull nolabs-ai/opencode`, wrapped in the retry helper
-  (registry download over Wi-Fi). Do not parse `nono profile list` here -
-  the package directory check is cheaper and offline.
-- `say "OK: nono profile opencode pulled"`.
+The pulled pack IS the sandbox policy, so its version is pinned in the
+header block (`NONO_PACK_VERSION`) like the binaries:
+
+- Skip when the installed pack's `package.json` reports exactly the
+  pinned version (version read via `sed` on `"version"` - no JSON parser
+  dependency).
+- Installed but DIFFERENT version (drift, e.g. a student ran
+  `nono update` or an older script version pulled): force re-pull at the
+  pin - same cure as repair mode.
+- In repair mode (`MAGPIE_REPAIR=1`) the skip NEVER applies: force
+  re-pull regardless. A half-broken pulled package looks "present" to a
+  plain existence check and is a known cause of sandbox quick-fails; the
+  re-pull is the cure.
+- Pull = `nono pull nolabs-ai/opencode@<pin>` (`--force` when forced),
+  wrapped in the retry helper (registry download over Wi-Fi). After a
+  successful pull the installed version is verified against the pin - a
+  registry that served something else fails the step, not the sandbox.
+  Then best-effort `nono pin nolabs-ai/opencode` so a later
+  `nono update` cannot drift the policy between course runs (a pin
+  failure is only a log line - cosmetic).
+- `say "OK: nono profile opencode pulled (<version>)"`.
+- Known accepted exposure of the upstream pack (not a course profile
+  override): it grants `~/.claude`, `~/.codex`, `~/.npm` read-write and
+  reads the macOS login keychain. `~/.npm` is needed at runtime (npm
+  installs for opencode providers/plugins).
 
 ### 6.9 magpie clone
 
@@ -395,7 +415,9 @@ failure names the step `sandbox smoke`. Only after it passes: write
 Never `exec` - opencode runs as a child so the script can judge the
 outcome:
 
-1. `cd ~/magpie`. Ensure the resolved opencode/nono binary dirs are on
+1. Stop the sudo keep-alive (6.2) - nothing sudo-warm may exist while
+   opencode runs. Then `cd ~/magpie`. Ensure the resolved
+   opencode/nono binary dirs are on
    PATH: the setup path already exported them (6.6); the fast path
    exports the two dirs it resolved - without this, a session that
    never sourced its rc file would find the tools in the checks but
@@ -428,8 +450,9 @@ outcome:
      ~1 min), then opencode opens again. Accepted.
 
 The sudo timestamp and the keep-alive loop survive the repair exec just
-like they survive pass 2 (tty cache + pidfile, 6.2/7.3). The repair
-counts as a setup run.
+like they survive pass 2 (tty cache + pidfile, 6.2/7.3) - the loop is
+only stopped when a launch actually starts (6.11). The repair counts as
+a setup run.
 
 ## 7. Error handling
 
@@ -530,11 +553,17 @@ tar/nono/opencode`), like the existing
   persistent failure (3 fails) triggers pass 2; pass 2 failure prints
   the help block and exits 1; `MAGPIE_PASS` never reaches 3.
 - keep-alive: loop spawned once; detected through the pidfile on pass 2;
-  killed on exit.
+  killed on exit AND before launch (the stub `nono run` records whether
+  the pidfile was still alive at the launch instant).
 - sudo loop: stubbed `sudo -v` failing N times then succeeding - loop
   must not print the help block for N < cap; help block at cap.
-- sudo timing: day-one setup -> asked once upfront even when apt
-  skips; repair with git+curl stubs present -> zero sudo invocations.
+- sudo timing: day-one setup with git+curl present -> ZERO sudo
+  invocations (no upfront ask, no prompt); the apt/CLT bodies keep the
+  warm-up loop for the machines that need them.
+- nono pack pin: pull always carries `@<pin>`; post-pull version
+  verified; drift (installed != pin) -> fast path declines, setup
+  force-re-pulls at the pin; `nono pin` called after every successful
+  pull.
 - PATH: dedupe over two runs; both tools visible in the same run
   (final launch uses a stub `nono` that records its PATH).
 - smoke test: stub `nono run` exits 1 -> retries, pass 2, help block, and
@@ -584,6 +613,6 @@ binaries, zsh rc). HU provider answer: one machine on HU network.
    real, the live tests prove the checksums match.
 2. Run the live tests in 8.
 
-Day-one expectation on screen, for projecting: one password prompt
-(never re-asked), heads-up lines per real step, `OK:` lines, then
+Day-one expectation on screen, for projecting: heads-up lines per real
+step, `OK:` lines (a password prompt only if apt/CLT must run), then
 opencode opens inside `~/magpie` with the HU model selected.

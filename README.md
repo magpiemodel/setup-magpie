@@ -90,6 +90,18 @@ machine, or let the students' LLM use nono's draft -> promote flow.
 After the course, students work daily inside it:
 `nono run --profile magpie-profile -- opencode`.
 
+## magpie-opencode.sh (essential-only variant)
+
+Standalone bootstrap + daily launcher (spec: spec-magpie-opencode.md).
+Uses the registry pack profile directly: `nono pull
+nolabs-ai/opencode@<NONO_PACK_VERSION>` - pinned like the binaries, plus
+`nono pin` against update drift. Accepted upstream exposure of that
+pack: `~/.claude`, `~/.codex`, `~/.npm` read-write, macOS login keychain
+readable (`~/.npm` is needed at runtime for opencode's npm installs).
+sudo is only asked when the apt/CLT step actually runs, and the sudo
+keep-alive is stopped before opencode launches - the sandboxed agent
+never finds a warm credential.
+
 ## Session boundaries
 
 - Success = check block all green + default run started. Nobody needs a

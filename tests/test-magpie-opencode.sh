@@ -86,14 +86,28 @@ case "$1" in
     c="$STATE/pull_count"
     n=$(cat "$c" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$c"
     if [ "$n" -le "${STUB_NONO_PULL_FAILS:-0}" ]; then exit 1; fi
+    ref=""
+    for a in "$@"; do
+      case $a in nolabs-ai/opencode*) ref=$a ;; esac
+    done
+    ver=${ref#*@}
+    [ "$ver" = "$ref" ] && ver=latest
     mkdir -p "$HOME/.config/nono/packages/nolabs-ai/opencode"
-    echo '{"name":"opencode"}' > "$HOME/.config/nono/packages/nolabs-ai/opencode/package.json"
+    echo "{\"name\":\"opencode\",\"version\":\"$ver\"}" \
+      > "$HOME/.config/nono/packages/nolabs-ai/opencode/package.json"
     exit 0
     ;;
   run)
     case "$*" in
       *--silent*) exit "${STUB_NONO_SMOKE_EXIT:-0}" ;;
     esac
+    # Keep-alive state AT the launch instant: the discriminating
+    # evidence that the script stops it before opencode starts.
+    if [ -f "$HOME/magpie/.keepalive.pid" ]; then
+      echo alive >> "$STATE/keepalive_at_launch.txt"
+    else
+      echo dead >> "$STATE/keepalive_at_launch.txt"
+    fi
     c="$STATE/launch_count"
     n=$(cat "$c" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$c"
     echo "launch#$n PATH=$PATH HU=$HU_API_KEY CWD=$PWD" >> "$STATE/launch.txt"
@@ -217,6 +231,7 @@ EOS
   # --- runnable copy of the script with test pins (any current values) ---
   sed -e 's|^OPENCODE_VERSION=.*|OPENCODE_VERSION="9.9.9"|' \
       -e 's|^NONO_VERSION=.*|NONO_VERSION="9.9.9"|' \
+      -e 's|^NONO_PACK_VERSION=.*|NONO_PACK_VERSION="9.9.9"|' \
       -e "s|^$PIN_OC=.*|$PIN_OC=\"$OC_SHA\"|" \
       -e "s|^$PIN_NONO=.*|$PIN_NONO=\"$NONO_SHA\"|" \
       "$SCRIPT" > "$ENV/magpie.sh"
@@ -227,7 +242,7 @@ base_env() {
   export HOME="$FAKE_HOME"
   export PATH="$FAKE_BIN:/usr/bin:/bin"
   export MAGPIE_RETRY_SECS=0 MAGPIE_RETRY_SECS2=0 MAGPIE_PASS_SECS=0
-  export MAGPIE_KEEPALIVE_SECS=0.05 MAGPIE_QUICKFAIL_SECS=1
+  export MAGPIE_KEEPALIVE_SECS=0.05 MAGPIE_QUICKFAIL_SECS=2
   export MAGPIE_SUDO_RETRY_SECS=0
   export MAGPIE_MAGPIE_URL="file://$STATE/origin.git"
   unset MAGPIE_SOURCED MAGPIE_SELF MAGPIE_PASS MAGPIE_REPAIR MAGPIE_FORCE_SETUP
@@ -236,6 +251,7 @@ base_env() {
 fill_pins() {
   OPENCODE_VERSION=9.9.9
   NONO_VERSION=9.9.9
+  NONO_PACK_VERSION=9.9.9
   OPENCODE_SHA256_DARWIN_ARM64=deadbeef
   OPENCODE_SHA256_DARWIN_X64=deadbeef
   OPENCODE_SHA256_LINUX_ARM64=deadbeef
@@ -292,7 +308,7 @@ make_installed() {
   cp "$STATE/binlib/nono" "$FAKE_HOME/.nono/bin/nono"
   chmod 755 "$FAKE_HOME/.opencode/bin/opencode" "$FAKE_HOME/.nono/bin/nono"
   echo '{"model":"hu/llm3"}' > "$FAKE_HOME/.config/opencode/opencode.json"
-  echo '{}' > "$FAKE_HOME/.config/nono/packages/nolabs-ai/opencode/package.json"
+  echo '{"name":"opencode","version":"9.9.9"}' > "$FAKE_HOME/.config/nono/packages/nolabs-ai/opencode/package.json"
   echo "marker" > "$FAKE_HOME/magpie/.setup-finished"
 }
 
@@ -398,6 +414,12 @@ ret_is "prompt starts keepalive" 0
 grep_ok "prompt line" "$STATE/screen.txt" "Type it blind"
 sleep 0.3
 nofile_ok "keepalive pidfile gone after subshell exit" "$FAKE_HOME/magpie/.keepalive.pid"
+new_env
+make_installed
+FN_BODY='magpie_sudo_warm; magpie_launch' run_fn STUB_SUDO_N_OK=0
+ret_is "launch after prompt exits 0" 0
+grep_ok "launch stopped keep-alive" "$STATE/keepalive_at_launch.txt" "dead"
+nofile_ok "keepalive pidfile gone after launch" "$FAKE_HOME/magpie/.keepalive.pid"
 
 # ============================================================
 sec "TERM trap cleanup"
@@ -468,6 +490,9 @@ FN_BODY='magpie_fast_path_ok' run_fn; ret_is "no profile -> setup" 1
 new_env; make_installed; rm -f "$FAKE_HOME/.config/opencode/opencode.json"
 FN_BODY='magpie_fast_path_ok' run_fn; ret_is "no config -> setup" 1
 new_env; make_installed
+sed -i 's|"version":"9.9.9"|"version":"8.8.8"|' "$FAKE_HOME/.config/nono/packages/nolabs-ai/opencode/package.json"
+FN_BODY='magpie_fast_path_ok' run_fn; ret_is "pack version drift -> setup" 1
+new_env; make_installed
 FN_BODY='magpie_fast_path_ok' run_fn MAGPIE_FORCE_SETUP=1; ret_is "FORCE_SETUP blocks fast" 1
 new_env; make_installed
 FN_BODY='magpie_fast_path_ok' run_fn MAGPIE_REPAIR=1; ret_is "REPAIR blocks fast" 1
@@ -501,9 +526,11 @@ grep_ok "log launch line" "$FAKE_HOME/magpie/setup-log.txt" "launch: exit 0 afte
 grep_ok "smoke uses --allow-cwd" "$STATE/nono.log" "run --profile nolabs-ai/opencode --allow-cwd --silent"
 grep_ok "launch uses --allow-cwd" "$STATE/nono.log" "run --profile nolabs-ai/opencode --allow-cwd -- opencode"
 nofile_ok "lock released" "$FAKE_HOME/magpie/.setup.lock"
-head -n 1 "$STATE/sudo.log" | grep -q "^sudo -n true$" \
-  && ok "sudo asked once upfront" || no "sudo asked once upfront"
-grep_no "no apt run (skipped)" "$STATE/sudo.log" "apt-get"
+grep_ok "pull uses pinned pack version" "$STATE/nono.log" "pull nolabs-ai/opencode@9.9.9"
+grep_ok "pack pinned against updates" "$STATE/nono.log" "nono pin nolabs-ai/opencode"
+nofile_ok "no sudo at all (apt skipped)" "$STATE/sudo.log"
+grep_no "no blind prompt (apt skipped)" "$S" "Type it blind"
+grep_ok "keep-alive dead at launch instant" "$STATE/keepalive_at_launch.txt" "dead"
 
 # second run: fast path
 run_e2e
@@ -542,10 +569,11 @@ run_e2e STUB_CURL_DL_FAILS=1
 ret_is "transient download failure heals" 0
 grep_no "no failure heads-up" "$STATE/screen.txt" "retrying automatically"
 
-# sudo prompt happens once across pass-2 exec (timestamp survives)
+# day one with an expired sudo timestamp: still zero prompts,
+# because apt/CLT steps skip while git+curl are present
 new_env
 run_e2e STUB_BAD_ARCHIVE=1 STUB_SUDO_N_OK=0
-cnt_is "asked blind exactly once" "Type it blind" "$STATE/screen.txt" 1
+cnt_is "asked blind never" "Type it blind" "$STATE/screen.txt" 0
 
 # ============================================================
 sec "E2E repair (force pull + config force-write)"
@@ -581,7 +609,7 @@ cnt_is "exactly two launches total" "launch#" "$STATE/launch.txt" 2
 
 new_env
 make_installed
-run_e2e STUB_NONO_LAUNCH_FAILS=99 STUB_NONO_LAUNCH_EXIT=5 STUB_NONO_LAUNCH_SLEEP=2
+run_e2e STUB_NONO_LAUNCH_FAILS=99 STUB_NONO_LAUNCH_EXIT=5 STUB_NONO_LAUNCH_SLEEP=4
 ret_is "slow non-zero exit is quiet" 0
 cnt_is "single launch" "launch#" "$STATE/launch.txt" 1
 grep_no "no repair" "$STATE/screen.txt" "repairing"
@@ -676,6 +704,18 @@ new_env
 run_e2e STUB_NONO_PULL_FAILS=1
 ret_is "pull retry silent success" 0
 grep_no "no pass-2 message" "$STATE/screen.txt" "retrying automatically"
+
+# ============================================================
+sec "E2E pack version drift -> force re-pull"
+# ============================================================
+new_env
+make_installed
+sed -i 's|"version":"9.9.9"|"version":"8.8.8"|' "$FAKE_HOME/.config/nono/packages/nolabs-ai/opencode/package.json"
+run_e2e
+ret_is "drift re-run exits 0" 0
+grep_ok "drift force-pulls pinned" "$STATE/nono.log" "pull --force nolabs-ai/opencode@9.9.9"
+grep_ok "installed version back at pin" "$FAKE_HOME/.config/nono/packages/nolabs-ai/opencode/package.json" '"version":"9.9.9"'
+grep_no "drift still no sudo" "$STATE/sudo.log" "."
 
 # ============================================================
 sec "sourced step_failed: in-process pass 2"
