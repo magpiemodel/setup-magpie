@@ -75,7 +75,8 @@ block feeds the students' LLM, students self-heal.
   exits 0). The run gets ONE attempt: no step retries, no second pass;
   any failure goes straight to the help block, exit 1 - the next
   manual rerun redoes it (the marker stays unwritten until verified).
-- Deterministic caches: `MADRAT_CACHE=$HOME/.madrat` and
+- Deterministic data folders: `MADRAT_MAINFOLDER=$HOME/.madrat`
+  (madrat mainfolder, cache lives under it) and
   `RENV_PATHS_CACHE=$HOME/.cache/R/renv` are fixed (not
   env-overridable), exported into the run, written as grep-guarded rc
   lines (`magpie_register_caches`), and passed explicitly into every
@@ -258,10 +259,12 @@ license env var anywhere.
 `["opencode"]`. Read list: Linux `$HOME/gams` + `$HOME/.TinyTeX`;
 macOS `/Library/Frameworks/GAMS.framework`, `/Library/Frameworks/
 R.framework`, `/usr/local/gfortran`, `$HOME/.TinyTeX`, the licence
-dir. On both OSes the read list also holds the two cache folders,
-and the write list is exactly `$MADRAT_CACHE` (`$HOME/.madrat`) +
-`$RENV_PATHS_CACHE` (`$HOME/.cache/R/renv`) - the sandboxed full run
-downloads input data and restores the run-folder renv through them.
+dir. On both OSes the read list also holds the two data folders,
+and the write list is exactly `$MADRAT_MAINFOLDER` (`$HOME/.madrat`) +
+`$RENV_PATHS_CACHE` (`$HOME/.cache/R/renv`). The full run downloads
+input data into the run folder (`gms::download_distribute`); the
+madrat mainfolder is the pinned cache for any madrat read, the renv
+cache fills on renv restores.
 The folders are created by `magpie_register_caches` before any
 sandboxed child runs (write rules need existing paths). `nono profile
 validate` must pass before install; an existing different file is kept
@@ -270,7 +273,7 @@ the gate reruns the checks inside the sandbox:
 
 ```
 nono run --profile magpie-profile -- env MAGPIE_CHECK_ONLY=1 \
-  PATH=<texbin>:$PATH MADRAT_CACHE=... RENV_PATHS_CACHE=... \
+  PATH=<texbin>:$PATH MADRAT_MAINFOLDER=... RENV_PATHS_CACHE=... \
   bash <thisfile> --check-only
 ```
 
@@ -315,7 +318,7 @@ holds all verification artifacts. Otherwise ONE sandboxed attempt
 
 ```
 (cd ~/magpie && nono run --profile magpie-profile -- \
-  env MADRAT_CACHE=... RENV_PATHS_CACHE=... \
+  env MADRAT_MAINFOLDER=... RENV_PATHS_CACHE=... \
       PATH=<gamsdir>:<texbin>:$PATH \
   bash -c 'cd "$HOME/magpie" && \
            Rscript start.R runscripts=default.R submit=direct')

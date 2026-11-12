@@ -94,12 +94,12 @@ MAGPIE_GFORTRAN_DIR="${MAGPIE_GFORTRAN_DIR:-/usr/local/gfortran}"
 
 MAGPIE_HANDLE_FILE="$HOME/.magpie-course-handle"
 
-# Deterministic cache folders. The nono profile allows writes in them and
-# the sandboxed children get them passed in, so the values stay fixed
-# (not env-overridable).
-MADRAT_CACHE="$HOME/.madrat"
+# Deterministic madrat mainfolder + renv cache folder. The nono profile
+# allows writes in them and the sandboxed children get them passed in,
+# so the values stay fixed (not env-overridable).
+MADRAT_MAINFOLDER="$HOME/.madrat"
 RENV_PATHS_CACHE="$HOME/.cache/R/renv"
-export MADRAT_CACHE RENV_PATHS_CACHE
+export MADRAT_MAINFOLDER RENV_PATHS_CACHE
 
 # ---------------- screen, log ----------------
 
@@ -794,11 +794,11 @@ magpie_register_hu_key() {
 # The nono profile grants write to these two folders, so the folder tree
 # must exist before any sandboxed child runs.
 magpie_register_caches() {
-  mkdir -p "$MADRAT_CACHE" "$RENV_PATHS_CACHE" || return 1
+  mkdir -p "$MADRAT_MAINFOLDER" "$RENV_PATHS_CACHE" || return 1
   touch "$MAGPIE_RC" 2>/dev/null || true
-  if ! grep -q MADRAT_CACHE "$MAGPIE_RC" 2>/dev/null; then
-    printf 'export MADRAT_CACHE="%s"\n' "$MADRAT_CACHE" >> "$MAGPIE_RC"
-    magpie_log "MADRAT_CACHE exported to $MAGPIE_RC"
+  if ! grep -q MADRAT_MAINFOLDER "$MAGPIE_RC" 2>/dev/null; then
+    printf 'export MADRAT_MAINFOLDER="%s"\n' "$MADRAT_MAINFOLDER" >> "$MAGPIE_RC"
+    magpie_log "MADRAT_MAINFOLDER exported to $MAGPIE_RC"
   fi
   if ! grep -q RENV_PATHS_CACHE "$MAGPIE_RC" 2>/dev/null; then
     printf 'export RENV_PATHS_CACHE="%s"\n' "$RENV_PATHS_CACHE" >> "$MAGPIE_RC"
@@ -1193,8 +1193,8 @@ magpie_pull_nono_profile() {
 
 # Course profile on top of the pinned opencode pack: read-list for
 # GAMS, R, gfortran, TinyTeX and the licence folder; write-list for the
-# madrat + renv cache folders (the sandboxed full run downloads and
-# restores through them).
+# madrat mainfolder (cache for any madrat reads) and the renv cache
+# folder (run-folder renv restores through it).
 magpie_build_nono_profile() {
   dir="$HOME/.config/nono/profiles"
   f="$dir/magpie-profile.json"
@@ -1215,11 +1215,11 @@ magpie_build_nono_profile() {
       "/usr/local/gfortran",
       "$HOME/.TinyTeX",
       "$HOME/Library/Application Support/GAMS",
-      "$MADRAT_CACHE",
+      "$MADRAT_MAINFOLDER",
       "$RENV_PATHS_CACHE"
     ],
     "write": [
-      "$MADRAT_CACHE",
+      "$MADRAT_MAINFOLDER",
       "$RENV_PATHS_CACHE"
     ]
   }
@@ -1237,11 +1237,11 @@ EOF
     "read": [
       "$HOME/gams",
       "$HOME/.TinyTeX",
-      "$MADRAT_CACHE",
+      "$MADRAT_MAINFOLDER",
       "$RENV_PATHS_CACHE"
     ],
     "write": [
-      "$MADRAT_CACHE",
+      "$MADRAT_MAINFOLDER",
       "$RENV_PATHS_CACHE"
     ]
   }
@@ -1488,7 +1488,7 @@ magpie_sandbox_gate() {
   magpie_say "Final check inside the course sandbox (nono, profile magpie-profile)..."
   ( cd "$HOME/magpie" && nono run --profile magpie-profile -- \
     env MAGPIE_CHECK_ONLY=1 "PATH=${texbin:+$texbin:}$PATH" \
-    "MADRAT_CACHE=$MADRAT_CACHE" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
+    "MADRAT_MAINFOLDER=$MADRAT_MAINFOLDER" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
     bash "$MAGPIE_SELF" --check-only )
 }
 
@@ -1529,13 +1529,13 @@ magpie_full_run_body() {
   if [ "$MAGPIE_OS" = "darwin" ]; then
     # shellcheck disable=SC2016  # $HOME expands in the sandbox child, not here.
     printf 'n\nn\n' | ( cd "$HOME/magpie" && caffeinate -is nono run --profile magpie-profile -- \
-      env "MADRAT_CACHE=$MADRAT_CACHE" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
+      env "MADRAT_MAINFOLDER=$MADRAT_MAINFOLDER" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
       "PATH=$1" \
       bash -c 'cd "$HOME/magpie" && Rscript start.R runscripts=default.R submit=direct' )
   else
     # shellcheck disable=SC2016  # $HOME expands in the sandbox child, not here.
     printf 'n\nn\n' | ( cd "$HOME/magpie" && nono run --profile magpie-profile -- \
-      env "MADRAT_CACHE=$MADRAT_CACHE" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
+      env "MADRAT_MAINFOLDER=$MADRAT_MAINFOLDER" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
       "PATH=$1" \
       bash -c 'cd "$HOME/magpie" && Rscript start.R runscripts=default.R submit=direct' )
   fi

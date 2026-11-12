@@ -797,7 +797,7 @@ nofile_ok "keepalive pidfile gone" "$FAKE_HOME/magpie/.keepalive.pid"
 grep_ok "gate args: profile" "$STATE/nono.log" "--profile magpie-profile"
 grep_ok "gate args: check-only child" "$STATE/nono.log" "--check-only"
 grep_ok "gate args: env switch" "$STATE/nono.log" "MAGPIE_CHECK_ONLY=1"
-grep_ok "gate args: madrat cache passed" "$STATE/nono.log" "MADRAT_CACHE="
+grep_ok "gate args: madrat mainfolder passed" "$STATE/nono.log" "MADRAT_MAINFOLDER="
 grep_ok "gate args: renv cache passed" "$STATE/nono.log" "RENV_PATHS_CACHE="
 
 # ============================================================
@@ -808,7 +808,7 @@ FN_BODY='MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_register_caches; ma
 ret_is "caches registered" 0
 file_ok "madrat dir created" "$FAKE_HOME/.madrat"
 file_ok "renv cache dir created" "$FAKE_HOME/.cache/R/renv"
-cnt_is "MADRAT rc line deduped" "MADRAT_CACHE" "$FAKE_HOME/.bashrc" 1
+cnt_is "MADRAT rc line deduped" "MADRAT_MAINFOLDER" "$FAKE_HOME/.bashrc" 1
 cnt_is "RENV rc line deduped" "RENV_PATHS_CACHE" "$FAKE_HOME/.bashrc" 1
 
 # ============================================================
@@ -1341,7 +1341,7 @@ mkdir -p "$FAKE_HOME/magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' run_fn
 ret_is "full run completes" 0
 grep_ok "sandbox run via profile" "$STATE/nono.log" "run --profile magpie-profile -- env"
-grep_ok "madrat cache passed" "$STATE/nono.log" "MADRAT_CACHE="
+grep_ok "madrat mainfolder passed" "$STATE/nono.log" "MADRAT_MAINFOLDER="
 grep_ok "renv cache passed" "$STATE/nono.log" "RENV_PATHS_CACHE="
 grep_ok "PATH passed" "$STATE/nono.log" "PATH="
 grep_ok "bash -c payload" "$STATE/nono.log" "bash -c"
@@ -1585,9 +1585,9 @@ file_ok "full run marker" "$FAKE_HOME/magpie/.setup-fullrun-ok"
 RUNREL=$(sed -n 1p "$FAKE_HOME/magpie/.setup-fullrun-ok" 2>/dev/null)
 file_ok "marker folder holds fulldata.gdx" "$FAKE_HOME/magpie/$RUNREL/fulldata.gdx"
 file_ok "marker folder holds report.rds" "$FAKE_HOME/magpie/$RUNREL/report.rds"
-file_ok "madrat cache dir created" "$FAKE_HOME/.madrat"
+file_ok "madrat mainfolder dir created" "$FAKE_HOME/.madrat"
 file_ok "renv cache dir created" "$FAKE_HOME/.cache/R/renv"
-cnt_is "rc MADRAT line once" "MADRAT_CACHE" "$FAKE_HOME/.bashrc" 1
+cnt_is "rc MADRAT line once" "MADRAT_MAINFOLDER" "$FAKE_HOME/.bashrc" 1
 cnt_is "rc RENV line once" "RENV_PATHS_CACHE" "$FAKE_HOME/.bashrc" 1
 grep_ok "profile write list holds madrat" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json" "$FAKE_HOME/.madrat"
 
