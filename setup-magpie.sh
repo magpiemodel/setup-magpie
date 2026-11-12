@@ -88,6 +88,10 @@ MAGPIE_SUDO_RETRY_SECS="${MAGPIE_SUDO_RETRY_SECS:-2}"
 # it at a local repository.
 MAGPIE_MAGPIE_URL="${MAGPIE_MAGPIE_URL:-https://github.com/magpiemodel/magpie.git}"
 
+# gfortran pkg target (macOS). Variable only so the offline test
+# harness can fake the pkg install dir.
+MAGPIE_GFORTRAN_DIR="${MAGPIE_GFORTRAN_DIR:-/usr/local/gfortran}"
+
 MAGPIE_HANDLE_FILE="$HOME/.magpie-course-handle"
 
 # Deterministic cache folders. The nono profile allows writes in them and
@@ -566,8 +570,11 @@ magpie_install_pkg() {
 
 magpie_apt_body() {
   magpie_sudo_warm || return 1
-  sudo apt-get update || return 1
-  sudo apt-get install -y -o Acquire::Retries=3 git curl || return 1
+  # Lock timeout: WSL's unattended-upgrades can hold the dpkg lock
+  # far past the step retries.
+  sudo apt-get -o DPkg::Lock::Timeout=120 update || return 1
+  sudo apt-get -o DPkg::Lock::Timeout=120 install -y -o Acquire::Retries=3 \
+    git curl || return 1
   command -v git >/dev/null 2>&1 && command -v curl >/dev/null 2>&1
 }
 
@@ -807,15 +814,26 @@ magpie_have_r() {
 }
 
 magpie_have_gfortran() {
-  command -v gfortran >/dev/null 2>&1 || [ -x /usr/local/gfortran/bin/gfortran ]
+  command -v gfortran >/dev/null 2>&1 \
+    || [ -x "$MAGPIE_GFORTRAN_DIR/bin/gfortran" ]
+}
+
+# The pkg target is not on PATH: register it for this run + the rc, or
+# renv restore compiles and the sandboxed children never find gfortran.
+# Reached only when magpie_have_gfortran was true.
+magpie_register_gfortran() {
+  if ! command -v gfortran >/dev/null 2>&1 \
+    && magpie_rc_add_path "$MAGPIE_RC" "$MAGPIE_GFORTRAN_DIR/bin"; then
+    magpie_log "gfortran registered in $MAGPIE_RC + this run"
+  fi
 }
 
 # Linux: base tools + the -dev libraries R packages compile against,
 # one apt call. Skip when R and pandoc are already there.
 magpie_apt_tools_body() {
   magpie_sudo_warm || return 1
-  sudo apt-get update || return 1
-  sudo apt-get install -y -o Acquire::Retries=3 \
+  sudo apt-get -o DPkg::Lock::Timeout=120 update || return 1
+  sudo apt-get -o DPkg::Lock::Timeout=120 install -y -o Acquire::Retries=3 \
     git wget zip unzip r-base pandoc build-essential cmake gfortran \
     gdal-bin libcurl4-gnutls-dev libcurl4-openssl-dev \
     libfontconfig1 libfontconfig1-dev libfreetype-dev libfribidi-dev \
@@ -842,6 +860,7 @@ magpie_step_apt_tools() {
 magpie_step_gfortran() {
   if magpie_have_gfortran; then
     magpie_log "gfortran: present"
+    magpie_register_gfortran
     return 0
   fi
   MAGPIE_PKG_URL=$GFORTRAN_URL
@@ -850,6 +869,7 @@ magpie_step_gfortran() {
   if ! magpie_retry 3 magpie_gfortran_body; then
     magpie_step_failed "gfortran install" "wifi"
   fi
+  magpie_register_gfortran
   magpie_say "OK: gfortran installed"
 }
 
@@ -919,9 +939,16 @@ magpie_tinytex_body() {
 }
 
 magpie_step_tinytex() {
-  if [ -d "$HOME/.TinyTeX" ]; then
+  # Skip only when a working tex exists (PATH or complete .TinyTeX):
+  # a dir from a killed run must NOT block the reinstall forever.
+  # Empty output, not exit status: an empty glob loop returns 0.
+  if [ -n "$(magpie_texbin)" ]; then
     magpie_log "TinyTeX: already installed"
   else
+    if [ -d "$HOME/.TinyTeX" ]; then
+      magpie_log "TinyTeX: incomplete folder found - reinstalling"
+      rm -rf "$HOME/.TinyTeX"
+    fi
     magpie_say_progress "TinyTeX" "a few minutes"
     if ! magpie_retry 3 magpie_tinytex_body; then
       magpie_step_failed "TinyTeX install" "wifi"

@@ -364,8 +364,9 @@ EOS
 #!/bin/sh
 echo "apt-get $*" >> "$STATE/apt.log"
 if [ "${STUB_APT_FAIL:-0}" = "1" ]; then exit 100; fi
-if [ "${1:-}" = install ]; then
-  shift
+seen_install=0
+for a in "$@"; do [ "$a" = install ] && seen_install=1; done
+if [ "$seen_install" = 1 ]; then
   for a in "$@"; do
     case $a in
       r-base) cp "$STATE/binlib/Rscript" "$FAKE_BIN/Rscript" 2>/dev/null || true ;;
@@ -388,7 +389,14 @@ for a in "$@"; do
 done
 case $(basename "${pkg:-none}") in
   setup-dl-R.pkg) cp "$STATE/binlib/Rscript" "$FAKE_BIN/Rscript" ;;
-  setup-dl-gfortran.pkg) cp "$STATE/binlib/gfortran" "$FAKE_BIN/gfortran" ;;
+  setup-dl-gfortran.pkg)
+    if [ -n "${STUB_GF_TARGET:-}" ]; then
+      # Off-PATH pkg target (the real one is /usr/local/gfortran/bin).
+      mkdir -p "$STUB_GF_TARGET"
+      cp "$STATE/binlib/gfortran" "$STUB_GF_TARGET/gfortran"
+    else
+      cp "$STATE/binlib/gfortran" "$FAKE_BIN/gfortran"
+    fi ;;
   setup-dl-pandoc.pkg) cp "$STATE/binlib/pandoc" "$FAKE_BIN/pandoc" ;;
 esac
 exit 0
@@ -831,6 +839,21 @@ nofile_ok "lock removed" "$FAKE_HOME/magpie/.setup.lock"
 if [ -n "$kp" ] && kill -0 "$kp" 2>/dev/null; then no "keepalive killed"; else ok "keepalive killed"; fi
 
 # ============================================================
+sec "apt calls: dpkg lock timeout"
+# ============================================================
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_apt_body' run_fn
+ret_is "apt base body ok" 0
+grep_ok "base update lock timeout" "$STATE/apt.log" "DPkg::Lock::Timeout=120 update"
+grep_ok "base install lock timeout" "$STATE/apt.log" "DPkg::Lock::Timeout=120 install"
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_apt_tools' \
+  run_fn
+ret_is "apt tools step ok" 0
+grep_ok "tools update lock timeout" "$STATE/apt.log" "DPkg::Lock::Timeout=120 update"
+grep_ok "tools install lock timeout" "$STATE/apt.log" "DPkg::Lock::Timeout=120 install"
+
+# ============================================================
 sec "handle (code name)"
 # ============================================================
 new_env
@@ -994,6 +1017,31 @@ ret_is "child exits 0 when checks pass" 0
 grep_ok "PASS lines in child screen" "$STATE/screen.txt" "PASS gams"
 
 # ============================================================
+sec "TinyTeX step: skip only with real tex, half dir heals"
+# ============================================================
+new_env
+cp "$STATE/binlib/Rscript" "$FAKE_BIN/Rscript"
+mkdir -p "$FAKE_HOME/.TinyTeX/share"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_tinytex' \
+  run_fn
+ret_is "half TinyTeX dir reinstall heals" 0
+grep_ok "half dir logged" "$FAKE_HOME/magpie/setup-log.txt" "incomplete"
+grep_ok "install_tinytex ran" "$STATE/rscript.log" "install_tinytex"
+nofile_ok "stale share gone" "$FAKE_HOME/.TinyTeX/share"
+file_ok "tex binary exists" "$FAKE_HOME/.TinyTeX/bin/x86_64-unknown-linux-gnu/tex"
+grep_ok "rc texbin line" "$FAKE_HOME/.bashrc" ".TinyTeX/bin"
+new_env
+mkdir -p "$FAKE_HOME/.TinyTeX/bin/x86_64-unknown-linux-gnu"
+printf '#!/bin/sh\necho tex\n' > "$FAKE_HOME/.TinyTeX/bin/x86_64-unknown-linux-gnu/tex"
+chmod 755 "$FAKE_HOME/.TinyTeX/bin/x86_64-unknown-linux-gnu/tex"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_tinytex' \
+  run_fn
+ret_is "complete TinyTeX dir skips install" 0
+grep_no "no R calls" "$STATE/rscript.log" "install_tinytex"
+grep_no "no heads-up" "$STATE/screen.txt" "installing TinyTeX"
+grep_ok "rc texbin line (skip)" "$FAKE_HOME/.bashrc" ".TinyTeX/bin"
+
+# ============================================================
 sec "nono profile: pull + magpie-profile build"
 # ============================================================
 new_env
@@ -1090,6 +1138,24 @@ ret_is "gfortran checksum mismatch blocks" 1
 nofile_ok "installer never called" "$STATE/installer.log"
 nofile_ok "no sudo before verify" "$STATE/sudo.log"
 nofile_ok "no pkg left behind" "$FAKE_HOME/magpie/setup-dl-gfortran.pkg"
+# Off-PATH pkg target: the dir must land in rc + this run's PATH, or
+# renv restore compiles fail and sandboxed children never see gfortran.
+new_env
+mkdir -p "$FAKE_HOME/local/bin"
+cp "$STATE/binlib/gfortran" "$FAKE_HOME/local/bin/gfortran"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_gfortran' \
+  run_fn MAGPIE_GFORTRAN_DIR="$FAKE_HOME/local"
+ret_is "gfortran off-PATH present skips + registers" 0
+nofile_ok "no pkg download" "$STATE/curl.log"
+grep_ok "rc gfortran dir line" "$FAKE_HOME/.zshrc" "$FAKE_HOME/local/bin"
+grep_ok "gfortran registered log" "$FAKE_HOME/magpie/setup-log.txt" "gfortran registered"
+new_env
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_gfortran' \
+  run_fn MAGPIE_GFORTRAN_DIR="$FAKE_HOME/local" STUB_GF_TARGET="$FAKE_HOME/local/bin"
+ret_is "gfortran pkg install registers off-PATH dir" 0
+grep_ok "installer -pkg called" "$STATE/installer.log" "installer -pkg"
+grep_ok "OK: gfortran installed" "$STATE/screen.txt" "OK: gfortran installed"
+grep_ok "rc gfortran dir line (install)" "$FAKE_HOME/.zshrc" "$FAKE_HOME/local/bin"
 new_env
 FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_r' run_fn
 ret_is "R pkg installs" 0

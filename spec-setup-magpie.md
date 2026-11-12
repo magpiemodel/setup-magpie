@@ -1,7 +1,7 @@
 # setup-magpie.sh - spec (unified day-one course setup)
 
 Status: implemented in setup-magpie.sh (tests: tests/test-setup-magpie.sh,
-405 assertions (404 when shellcheck is absent), all green on a Linux
+431 assertions (432 when shellcheck is present), all green on a Linux
 x86_64 dev host). Date: 2026-11-12.
 
 ## 1. Purpose
@@ -203,26 +203,41 @@ the old `setup-ubuntu.sh` (gdal, libcurl, fontconfig, freetype,
 fribidi, gdal, git2, glpk, harfbuzz, jpeg, netcdf, png, poppler-cpp,
 cairo, ssl, tiff5, udunits2, xml2, uv1, pari-gp, qpdf),
 `Acquire::Retries=3`, `magpie_sudo_warm` inside. Skipped when R >= 4.3
-AND pandoc are already present.
+AND pandoc are already present. Both apt calls (also the git/curl one
+in 6.1) carry `-o DPkg::Lock::Timeout=120`: the old feed's biggest
+Linux failure cluster (`FAIL apt install of libraries`) is the dpkg
+lock held by WSL's unattended-upgrades - far past the step-retry
+waits. apt now waits up to 2 min per attempt for the lock
+(option since apt 1.9.11, i.e. Ubuntu 20.04+ = the WSL floor).
 
 ### 6.4 Course tools - macOS
 
 Three pinned-pkg steps, each skip-if-done: gfortran (skip: `gfortran`
-on PATH or `/usr/local/gfortran/bin/gfortran`), R (skip: `Rscript` >=
-4.3), pandoc (skip: `pandoc` on PATH). Download `setup-dl-<name>.pkg`
--> `magpie_sudo_warm` -> sha re-check right before `sudo installer -pkg
-... -target /` (root never reads a file that changed after
-verification) -> remove the download. Checksum mismatch blocks BEFORE
-any sudo call. GAMS macOS uses the same helper.
+on PATH or `$MAGPIE_GFORTRAN_DIR/bin/gfortran`, default
+`/usr/local/gfortran` - variable so the harness can fake the pkg
+target), R (skip: `Rscript` >= 4.3), pandoc (skip: `pandoc` on PATH).
+The gfortran pkg target is NOT on PATH by default: after skip OR
+install, `magpie_register_gfortran` puts `<dir>/bin` in the rc + this
+run's PATH, or renv restore compiles and the sandboxed children never
+find gfortran. Download `setup-dl-<name>.pkg` -> `magpie_sudo_warm` ->
+sha re-check right before `sudo installer -pkg ... -target /` (root
+never reads a file that changed after verification) -> remove the
+download. Checksum mismatch blocks BEFORE any sudo call. GAMS macOS
+uses the same helper. The magpie-profile read list keeps the literal
+`/usr/local/gfortran` - the sandbox policy always names the real
+system path.
 
 ### 6.5 TinyTeX + tex PATH
 
-Via Rscript when `~/.TinyTeX` is missing (skip otherwise).
+Skip only when a working tex exists: `magpie_texbin()` output
+non-empty (`command -v tex`, else the first `~/.TinyTeX/bin/*/`
+holding an executable tex). A bare `~/.TinyTeX` DIRECTORY is NOT
+enough - a run killed mid-install left exactly the old feed's
+permanent `FAIL tex not found` state; an existing incomplete dir is
+`rm -rf`-ed and the install reruns.
 `magpie_texbin()` / `magpie_register_tex()` from the old scripts: the
-tex dir comes from `command -v tex`, else the first
-`~/.TinyTeX/bin/*/` holding an executable tex; the dir is registered
-through `rc_add_path` (rc line + export into this run) so the checks
-and the gate see tex without a new terminal.
+registered dir goes through `rc_add_path` (rc line + export into this
+run) so the checks and the gate see tex without a new terminal.
 
 ### 6.6 GAMS + licence
 
@@ -397,8 +412,8 @@ HOME, stub binaries only, real git only against a local origin; PATH is
 a curated minimal bin dir so a host tex/pandoc/Rscript/gams can never
 shadow the stubs; pinned block sedded to 9.9.9/fake shas; from an
 interactive terminal the harness re-execs itself via `setsid -w` so the
-handle box's /dev/tty Enter prompt can never block the suite): 407
-assertions (408 with shellcheck on PATH) - syntax (bash/dash -n,
+handle box's /dev/tty Enter prompt can never block the suite): 431
+assertions (432 with shellcheck on PATH) - syntax (bash/dash -n,
 shellcheck -s sh where present); pin placeholder guard;
 disk abort + warn tiers (incl. the raised 9 GB / 18 GB boundaries);
 root guard; lock live/stale (a second window
@@ -417,8 +432,13 @@ PASS, unlicensed FAIL, R/pandoc/tex/git lines, renv SKIP/PASS/FAIL,
 full run SKIP-first/PASS/FAIL (each single missing artifact
 FAILs)/SKIP-via-env);
 check-only child isolation; pack pull pin + drift + profile build/
-validate/keep-modified (+ cache write-list on both OSes); macOS pkg steps incl. checksum mismatch
-blocking sudo; GAMS linux self-extractor; renv step (no renv.lock skip,
+validate/keep-modified (+ cache write-list on both OSes); apt calls
+carry the dpkg lock timeout (base + tools, update + install); TinyTeX
+step (half `.TinyTeX` dir heals via rm -rf + reinstall, complete dir
+skips + registers, no false heads-up); macOS pkg steps incl. checksum
+mismatch
+blocking sudo, gfortran off-PATH register (skip + install branches,
+rc + run PATH); GAMS linux self-extractor; renv step (no renv.lock skip,
 already-populated skip, broken library restored incl. activate.R
 bootstrap, no bootstrap when renv present, persistent failure -> help
 block, 3 attempts); clone guards (foreign dir,
