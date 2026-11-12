@@ -1,0 +1,334 @@
+# setup-magpie.sh - spec (unified day-one course setup)
+
+Status: implemented in setup-magpie.sh (tests: tests/test-setup-magpie.sh,
+266 assertions (265 when shellcheck is absent), all green on a Linux
+x86_64 dev host). Date: 2026-11-12.
+
+## 1. Purpose
+
+`setup-magpie.sh` is the students' ONE day-one file: download it, run
+`bash setup-magpie.sh` on macOS (Apple Silicon or Intel) or in WSL Ubuntu,
+and the machine ends up ready for MAgPIE - git, opencode + nono + HU
+config, the course tool chain (R, gfortran, pandoc, TinyTeX, GAMS +
+course licence), the pinned nono profiles, a `~/magpie` clone, and a
+checks block (unsandboxed + inside the sandbox gate).
+
+It replaces `setup-ubuntu.sh` and `setup-macos.sh` (see 3) and is built
+on the skeleton of `magpie-opencode.sh`: the same helpers, the same
+error model, the same file layout under `~/magpie`. `magpie-opencode.sh`
+stays the daily launcher; the two scripts never clash (see 2).
+
+Support model unchanged from the old course scripts: the teacher watches
+the live ntfy feed under each student's animal code name, the `##` help
+block feeds the students' LLM, students self-heal.
+
+## 2. Design decisions
+
+- One file, both OSes. Branch on `uname` (Darwin | Linux), like
+  `magpie-opencode.sh`. Valid POSIX sh from line 1: survives
+  `sh file`, `bash file`, `zsh file` - no `[[`, no arrays, no `local`,
+  no `$RANDOM`, no process substitution.
+- The ntfy feed and the animal code name are KEPT (unlike
+  `magpie-opencode.sh`): the teacher watches the feed on course day.
+  The handle is `Animal+3digits` in `~/.magpie-course-handle`, picked
+  from `/dev/urandom` (dash has no `$RANDOM`). First creation is atomic
+  (noclobber): two concurrent first runs converge on one name. It prints
+  the "NOTE IT DOWN" box and waits for Enter on `/dev/tty`.
+- All state lives under `~/magpie` with EXACTLY the file names
+  `magpie-opencode.sh` expects (`setup-log.txt`, `setup-help.txt`,
+  `.setup.lock/`, `.keepalive.pid`, `opencode-dl.tgz`,
+  `opencode-extract/`, `nono-dl.tar.gz`, `nono-extract/`).
+  `.setup-finished` is `magpie-opencode.sh`'s finish marker ONLY -
+  this script never writes it, so running both scripts side by side
+  stays consistent.
+- Extra downloads (GAMS, R, gfortran, pandoc) go under `~/magpie` named
+  `setup-dl-*` and are deleted on success AND in the EXIT trap - a
+  crash never leaves foreign files behind. The clone guard's own-file
+  allowlist includes `setup-dl-*`.
+- No Homebrew anywhere (Homebrew 5 refuses Intel Macs). macOS R /
+  gfortran / pandoc / GAMS are pinned `.pkg` downloads, sha256-checked,
+  installed with `sudo installer -pkg ... -target /`, each
+  skip-if-done. Xcode CLT installs unattended via `softwareupdate`.
+- Sudo is asked only inside steps that actually run, through the
+  `magpie-opencode.sh` warm loop + keep-alive. The keep-alive is
+  stopped BEFORE the sandbox gate: no warm sudo credential may exist
+  while a sandboxed process runs.
+- Errors are only reported when reproducible (the `magpie-opencode.sh`
+  model): in-step retries, then one full second pass in a fresh
+  process; only a failure repeating in pass 2 prints the `##` help
+  block and exits 1. This REPLACES the old course scripts' "continue
+  after FAIL and keep installing" behaviour.
+- The run ends with: unsandboxed checks -> all PASS: sandbox gate
+  (`nono run --profile magpie-profile -- ... bash <thisfile>
+  --check-only`) -> next steps -> feed "run finished" -> exit 0.
+  Any FAIL (step-level, check, or gate): feed the FAIL line(s), print
+  the help block, exit 1.
+- Disk guard has two tiers (from the old scripts, env-overridable):
+  below `MAGPIE_DISK_ABORT_GB=6` the help block aborts; below
+  `MAGPIE_DISK_WARN_GB=15` a warning goes on screen and to the feed.
+- `HU_API_KEY`: exported for the run AND written as one grep-guarded
+  rc line - there is no launcher in this script, students may start
+  opencode later from a fresh terminal (the real credential is
+  injected by nono).
+- magpie is cloned by this script (`git init` + remote + `ls-remote` +
+  fetch + `checkout -B`, the non-empty-directory-safe pattern from
+  `magpie-opencode.sh`), so the "next steps" no longer include cloning.
+
+## 3. Files
+
+- `setup-magpie.sh` - student deliverable (standalone, both OSes)
+- `spec-setup-magpie.md` - this file
+- `tests/test-setup-magpie.sh` - offline harness (Linux x86_64 + AVX2
+  host - the pinned GAMS/opencode builds - else exit 77 skip)
+- `magpie-opencode.sh`, `tests/test-magpie-opencode.sh` - bug fix
+  (round 4, maintainer-approved): EXIT cleanup is gated on lock
+  ownership, so a non-owner exit no longer kills the running owner's
+  sudo keep-alive; `spec-magpie-opencode.md` - cross-references and the
+  cleanup wording updated; `README.md` - untouched
+- `setup-ubuntu.sh`, `setup-macos.sh`, `spec.md` - REMOVED, superseded
+  by `setup-magpie.sh` and this spec.
+
+## 4. Pinned block (top of file, machine-filled - not hand-edited per course)
+
+Every line starts at column 0 (`^VAR=`) so the test harness and
+re-pinning can sed them; the placeholder guard aborts instantly while
+any pin is empty or `TBD`.
+
+- From `magpie-opencode.sh` (verbatim): `OPENCODE_VERSION` 2.2.7 + four
+  target shas, `NONO_VERSION` 0.81.0 + four target shas,
+  `NONO_PACK_VERSION` 0.4.2.
+- From the old scripts: `GAMS_VERSION` 54.6.1 -
+  `GAMS_URL_LINUX_X64` + `GAMS_SHA256_LINUX_X64`
+  (ac198c62...fd34eb1), `GAMS_URL_DARWIN_ARM64` +
+  `GAMS_SHA256_DARWIN_ARM64` (0cb71b96...ed1223b),
+  `GAMS_URL_DARWIN_X64` + `GAMS_SHA256_DARWIN_X64`
+  (f02a3392...1e8276).
+- NEW macOS pins (verified live 2026-11-12, sizes cross-checked against
+  HEAD `content-length`):
+  - `GFORTRAN_VERSION=14.2`, `GFORTRAN_URL=
+    https://mac.r-project.org/tools/gfortran-14.2-universal.pkg`
+    (universal), sha256 `ec462d465f093eeee0623d2b5d327bd1038313b985034b766462957e36d7aadd`.
+  - `R_VERSION=4.6.2`, per-arch pkgs (no universal pkg is published):
+    `R_URL_DARWIN_ARM64=.../sonoma-arm64/base/R-4.6.2-arm64.pkg` sha256
+    `a678b4db1fcd71b1b1cc58edcfa4a8d36ee012a02659dde9eab9366e93571157`;
+    `R_URL_DARWIN_X64=.../big-sur-x86_64/base/R-4.6.2-x86_64.pkg` sha256
+    `aa9b1dba09cc69710571ad93efba26a9bcb5a0098543dadc4bb8e419a423195e`.
+  - `PANDOC_VERSION=3.14`, per-arch pkgs:
+    `PANDOC_URL_DARWIN_ARM64=https://github.com/jgm/pandoc/releases/
+    download/3.14/pandoc-3.14-arm64-macOS.pkg` sha256
+    `33f1049a362f782b2f2ee81d99d110d0283047312650ce1ab7f5c9116ec9ca51`;
+    `PANDOC_URL_DARWIN_X64=...x86_64-macOS.pkg` sha256
+    `145a39969291a8af79fe81037be3eb6e56511f0056b4dfd562571312f0b9b7c7`.
+- Re-pin per asset: `curl -fsSL <url> | sha256sum` (macOS:
+  `shasum -a 256`). New versions: check
+  https://cran.r-project.org/bin/macosx/ (R),
+  https://mac.r-project.org/tools/ (gfortran),
+  https://github.com/jgm/pandoc/releases/latest (pandoc), the GAMS CDN
+  distributions folder, and the opencode npm registry / nono releases.
+
+The TEACHER SECTION below the pins holds `STATUS_URL` ("" disables the
+feed) and `magpie_licence_text()` - the single place the teacher pastes
+`gamslice.txt` (placeholder still inside = early warning on screen +
+feed, nothing is written).
+
+## 5. Script skeleton and order of operations
+
+Same scoped-redirect entry as `magpie-opencode.sh`: the real terminal is
+saved on fd 4, the whole main run goes to `~/magpie/setup-log.txt`,
+screen output only through `magpie_say`. The `--check-only` child (env
+`MAGPIE_CHECK_ONLY=1` or argument) is branched BEFORE the log
+redirect - it writes no log, takes no lock, runs no installs.
+
+Order: OS detect (`MAGPIE_OS`, `MAGPIE_RC` = `~/.zshrc` / `~/.bashrc`) ->
+`HU_API_KEY` export -> check-only branch (greet + checks + exit) ->
+greet + feed "setup: start" -> root guard -> pin placeholder guard -> disk
+check (two tiers) -> licence placeholder check (warn early, reaches the
+feed before the long installs) -> take the mkdir lock (+ traps; the lock
+OWNER's EXIT cleanup also removes `setup-dl-*` - a second window that
+exits with "already running" never touches the first run's state) -> `step_os_base` (apt git/curl only
+if missing; CLT unattended on macOS) -> opencode install (pinned npm
+tgz, AVX2/musl checks) -> nono install (pinned GitHub tarball to
+`~/.nono/bin`) -> PATH fixes -> opencode config -> HU key rc line ->
+OS tool steps -> TinyTeX + tex PATH -> GAMS install + PATH -> licence
+-> nono pack pull/pin -> `magpie-profile` build -> magpie clone ->
+checks -> (green: stop keep-alive, sandbox gate, next steps, feed
+"run finished", exit 0). Every slow step that RUNS gets one
+`[HH:MM:SS] - installing ...` heads-up; installs print `OK:` lines.
+
+## 6. Steps
+
+### 6.1 OS base (from `magpie-opencode.sh`, verbatim)
+
+Linux: skip when git AND curl resolve; else `apt-get update` + install
+git curl (sudo warm inside). macOS: system curl verified; Xcode CLT via
+`touch installondemand` + `softwareupdate --list` (newest label) +
+`sudo softwareupdate --install` - no GUI, no rerun dance.
+
+### 6.2 opencode, nono, opencode config, nono pack (verbatim)
+
+Identical to `magpie-opencode.sh` 6.3/6.4/6.7/6.8 (pinned archives,
+checksum, extract, `~/.opencode/bin`, `~/.nono/bin`, PATH registration,
+HU LLM3 config with `.bak` protection, pack pull at
+`nolabs-ai/opencode@$NONO_PACK_VERSION` + drift force-re-pull + `nono
+pin`). Feed lines "setup: opencode installed" / "setup: nono installed"
+/ "setup: nono profile pulled" at the old milestones.
+
+### 6.3 Course tools - Linux
+
+One step, one apt call: base tools (`git wget zip unzip r-base pandoc
+build-essential cmake gfortran`) plus the full -dev library list from
+the old `setup-ubuntu.sh` (gdal, libcurl, fontconfig, freetype,
+fribidi, gdal, git2, glpk, harfbuzz, jpeg, netcdf, png, poppler-cpp,
+cairo, ssl, tiff5, udunits2, xml2, uv1, pari-gp, qpdf),
+`Acquire::Retries=3`, `magpie_sudo_warm` inside. Skipped when R >= 4.3
+AND pandoc are already present.
+
+### 6.4 Course tools - macOS
+
+Three pinned-pkg steps, each skip-if-done: gfortran (skip: `gfortran`
+on PATH or `/usr/local/gfortran/bin/gfortran`), R (skip: `Rscript` >=
+4.3), pandoc (skip: `pandoc` on PATH). Download `setup-dl-<name>.pkg`
+-> `magpie_sudo_warm` -> sha re-check right before `sudo installer -pkg
+... -target /` (root never reads a file that changed after
+verification) -> remove the download. Checksum mismatch blocks BEFORE
+any sudo call. GAMS macOS uses the same helper.
+
+### 6.5 TinyTeX + tex PATH
+
+Via Rscript when `~/.TinyTeX` is missing (skip otherwise).
+`magpie_texbin()` / `magpie_register_tex()` from the old scripts: the
+tex dir comes from `command -v tex`, else the first
+`~/.TinyTeX/bin/*/` holding an executable tex; the dir is registered
+through `rc_add_path` (rc line + export into this run) so the checks
+and the gate see tex without a new terminal.
+
+### 6.6 GAMS + licence
+
+Pinned download per OS/arch (see 4). Linux: self-extractor run inside
+`~/gams` with the sha256 RE-checked right before the exe runs; x86_64
+only (ARM-WRL = clean feed-reported help block, by design). No
+gamsinst. macOS: `sudo installer -pkg`. GAMS PATH registered via
+`rc_add_path`. Licence (from the old scripts, merged):
+Linux `~/gams/gams*_linux_x64_64_sfx/gamslice.txt` ("rerun" note + feed
+line when the GAMS dir is missing yet), macOS
+`~/Library/Application Support/GAMS/` (dir chmod 700), file mode 600,
+an existing file is never overwritten. GAMS reads it from there - no
+license env var anywhere.
+
+### 6.7 magpie-profile + sandbox gate
+
+`~/.config/nono/profiles/magpie-profile.json`, extends
+`["opencode"]`, read list: Linux `$HOME/gams` + `$HOME/.TinyTeX`;
+macOS `/Library/Frameworks/GAMS.framework`, `/Library/Frameworks/
+R.framework`, `/usr/local/gfortran`, `$HOME/.TinyTeX`, the licence
+dir. `nono profile validate` must pass before install; an existing
+different file is kept untouched. After the checks are green and the
+keep-alive is stopped, the gate reruns the checks inside the sandbox:
+
+```
+nono run --profile magpie-profile -- env MAGPIE_CHECK_ONLY=1 \
+  PATH=<texbin>:$PATH bash <thisfile> --check-only
+```
+
+The child: greet + checks only, feed label "sandbox check result",
+exit code = checks result, no lock/sudo/tee/installs -
+recursion-proof. Gate failure goes through the retry + pass-2 model
+(landlock hint on Linux).
+
+### 6.8 magpie clone
+
+`magpie_clone_body` / `magpie_clone_ok` / `magpie_clone_magpie` from
+`magpie-opencode.sh` 6.9, incl. foreign-dir / foreign-origin guards and
+the own-file allowlist (magpie-opencode's full list, incl. its
+`.setup-finished` marker - tolerated, never written here - extended
+with `setup-dl-*`).
+
+## 7. Error handling (from `magpie-opencode.sh`)
+
+- Network: `curl -sS -fL --retry 4 --retry-delay 5 --retry-all-errors
+  --connect-timeout 15 --max-time 900`, `-C -` resume, intact-temp skip,
+  checksum mismatch = delete + retry.
+- Step retry 3x (10 s / 30 s waits), then pass 2 in a fresh process
+  (`MAGPIE_PASS=2 exec bash <self>`; lock self-re-adoption, warm sudo
+  timestamp survives). Pass 2 failure = the `##` help block, exit 1.
+  Never a third pass.
+- `magpie_fail` additionally feeds `setup: FAIL <step>` before exiting.
+  The help block = beginner prompt lines + `System: <sys> | <arch> |
+  code name: <handle>` + (`FAILED STEP (twice, reproducible): <step>`
+  for step failures, the results list for check failures) + last 25 log
+  lines + the per-hint lines (landlock/clt/wifi/sudo). Saved to
+  `~/magpie/setup-help.txt`, framed between `##` lines.
+- sudo: blind retry loop, cap 6, keep-alive only after a real prompt.
+
+## 8. Checks (`magpie_run_checks`, POSIX rewrite of the old block)
+
+Results accumulate in a newline-separated string (no arrays):
+`gams` (found via PATH or the per-OS locations, run in a temp dir;
+banner must match `license is valid|licensee` - GAMS 54 + legacy
+wordings), `git >= 2.23` (integer compare), `Rscript >= 4.3`,
+`pandoc`, `tex`, and the `renv` library check (lucode2+gms via a
+`cd ~/magpie` subshell) ONLY when `~/magpie/renv.lock` exists -
+otherwise the line reads SKIP. The block prints to screen, goes to the
+feed as "check result" (or "sandbox check result" in the child), and
+any FAIL line ends the run (help block + exit 1; in the child: exit
+non-zero for the gate).
+
+## 9. Feed protocol (topic `https://ntfy.sh/magpie-course-cb3363c15a75`)
+
+Every message: `<handle> | <OS> <arch> | <text>`, `curl -m 5
+--data-binary @-` (the only form ntfy decodes), never fails the
+caller. Milestones: "setup: start"; installs (opencode, nono, gams
+<ver>, profile pulled); warnings (licence placeholder, low disk);
+`setup: FAIL <step>` before every abort; the check block; "sandbox
+check result"; "setup: run finished". Teacher keeps the page open,
+calls out code names of FAIL/silent students. No PII.
+
+## 10. Verification status
+
+Harness (tests/test-setup-magpie.sh, Linux x86_64 + AVX2 host else
+exit 77 - the pinned GAMS/opencode linux builds are x86_64-only, fake
+HOME, stub binaries only, real git only against a local origin; PATH is
+a curated minimal bin dir so a host tex/pandoc/Rscript/gams can never
+shadow the stubs; pinned block sedded to 9.9.9/fake shas; from an
+interactive terminal the harness re-execs itself via `setsid -w` so the
+handle box's /dev/tty Enter prompt can never block the suite): 265
+assertions (266 with shellcheck on PATH) - syntax (bash/dash/zsh -n
+where present, shellcheck -s sh where present); pin placeholder guard;
+disk abort + warn tiers; root guard; lock live/stale (a second window
+exits quietly and leaves the FIRST run's keep-alive + `setup-dl-*`
+untouched); system string before the OS is set; retry helper +
+fresh-process pass 2; sudo loop
++ keep-alive (killed BEFORE the gate - asserted with a live keep-alive
+in a dedicated sudo-prompt E2E, and `setup-dl-*.pkg` checksum mismatch
+asserting no sudo ran before verification); handle create-once/reuse +
+box;
+feed POSTs recorded (start, check block, FAIL, run finished); config
+write incl. foreign `.bak`; HU key dedupe; licence placeholder/pasted/
+mode-600/never-clobber/darwin-700; checks table (GAMS 54 + licensee
+PASS, unlicensed FAIL, R/pandoc/tex/git lines, renv SKIP/PASS/FAIL);
+check-only child isolation; pack pull pin + drift + profile build/
+validate/keep-modified; macOS pkg steps incl. checksum mismatch
+blocking sudo; GAMS linux self-extractor; clone guards (foreign dir,
+foreign origin, interrupted heal, `setup-dl-*` leftovers tolerated);
+E2E day-one green run (7 heads-ups, OK lines, rc dedupe, licence
+written, clone checked out, no `.setup-finished`, `setup-dl-*` cleaned)
++ second run all-skip + E2E reproducible failure -> pass 2 -> help
+block + FAIL feed line. Regression: tests/test-magpie-opencode.sh still
+179/0 (incl. the new cleanup-ownership tests: owner exit stops the
+keep-alive and removes the lock; a non-owner exit leaves both alone).
+
+Live pending (course day / reference machines): real GAMS download +
+extract, macOS pkg installs incl. Gatekeeper of `sudo installer`
+targets, unattended CLT install, CONOPT in the overnight run log, HU
+answer on HU network, the full day-one run on Intel + Apple Silicon +
+WSL, read-list completeness of `magpie-profile` (expect one denial
+round per platform).
+
+## 11. Teacher to-do before the session
+
+1. Paste `gamslice.txt` between the COURSE_GAMSLICE markers - in this
+   ONE file only (the two old scripts are gone).
+2. Upload `setup-magpie.sh` to Moodle (licence inside = course-only).
+3. Run the live tests in 10; extend the profile read-list if a denial
+   appears.
+4. Bookmark the feed; archive it after the session.

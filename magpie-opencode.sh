@@ -220,10 +220,14 @@ magpie_stop_keepalive() {
   fi
 }
 
+# Only the lock owner may clean: a second window that exits with
+# "already running" must not kill the FIRST run's sudo keep-alive.
+# The keep-alive only ever starts once the lock is held; the fast path
+# stops a stale one via the explicit call in magpie_launch.
 magpie_cleanup() {
-  magpie_stop_keepalive
   lock="$HOME/magpie/.setup.lock"
   if [ -f "$lock/pid" ] && [ "$(cat "$lock/pid" 2>/dev/null)" = "$$" ]; then
+    magpie_stop_keepalive
     rm -rf "$lock"
   fi
 }

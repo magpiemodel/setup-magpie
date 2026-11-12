@@ -413,13 +413,50 @@ FN_BODY='magpie_sudo_warm' run_fn STUB_SUDO_N_OK=0
 ret_is "prompt starts keepalive" 0
 grep_ok "prompt line" "$STATE/screen.txt" "Type it blind"
 sleep 0.3
-nofile_ok "keepalive pidfile gone after subshell exit" "$FAKE_HOME/magpie/.keepalive.pid"
+kp=$(cat "$FAKE_HOME/magpie/.keepalive.pid" 2>/dev/null || echo "")
+if [ -n "$kp" ] && kill -0 "$kp" 2>/dev/null; then
+  ok "no-lock exit leaves keep-alive and pidfile"
+else
+  no "no-lock exit leaves keep-alive and pidfile"
+fi
+[ -n "$kp" ] && kill "$kp" 2>/dev/null
+rm -f "$FAKE_HOME/magpie/.keepalive.pid"
 new_env
 make_installed
 FN_BODY='magpie_sudo_warm; magpie_launch' run_fn STUB_SUDO_N_OK=0
 ret_is "launch after prompt exits 0" 0
 grep_ok "launch stopped keep-alive" "$STATE/keepalive_at_launch.txt" "dead"
 nofile_ok "keepalive pidfile gone after launch" "$FAKE_HOME/magpie/.keepalive.pid"
+
+# ============================================================
+sec "cleanup ownership"
+# ============================================================
+# Owner (lock held) exit: stops its keep-alive, removes the lock.
+new_env
+FN_BODY='magpie_take_lock; magpie_start_keepalive; cat "$HOME/magpie/.keepalive.pid" > "$STATE/ka.pid"' run_fn
+ret_is "owner run exits 0" 0
+sleep 0.2
+kp=$(cat "$STATE/ka.pid" 2>/dev/null || echo "")
+nofile_ok "owner exit removes pidfile" "$FAKE_HOME/magpie/.keepalive.pid"
+nofile_ok "owner exit removes lock" "$FAKE_HOME/magpie/.setup.lock"
+if [ -n "$kp" ] && kill -0 "$kp" 2>/dev/null; then no "owner exit kills keep-alive"; else ok "owner exit kills keep-alive"; fi
+# Non-owner exit ("already running"): zero side effects on the
+# owner's keep-alive, pidfile and lock - the escalated baseline bug.
+new_env
+mkdir -p "$FAKE_HOME/magpie/.setup.lock"
+sleep 60 &
+OWNERPID=$!
+echo "$OWNERPID" > "$FAKE_HOME/magpie/.setup.lock/pid"
+sleep 60 &
+KAPID=$!
+echo "$KAPID" > "$FAKE_HOME/magpie/.keepalive.pid"
+FN_BODY='magpie_take_lock' run_fn
+ret_is "non-owner exits 0" 0
+grep_ok "non-owner heads-up line" "$STATE/screen.txt" "already running in another window"
+file_ok "non-owner leaves pidfile" "$FAKE_HOME/magpie/.keepalive.pid"
+if kill -0 "$KAPID" 2>/dev/null; then ok "non-owner leaves owner keep-alive alive"; else no "non-owner leaves owner keep-alive alive"; fi
+file_ok "non-owner leaves lock" "$FAKE_HOME/magpie/.setup.lock/pid"
+kill "$OWNERPID" "$KAPID" 2>/dev/null
 
 # ============================================================
 sec "TERM trap cleanup"

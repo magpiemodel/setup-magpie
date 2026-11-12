@@ -14,8 +14,8 @@ day after:
 2. Later runs: starts `opencode` in the sandbox directly (fast path), in
    well under a second, without touching sudo or the network.
 
-Essential subset of `setup-ubuntu.sh` / `setup-macos.sh`. Out of scope
-here (the full course scripts keep these): GAMS, licence, R, TinyTeX,
+Essential subset of `setup-magpie.sh` (the full course setup). Out of
+scope here (the course script keeps these): GAMS, licence, R, TinyTeX,
 pandoc, renv, sandbox self-check gate.
 
 Works on macOS (Apple Silicon and Intel) and WSL Ubuntu. No Homebrew -
@@ -57,7 +57,8 @@ ntfy status feed, no code name - nothing is uploaded anywhere.
   and auto-retry lines, and the `##` help block.
 - Resilience extras: disk guard (< 4 GB free = abort with cleanup hint),
   setup-path lock so two windows cannot install at once, `INT`/`TERM`
-  traps so Ctrl+C always reaps the keep-alive loop.
+  traps so Ctrl+C always reaps the keep-alive loop of the owner -
+  non-owner exits never touch it.
 - Everything the script writes lives under `~/magpie`, created first.
   That includes the log, so the magpie clone must cope with a non-empty
   target: `git init` + fetch + checkout instead of `git clone`
@@ -76,8 +77,8 @@ ntfy status feed, no code name - nothing is uploaded anywhere.
 ## 3. Files
 
 - `magpie-opencode.sh` - student deliverable (standalone)
-- `spec-essential.md` - this file
-- `setup-ubuntu.sh`, `setup-macos.sh`, `SETUP.md`, `README.md` - untouched
+- `spec-magpie-opencode.md` - this file
+- `setup-magpie.sh`, `README.md` - untouched
 
 ## 4. Pinned block (top of file, machine-filled - not hand-edited per course)
 
@@ -134,7 +135,8 @@ Concurrency lock (setup path only):
 
 - `mkdir ~/magpie/.setup.lock` is atomic everywhere (macOS has no
   flock). On success the pid goes into `~/magpie/.setup.lock/pid`, the
-  EXIT trap removes the dir.
+  EXIT trap of the OWNER (trap pid == pidfile pid) removes the dir and
+  stops the keep-alive.
 - Lock exists: read the pid.
   - pid is our own `$$`: we already own it - an `exec` keeps the pid,
     and an in-process repair re-enters with the same pid. Keep the
@@ -142,13 +144,16 @@ Concurrency lock (setup path only):
     re-armed trap again removes the lock and kills the keep-alive),
     continue.
   - alive (`kill -0`): one line "setup is already running in another
-    window" (fd 4), exit 0.
+    window" (fd 4), exit 0. This non-owner exit has NO side effects:
+    the EXIT trap is gated on ownership, so it leaves the owner's
+    lock and keep-alive untouched.
   - dead (crash residue): remove and take the lock.
 - The lock is held for the whole life of the setup-path process, also
   during the opencode session and across pass-2/repair execs (same
   pid). No other window can install while a setup is live.
 - `trap 'exit 130' INT TERM`: Ctrl+C then still runs the EXIT trap, so
-  the sudo keep-alive loop never outlives the script.
+  the owner's sudo keep-alive loop never outlives its script. Non-owner
+  exits never stop it - only the owner does, or the launch step (6.11).
 
 On a clean run the script only exits 0 after opencode was used and
 closed. A broken install never gets the marker (the smoke test gates it),
@@ -219,8 +224,12 @@ path (escape hatch for the TA).
   `sudo -n true` every 60 s, self-exit after 90 iterations. Writes its
   pid to `~/magpie/.keepalive.pid`; before spawning, a live pid is
   detected with `kill -0` (a second pass must not stack loops). Stopped
-  on EXIT and ALWAYS at the start of the launch step (6.11): the
-  sandboxed opencode must never find a warm sudo credential.
+  when the lock OWNER exits (the EXIT trap is gated on lock ownership,
+  5) and ALWAYS at the start of the launch step (6.11) - the launch
+  stops it even on the fast path, where no lock is held. Non-owner
+  exits never touch it: a second window must not kill the running
+  owner's loop. The sandboxed opencode must never find a warm sudo
+  credential.
 - When is sudo asked: only inside a sudo-requiring step that actually
   runs (apt or CLT) - both bodies warm up through this same loop first.
   Machines that skip those steps (git+curl present, CLT installed) see
@@ -553,8 +562,10 @@ tar/nono/opencode`), like the existing
   persistent failure (3 fails) triggers pass 2; pass 2 failure prints
   the help block and exits 1; `MAGPIE_PASS` never reaches 3.
 - keep-alive: loop spawned once; detected through the pidfile on pass 2;
-  killed on exit AND before launch (the stub `nono run` records whether
-  the pidfile was still alive at the launch instant).
+  killed on the OWNER's exit AND before launch (the stub `nono run`
+  records whether the pidfile was still alive at the launch instant);
+  a non-owner exit ("already running", no lock ever taken) leaves the
+  loop and its pidfile untouched.
 - sudo loop: stubbed `sudo -v` failing N times then succeeding - loop
   must not print the help block for N < cap; help block at cap.
 - sudo timing: day-one setup with git+curl present -> ZERO sudo
@@ -590,8 +601,8 @@ tar/nono/opencode`), like the existing
   no installs; stale lock (dead pid) -> reclaimed silently;
   pass-2 exec and in-process second pass -> lock seen as self-owned,
   setup continues (must NOT exit with "already running").
-- traps: SIGINT mid-setup -> EXIT trap ran -> keep-alive pid gone
-  (`kill -0` fails), lock dir removed.
+- traps: SIGINT mid-setup (lock held = owner) -> EXIT trap ran ->
+  keep-alive pid gone (`kill -0` fails), lock dir removed.
 - pinned block: placeholder value present -> instant help block,
   nothing else runs; all filled -> no message.
 - heads-up lines: printed exactly once per step that RUNS, zero for
