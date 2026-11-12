@@ -3,7 +3,8 @@
 # One file, run with: bash setup-magpie.sh. Safe to rerun.
 # Installs: git/curl (or Xcode CLT), opencode, nono, HU config, course tools
 # (apt libs | pinned pkgs), TinyTeX, GAMS + licence, nono profile, magpie
-# clone. Then checks (unsandboxed + sandbox gate) and the next steps.
+# clone, renv restore. Then checks (unsandboxed + sandbox gate), one full
+# default run inside the sandbox, and the next steps.
 # Valid POSIX sh - no bashisms.
 
 # ============================================================
@@ -73,9 +74,10 @@ COURSE_GAMSLICE
 
 set -u
 
-# Timing knobs (seconds) + disk tiers (GB). Env-overridable.
-MAGPIE_DISK_WARN_GB="${MAGPIE_DISK_WARN_GB:-15}"
-MAGPIE_DISK_ABORT_GB="${MAGPIE_DISK_ABORT_GB:-6}"
+# Timing knobs (seconds) + disk tiers (GB, full run included).
+# Env-overridable.
+MAGPIE_DISK_WARN_GB="${MAGPIE_DISK_WARN_GB:-18}"
+MAGPIE_DISK_ABORT_GB="${MAGPIE_DISK_ABORT_GB:-9}"
 MAGPIE_RETRY_SECS="${MAGPIE_RETRY_SECS:-10}"
 MAGPIE_RETRY_SECS2="${MAGPIE_RETRY_SECS2:-30}"
 MAGPIE_PASS_SECS="${MAGPIE_PASS_SECS:-30}"
@@ -87,6 +89,13 @@ MAGPIE_SUDO_RETRY_SECS="${MAGPIE_SUDO_RETRY_SECS:-2}"
 MAGPIE_MAGPIE_URL="${MAGPIE_MAGPIE_URL:-https://github.com/magpiemodel/magpie.git}"
 
 MAGPIE_HANDLE_FILE="$HOME/.magpie-course-handle"
+
+# Deterministic cache folders. The nono profile allows writes in them and
+# the sandboxed children get them passed in, so the values stay fixed
+# (not env-overridable).
+MADRAT_CACHE="$HOME/.madrat"
+RENV_PATHS_CACHE="$HOME/.cache/R/renv"
+export MADRAT_CACHE RENV_PATHS_CACHE
 
 # ---------------- screen, log ----------------
 
@@ -775,6 +784,21 @@ magpie_register_hu_key() {
   fi
 }
 
+# The nono profile grants write to these two folders, so the folder tree
+# must exist before any sandboxed child runs.
+magpie_register_caches() {
+  mkdir -p "$MADRAT_CACHE" "$RENV_PATHS_CACHE" || return 1
+  touch "$MAGPIE_RC" 2>/dev/null || true
+  if ! grep -q MADRAT_CACHE "$MAGPIE_RC" 2>/dev/null; then
+    printf 'export MADRAT_CACHE="%s"\n' "$MADRAT_CACHE" >> "$MAGPIE_RC"
+    magpie_log "MADRAT_CACHE exported to $MAGPIE_RC"
+  fi
+  if ! grep -q RENV_PATHS_CACHE "$MAGPIE_RC" 2>/dev/null; then
+    printf 'export RENV_PATHS_CACHE="%s"\n' "$RENV_PATHS_CACHE" >> "$MAGPIE_RC"
+    magpie_log "RENV_PATHS_CACHE exported to $MAGPIE_RC"
+  fi
+}
+
 # ---------------- course tools ----------------
 
 magpie_have_r() {
@@ -1141,7 +1165,9 @@ magpie_pull_nono_profile() {
 }
 
 # Course profile on top of the pinned opencode pack: read-list for
-# GAMS, R, gfortran, TinyTeX and the licence folder.
+# GAMS, R, gfortran, TinyTeX and the licence folder; write-list for the
+# madrat + renv cache folders (the sandboxed full run downloads and
+# restores through them).
 magpie_build_nono_profile() {
   dir="$HOME/.config/nono/profiles"
   f="$dir/magpie-profile.json"
@@ -1161,7 +1187,13 @@ magpie_build_nono_profile() {
       "/Library/Frameworks/R.framework",
       "/usr/local/gfortran",
       "$HOME/.TinyTeX",
-      "$HOME/Library/Application Support/GAMS"
+      "$HOME/Library/Application Support/GAMS",
+      "$MADRAT_CACHE",
+      "$RENV_PATHS_CACHE"
+    ],
+    "write": [
+      "$MADRAT_CACHE",
+      "$RENV_PATHS_CACHE"
     ]
   }
 }
@@ -1177,7 +1209,13 @@ EOF
   "filesystem": {
     "read": [
       "$HOME/gams",
-      "$HOME/.TinyTeX"
+      "$HOME/.TinyTeX",
+      "$MADRAT_CACHE",
+      "$RENV_PATHS_CACHE"
+    ],
+    "write": [
+      "$MADRAT_CACHE",
+      "$RENV_PATHS_CACHE"
     ]
   }
 }
@@ -1252,8 +1290,8 @@ magpie_clone_magpie() {
   for entry in $(ls -A "$HOME/magpie" 2>/dev/null); do
     case $entry in
       .git|setup-log.txt|setup-help.txt|.setup-finished|.setup.lock| \
-      .keepalive.pid|opencode-dl.tgz|opencode-extract|nono-dl.tar.gz| \
-      nono-extract|setup-dl-*) ;;
+      .keepalive.pid|.setup-fullrun-ok|opencode-dl.tgz|opencode-extract| \
+      nono-dl.tar.gz|nono-extract|setup-dl-*) ;;
       *)
         magpie_fail "magpie folder exists but is not a magpie clone - move it away or delete it"
         ;;
@@ -1264,6 +1302,46 @@ magpie_clone_magpie() {
     magpie_step_failed "magpie clone" "wifi"
   fi
   magpie_say "OK: magpie cloned"
+}
+
+# ---------------- renv library ----------------
+
+# The project library load test - shared by the checks and this step.
+magpie_renv_lib_ok() {
+  ( cd "$HOME/magpie" \
+    && Rscript -e 'suppressMessages(library(lucode2)); suppressMessages(library(gms))' \
+  ) >/dev/null 2>&1
+}
+
+# The shipped renv/activate.R never asks anything - it only bootstraps
+# the renv package itself, so it is safe to run non-interactively.
+magpie_renv_restore_body() {
+  ( cd "$HOME/magpie" || exit 1
+    if ! Rscript -e 'quit(status = if (requireNamespace("renv", quietly = TRUE)) 0 else 1)' \
+      2>/dev/null; then
+      Rscript -e 'source("renv/activate.R")' || exit 1
+    fi
+    Rscript -e 'renv::restore(prompt = FALSE, restart = FALSE)' || exit 1
+  ) || return 1
+  magpie_renv_lib_ok
+}
+
+# Fill the renv library the clone ships, so checks and runs use it.
+magpie_step_renv_restore() {
+  if [ ! -f "$HOME/magpie/renv.lock" ]; then
+    magpie_log "renv restore: no renv.lock - skipped"
+    return 0
+  fi
+  if magpie_renv_lib_ok; then
+    magpie_log "renv library: already populated"
+    return 0
+  fi
+  magpie_say_progress "renv library restore" "about 5-15 min, just wait"
+  if ! magpie_retry 3 magpie_renv_restore_body; then
+    magpie_step_failed "renv restore" "wifi"
+  fi
+  magpie_say "OK: renv library restored"
+  magpie_report "setup: renv restored"
 }
 
 # ---------------- checks (unsandboxed + sandbox child) ----------------
@@ -1327,15 +1405,30 @@ magpie_run_checks() {
 
   # Only when the clone holds a renv.lock: load the restored library.
   if [ -f "$HOME/magpie/renv.lock" ]; then
-    if ( cd "$HOME/magpie" \
-      && Rscript -e 'suppressMessages(library(lucode2)); suppressMessages(library(gms))' \
-    ) >/dev/null 2>&1; then
+    if magpie_renv_lib_ok; then
       magpie_check_line PASS "renv R library (lucode2, gms load)"
     else
       magpie_check_line FAIL "renv R library incomplete - in ~/magpie run: Rscript -e 'renv::restore()'"
     fi
   else
     magpie_check_line SKIP "renv check (no ~/magpie/renv.lock yet)"
+  fi
+
+  # Full default run: marker + artifacts only - cheap and read-only,
+  # it also runs inside the sandbox gate child.
+  if [ "${MAGPIE_FULL_RUN:-1}" = "0" ]; then
+    magpie_check_line SKIP "full run (skipped via MAGPIE_FULL_RUN=0)"
+  else
+    fullrel=""
+    [ -f "$HOME/magpie/.setup-fullrun-ok" ] \
+      && fullrel=$(cat "$HOME/magpie/.setup-fullrun-ok" 2>/dev/null || echo "")
+    if [ -z "$fullrel" ]; then
+      magpie_check_line SKIP "full run (starts at the end of this setup)"
+    elif magpie_full_run_complete "$HOME/magpie/$fullrel"; then
+      magpie_check_line PASS "full run ($fullrel)"
+    else
+      magpie_check_line FAIL "full run artifacts missing - rerun this file"
+    fi
   fi
 
   magpie_say ""
@@ -1358,7 +1451,8 @@ magpie_run_checks() {
 }
 
 # Final gate: the same checks again, inside the course sandbox.
-# PATH is passed explicitly - bash does not source rc files here.
+# PATH and the cache dirs are passed explicitly - bash does not source
+# rc files here.
 magpie_sandbox_gate() {
   if [ -z "${MAGPIE_SELF:-}" ]; then
     magpie_fail "sandbox gate: cannot locate this file - run it as a file, not pasted"
@@ -1367,19 +1461,116 @@ magpie_sandbox_gate() {
   magpie_say "Final check inside the course sandbox (nono, profile magpie-profile)..."
   ( cd "$HOME/magpie" && nono run --profile magpie-profile -- \
     env MAGPIE_CHECK_ONLY=1 "PATH=${texbin:+$texbin:}$PATH" \
+    "MADRAT_CACHE=$MADRAT_CACHE" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
     bash "$MAGPIE_SELF" --check-only )
+}
+
+# ---------------- full default run (sandboxed) ----------------
+
+# Solve + default postprocessing done? The run-folder submit.R stops
+# without fulldata.gdx, and report.rds/report.mif are written by the
+# last default output script (rds_report). full.lst = GAMS listing.
+magpie_full_run_complete() {
+  [ -f "$1/fulldata.gdx" ] && [ -f "$1/full.lst" ] \
+    && [ -f "$1/report.rds" ] && [ -f "$1/report.mif" ]
+}
+
+# Newest complete run folder under output/ ("" if none). Folder names
+# are default_<timestamp> (cfg$results_folder), so lexical = newest last.
+magpie_latest_full_run() {
+  out="$HOME/magpie/output"
+  if [ ! -d "$out" ]; then
+    return 0
+  fi
+  # Run folder names are fixed pattern, no spaces (see grep).
+  # shellcheck disable=SC2010,SC2045,SC2046
+  for name in $(ls -1 "$out" 2>/dev/null | grep -E \
+    '^default_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}\.[0-9]{2}\.[0-9]{2}$' | sort -r); do
+    if magpie_full_run_complete "$out/$name"; then
+      printf '%s\n' "$name"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# $1: PATH for the sandboxed child (tex + GAMS dirs included).
+magpie_full_run_body() {
+  # Two "n" lines answer start.R's "Update now?" and fixDeps prompts:
+  # the restored lockfile versions stay untouched. Not </dev/null -
+  # EOF makes gms::getLine return character(0), which crashes the &&.
+  if [ "$MAGPIE_OS" = "darwin" ]; then
+    # shellcheck disable=SC2016  # $HOME expands in the sandbox child, not here.
+    printf 'n\nn\n' | ( cd "$HOME/magpie" && caffeinate -is nono run --profile magpie-profile -- \
+      env "MADRAT_CACHE=$MADRAT_CACHE" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
+      "PATH=$1" \
+      bash -c 'cd "$HOME/magpie" && Rscript start.R runscripts=default.R submit=direct' )
+  else
+    # shellcheck disable=SC2016  # $HOME expands in the sandbox child, not here.
+    printf 'n\nn\n' | ( cd "$HOME/magpie" && nono run --profile magpie-profile -- \
+      env "MADRAT_CACHE=$MADRAT_CACHE" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
+      "PATH=$1" \
+      bash -c 'cd "$HOME/magpie" && Rscript start.R runscripts=default.R submit=direct' )
+  fi
+}
+
+# One full default run inside the course sandbox. ONE attempt - start.R
+# swallows run errors, so a NEW complete run folder decides, not the
+# exit code. Any failure goes straight to the help block.
+magpie_step_full_run() {
+  marker="$HOME/magpie/.setup-fullrun-ok"
+  if [ "${MAGPIE_FULL_RUN:-1}" = "0" ]; then
+    magpie_say "Full run skipped (MAGPIE_FULL_RUN=0) - run it yourself: cd ~/magpie, then Rscript start.R"
+    magpie_report "setup: full run skipped (MAGPIE_FULL_RUN=0)"
+    return 0
+  fi
+  fullrel=""
+  [ -f "$marker" ] && fullrel=$(cat "$marker" 2>/dev/null || echo "")
+  if [ -n "$fullrel" ] && magpie_full_run_complete "$HOME/magpie/$fullrel"; then
+    magpie_log "full run: marker verified ($fullrel)"
+    return 0
+  fi
+  runpath=$PATH
+  texbin=$(magpie_texbin)
+  if [ -n "$texbin" ]; then
+    runpath="$texbin:$runpath"
+  fi
+  if [ "$MAGPIE_OS" = "linux" ]; then
+    gamsdir=$(magpie_find_gams_dir) && runpath="$gamsdir:$runpath"
+  elif [ -d "/Library/Frameworks/GAMS.framework/Resources" ]; then
+    runpath="/Library/Frameworks/GAMS.framework/Resources:$runpath"
+  fi
+  magpie_say "[$(magpie_now)] - full magpie run, about 40 min, keep the laptop plugged in and awake"
+  magpie_report "setup: full run start"
+  before=$(magpie_latest_full_run)
+  if ! magpie_full_run_body "$runpath"; then
+    magpie_fail "full magpie run (check the run folder under ~/magpie)" "wifi"
+  fi
+  after=$(magpie_latest_full_run)
+  if [ -z "$after" ] || [ "$after" = "$before" ]; then
+    magpie_fail "full magpie run (check the run folder under ~/magpie)" "wifi"
+  fi
+  printf 'output/%s\n' "$after" > "$marker"
+  magpie_say "OK: full magpie run finished (output/$after)"
+  magpie_report "setup: full run finished"
 }
 
 magpie_print_next_steps() {
   magpie_say ""
   magpie_say "NEXT STEPS (same on the course page):"
   magpie_say "  cd ~/magpie"
-  magpie_say "  Rscript -e 'renv::restore()'        # type y if asked, ~1-2 GB"
-  magpie_say "  rerun this setup file once more inside ~/magpie (final check)"
-  if [ "$MAGPIE_OS" = "darwin" ]; then
-    magpie_say "  caffeinate -is Rscript start.R      # choose 1, then 1 - runs overnight"
+  fullrel=""
+  [ -f "$HOME/magpie/.setup-fullrun-ok" ] \
+    && fullrel=$(cat "$HOME/magpie/.setup-fullrun-ok" 2>/dev/null || echo "")
+  if [ -n "$fullrel" ]; then
+    magpie_say "  Full default run: done -> $fullrel (report.rds inside)"
   else
-    magpie_say "  Rscript start.R                     # choose 1, then 1 - runs overnight"
+    magpie_say "  Full default run: skipped (MAGPIE_FULL_RUN=0) - do it with the line below"
+  fi
+  if [ "$MAGPIE_OS" = "darwin" ]; then
+    magpie_say "  Your own scenario: caffeinate -is Rscript start.R   # choose 1, then 1"
+  else
+    magpie_say "  Your own scenario: Rscript start.R                  # choose 1, then 1"
   fi
   magpie_say "Laptop: plugged into power, lid open / sleep off, overnight."
 }
@@ -1406,6 +1597,9 @@ magpie_setup_path() {
     magpie_step_failed "opencode config"
   fi
   magpie_register_hu_key
+  if ! magpie_register_caches; then
+    magpie_step_failed "cache folders"
+  fi
 
   magpie_step_course_tools
   magpie_step_tinytex
@@ -1417,6 +1611,7 @@ magpie_setup_path() {
   magpie_pull_nono_profile
   magpie_step_magpie_profile
   magpie_clone_magpie
+  magpie_step_renv_restore
 
   # Reproducible-failure model: any check FAIL ends the run with the
   # help block - the old "continue after FAIL" is gone.
@@ -1424,7 +1619,8 @@ magpie_setup_path() {
     magpie_fail "checks" "" "$MAGPIE_CHECK_RESULTS"
   fi
 
-  # No warm sudo credential may exist while the sandboxed child runs.
+  # No warm sudo credential may exist while a sandboxed child runs
+  # (gate + full run).
   magpie_stop_keepalive
   if ! magpie_sandbox_gate; then
     hint=""
@@ -1434,6 +1630,7 @@ magpie_setup_path() {
     magpie_step_failed "sandbox gate" "$hint"
   fi
 
+  magpie_step_full_run
   magpie_print_next_steps
   magpie_report "setup: run finished"
   exit 0

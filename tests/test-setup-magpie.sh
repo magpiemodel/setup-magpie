@@ -108,7 +108,7 @@ build_template() {
   # Only these core tools exist for the tested script (host tex/pandoc/
   # Rscript/gams on PATH would shadow the stubs and trigger REAL downloads).
   for tool in bash cmp awk basename cat chmod cp cut date dirname env git \
-    head ln ls mkdir mv od rm sed sha256sum shasum sleep stat tail tar gzip \
+    head ln ls mkdir mv od rm sed sha256sum shasum sleep sort stat tail tar gzip \
     tr touch grep mktemp sh uname; do
     src=$(command -v "$tool" || true)
     [ -n "$src" ] && ln -sf "$src" "$MINBIN/$tool"
@@ -155,7 +155,7 @@ case "$1" in
     ;;
   run)
     case "$*" in
-      *magpie-profile*)
+      *--check-only*)
         # Keep-alive state AT the gate instant: the discriminating
         # evidence that the script stops it before the sandbox runs.
         if [ -f "$HOME/magpie/.keepalive.pid" ]; then
@@ -164,6 +164,21 @@ case "$1" in
           echo dead >> "$STATE/keepalive_at_gate.txt"
         fi
         exit "${STUB_NONO_GATE_EXIT:-0}"
+        ;;
+      *runscripts=default.R*)
+        # Full-run request: probe the keep-alive the same way, then
+        # re-enact the inner bash -c payload so the stub Rscript
+        # fakes the run folder + artifacts.
+        if [ -f "$HOME/magpie/.keepalive.pid" ]; then
+          echo alive >> "$STATE/keepalive_at_gate.txt"
+        else
+          echo dead >> "$STATE/keepalive_at_gate.txt"
+        fi
+        if [ "${STUB_FULLRUN_FAIL:-0}" = "1" ]; then exit 1; fi
+        last=""
+        for a in "$@"; do last=$a; done
+        sh -c "$last"
+        exit $?
         ;;
     esac
     exit 0
@@ -188,7 +203,36 @@ case "$*" in
     exit 0
     ;;
   *"install.packages"*) exit 0 ;;
-  *"library(lucode2)"*) exit "${STUB_RENV_EXIT:-0}" ;;
+  *requireNamespace*renv*) exit "${STUB_RENV_PKG_EXIT:-0}" ;;
+  *"renv/activate.R"*) exit "${STUB_RENV_ACTIVATE_EXIT:-0}" ;;
+  *"renv::restore"*)
+    # A restore makes the project library loadable from then on.
+    touch "$STATE/renv_restored"
+    exit "${STUB_RENV_RESTORE_EXIT:-0}"
+    ;;
+  *"library(lucode2)"*)
+    if [ -f "$STATE/renv_restored" ]; then exit 0; fi
+    exit "${STUB_RENV_EXIT:-0}"
+    ;;
+  *"start.R"*"runscripts=default.R"*)
+    # Optional stdin capture: proves the caller feeds the prompt answers.
+    if [ "${STUB_FULLRUN_CAPTURE:-0}" = "1" ]; then
+      cat > "$STATE/fullrun_stdin"
+    fi
+    # Simulated magpie run: a results folder named like
+    # start_functions.R builds it (default_<timestamp>); the counter
+    # keeps successive names unique and ordered.
+    c="$STATE/run_counter"; n=$(cat "$c" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$c"
+    name=$(date -d "@$(( $(date +%s) + n ))" +%Y-%m-%d_%H.%M.%S 2>/dev/null) \
+      || name=$(date +%Y-%m-%d_%H.%M.%S)
+    d="$HOME/magpie/output/default_$name"
+    if [ "${STUB_FULLRUN_NOTHING:-0}" = "1" ]; then exit 0; fi
+    mkdir -p "$d"
+    touch "$d/fulldata.gdx" "$d/full.lst"
+    if [ "${STUB_FULLRUN_NO_OUTPUT:-0}" = "1" ]; then exit 0; fi
+    touch "$d/report.rds" "$d/report.mif"
+    exit "${STUB_FULLRUN_RSCRIPT_EXIT:-0}"
+    ;;
 esac
 exit 0
 EOS
@@ -228,6 +272,18 @@ if [ "$1" = "-v" ]; then
   touch "$STATE/sudo_stamp"
   exit 0
 fi
+exec "$@"
+EOS
+  # caffeinate: logs the wrap, then runs the real command (mac path).
+  cat > "$FAKE_BIN/caffeinate" <<'EOS'
+#!/bin/sh
+echo "caffeinate $*" >> "$STATE/caffeinate.log"
+while [ $# -gt 0 ]; do
+  case $1 in
+    -*) shift ;;
+    *) break ;;
+  esac
+done
 exec "$@"
 EOS
   # curl: feed POSTs (--data-binary) -> feed.log; archives -> state files.
@@ -383,7 +439,10 @@ EOS
   git init --bare -q -b main "$STATE/origin.git"
   git clone -q "file://$STATE/origin.git" "$ENV/seed" 2>/dev/null
   echo "readme" > "$ENV/seed/README.md"
-  git -C "$ENV/seed" add README.md >/dev/null
+  # Fixture: magpie master gitignores /renv.lock; the seed ships one so
+  # the restore branches and the renv checks run in E2E.
+  printf '%s\n' '{"R": {"Version": "4.4.0"}}' > "$ENV/seed/renv.lock"
+  git -C "$ENV/seed" add README.md renv.lock >/dev/null
   git -C "$ENV/seed" -c user.email=t@t -c user.name=t commit -q -m init >/dev/null
   git -C "$ENV/seed" push -q origin main >/dev/null 2>&1
 
@@ -442,7 +501,7 @@ base_env() {
   export MAGPIE_KEEPALIVE_SECS=0.05 MAGPIE_SUDO_RETRY_SECS=0
   export MAGPIE_MAGPIE_URL="file://$STATE/origin.git"
   unset MAGPIE_SOURCED MAGPIE_SELF MAGPIE_PASS MAGPIE_PACK_FORCE
-  unset MAGPIE_CHECK_ONLY STUB_GAMS_BANNER
+  unset MAGPIE_CHECK_ONLY STUB_GAMS_BANNER MAGPIE_FULL_RUN
 }
 
 fill_pins() {
@@ -505,7 +564,7 @@ run_fn() {
     fill_pins
     magpie_arm_traps
     mkdir -p "$FAKE_HOME/magpie"
-    eval "$FN_BODY" >> "$FAKE_HOME/magpie/setup-log.txt" 2>&1
+    eval "$FN_BODY" </dev/null >> "$FAKE_HOME/magpie/setup-log.txt" 2>&1
   ) 4> "$STATE/screen.txt"
   RET=$?
 }
@@ -553,11 +612,6 @@ if command -v dash >/dev/null 2>&1; then
 else
   echo "  (dash not installed - skipped)"
 fi
-if command -v zsh >/dev/null 2>&1; then
-  if zsh -n "$SCRIPT" 2>/dev/null; then ok "zsh -n"; else no "zsh -n"; fi
-else
-  echo "  (zsh not installed - skipped)"
-fi
 if command -v shellcheck >/dev/null 2>&1; then
   if shellcheck -s sh "$SCRIPT" >/dev/null 2>&1; then ok "shellcheck"; else no "shellcheck"; fi
 else
@@ -598,6 +652,15 @@ new_env
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_check_disk' run_fn STUB_DF_AVAIL_KB=200000000
 ret_is "enough disk passes quietly" 0
 grep_no "no warning" "$STATE/screen.txt" "WARNING"
+# New tiers (full run included): abort below 9 GB, warn below 18 GB.
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_check_disk' run_fn STUB_DF_AVAIL_KB=7000000
+ret_is "6 GB free aborts under new tier" 1
+grep_ok "FAIL low disk fed (new tier)" "$STATE/feed.log" "FAIL low disk"
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_check_disk' run_fn STUB_DF_AVAIL_KB=16000000
+ret_is "15 GB free warns under new tier" 0
+grep_ok "warning at 15 GB" "$STATE/screen.txt" "WARNING: only 15 GB"
 
 # ============================================================
 sec "root guard"
@@ -726,6 +789,19 @@ nofile_ok "keepalive pidfile gone" "$FAKE_HOME/magpie/.keepalive.pid"
 grep_ok "gate args: profile" "$STATE/nono.log" "--profile magpie-profile"
 grep_ok "gate args: check-only child" "$STATE/nono.log" "--check-only"
 grep_ok "gate args: env switch" "$STATE/nono.log" "MAGPIE_CHECK_ONLY=1"
+grep_ok "gate args: madrat cache passed" "$STATE/nono.log" "MADRAT_CACHE="
+grep_ok "gate args: renv cache passed" "$STATE/nono.log" "RENV_PATHS_CACHE="
+
+# ============================================================
+sec "cache folders + rc lines"
+# ============================================================
+new_env
+FN_BODY='MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_register_caches; magpie_register_caches' run_fn
+ret_is "caches registered" 0
+file_ok "madrat dir created" "$FAKE_HOME/.madrat"
+file_ok "renv cache dir created" "$FAKE_HOME/.cache/R/renv"
+cnt_is "MADRAT rc line deduped" "MADRAT_CACHE" "$FAKE_HOME/.bashrc" 1
+cnt_is "RENV rc line deduped" "RENV_PATHS_CACHE" "$FAKE_HOME/.bashrc" 1
 
 # ============================================================
 sec "TERM trap cleanup"
@@ -937,6 +1013,25 @@ grep_ok "linux read list holds gams" "$PJSON" "$FAKE_HOME/gams"
 grep_ok "linux read list holds TinyTeX" "$PJSON" "$FAKE_HOME/.TinyTeX"
 grep_ok "validate called" "$STATE/nono.log" "profile validate"
 new_env
+put_nono
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
+ret_is "linux profile has cache write paths" 0
+PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+grep_ok "write section present" "$PJSON" '"write"'
+grep_ok "write holds madrat" "$PJSON" "$FAKE_HOME/.madrat"
+grep_ok "write holds renv cache" "$PJSON" ".cache/R/renv"
+grep_ok "read holds madrat too" "$PJSON" "$FAKE_HOME/.madrat"
+new_env
+put_nono
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
+ret_is "darwin profile built" 0
+PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+grep_ok "darwin keeps gams framework read" "$PJSON" "/Library/Frameworks/GAMS.framework"
+grep_ok "darwin keeps gfortran read" "$PJSON" "/usr/local/gfortran"
+grep_ok "darwin write section present" "$PJSON" '"write"'
+grep_ok "darwin write holds madrat" "$PJSON" "$FAKE_HOME/.madrat"
+grep_ok "darwin write holds renv cache" "$PJSON" ".cache/R/renv"
+new_env
 mkdir -p "$FAKE_HOME/.config/nono/profiles"
 echo "changed by student" > "$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
 put_nono
@@ -1083,13 +1178,19 @@ new_env
 make_installed
 rm -rf "$FAKE_HOME/magpie/.git"
 # magpie-opencode's finish marker is foreign state but tolerated (never
-# written here - magpie_setup_path comment).
+# written here - magpie_setup_path comment). The full run marker is
+# own state and tolerated by the guard too (the run then FAILs later at
+# the stale marker - proof: the clone itself proceeds).
 printf '2026-01-01 00:00:00\nnono 0.81.0\nopencode 2.2.7\n' \
   > "$FAKE_HOME/magpie/.setup-finished"
+printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/magpie/.setup-fullrun-ok"
 run_e2e
-ret_is "leftover .setup-finished tolerated -> clone proceeds" 0
+ret_is "markers tolerated by guard, run fails on stale marker" 1
+grep_no "no false foreign-dir abort" "$STATE/screen.txt" "not a magpie clone"
 file_ok "clone recreated .git" "$FAKE_HOME/magpie/.git"
-grep_ok "existing marker kept untouched" "$FAKE_HOME/magpie/.setup-finished" "nono 0.81.0"
+grep_ok "clone happened" "$STATE/screen.txt" "OK: magpie cloned"
+grep_ok "stale marker FAIL line" "$STATE/screen.txt" "FAIL full run artifacts missing - rerun this file"
+grep_ok "existing opencode marker kept untouched" "$FAKE_HOME/magpie/.setup-finished" "nono 0.81.0"
 new_env
 make_installed
 rm -rf "$FAKE_HOME/magpie/.git"
@@ -1110,6 +1211,248 @@ grep_ok "foreign dir message" "$STATE/screen.txt" "not a magpie clone"
 new_env
 FN_BODY='mkdir -p "$HOME/magpie"; magpie_clone_body && magpie_clone_body' run_fn
 ret_is "clone body idempotent twice" 0
+
+# ============================================================
+sec "renv restore step"
+# ============================================================
+# No renv.lock: skip quietly, no R calls.
+new_env
+make_tools
+mkdir -p "$FAKE_HOME/magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_renv_restore' run_fn
+ret_is "no renv.lock skips quietly" 0
+grep_no "no restore attempt" "$STATE/rscript.log" "renv"
+grep_no "no heads-up when skipped" "$STATE/screen.txt" "installing"
+# Library already loads: skip, restore never called.
+new_env
+make_tools
+mkdir -p "$FAKE_HOME/magpie"
+touch "$FAKE_HOME/magpie/renv.lock"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_renv_restore' run_fn
+ret_is "populated library skips restore" 0
+grep_no "no restore call" "$STATE/rscript.log" "renv::restore"
+grep_no "no heads-up when skipped" "$STATE/screen.txt" "installing"
+# Load test fails: restore runs, verify passes, feed + OK line.
+new_env
+make_tools
+mkdir -p "$FAKE_HOME/magpie"
+touch "$FAKE_HOME/magpie/renv.lock"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_renv_restore' \
+  run_fn STUB_RENV_EXIT=1 STUB_RENV_PKG_EXIT=1
+ret_is "broken library gets restored" 0
+grep_ok "activate.R bootstrapped" "$STATE/rscript.log" "renv/activate.R"
+grep_ok "restore called unprompted" "$STATE/rscript.log" "renv::restore(prompt = FALSE, restart = FALSE)"
+grep_ok "restore heads-up" "$STATE/screen.txt" "installing renv library restore, about 5-15 min"
+grep_ok "OK line" "$STATE/screen.txt" "OK: renv library restored"
+grep_ok "restore fed" "$STATE/feed.log" "setup: renv restored"
+new_env
+make_tools
+mkdir -p "$FAKE_HOME/magpie"
+touch "$FAKE_HOME/magpie/renv.lock"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_renv_restore' \
+  run_fn STUB_RENV_EXIT=1
+grep_no "no bootstrap when renv present" "$STATE/rscript.log" "renv/activate.R"
+grep_ok "restore still called" "$STATE/rscript.log" "renv::restore"
+new_env
+make_tools
+mkdir -p "$FAKE_HOME/magpie"
+touch "$FAKE_HOME/magpie/renv.lock"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_PASS=2 magpie_step_renv_restore' \
+  run_fn STUB_RENV_EXIT=1 STUB_RENV_RESTORE_EXIT=1
+ret_is "persistent restore failure blocks" 1
+grep_ok "renv step named" "$STATE/screen.txt" "FAILED STEP (twice, reproducible): renv restore"
+cnt_is "3 restore attempts" "renv::restore" "$STATE/rscript.log" 3
+
+# ============================================================
+sec "full run step"
+# ============================================================
+# Success path: sandbox command shape + marker + artifacts + feed.
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' run_fn
+ret_is "full run completes" 0
+grep_ok "sandbox run via profile" "$STATE/nono.log" "run --profile magpie-profile -- env"
+grep_ok "madrat cache passed" "$STATE/nono.log" "MADRAT_CACHE="
+grep_ok "renv cache passed" "$STATE/nono.log" "RENV_PATHS_CACHE="
+grep_ok "PATH passed" "$STATE/nono.log" "PATH="
+grep_ok "bash -c payload" "$STATE/nono.log" "bash -c"
+grep_ok "default run script selected" "$STATE/nono.log" "runscripts=default.R submit=direct"
+grep_ok "R script invoked" "$STATE/rscript.log" "start.R runscripts=default.R submit=direct"
+grep_ok "keep-alive dead at full run" "$STATE/keepalive_at_gate.txt" "dead"
+grep_ok "40 min heads-up" "$STATE/screen.txt" "full magpie run, about 40 min"
+grep_ok "OK line" "$STATE/screen.txt" "OK: full magpie run finished"
+grep_ok "feed start" "$STATE/feed.log" "setup: full run start"
+grep_ok "feed finished" "$STATE/feed.log" "setup: full run finished"
+file_ok "marker written" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+grep_ok "marker names run folder" "$FAKE_HOME/magpie/.setup-fullrun-ok" \
+  '^output/default_[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}_[0-9]\{2\}\.[0-9]\{2\}\.[0-9]\{2\}$'
+RUNDIR=$(sed -n 1p "$FAKE_HOME/magpie/.setup-fullrun-ok")
+file_ok "fulldata.gdx present" "$FAKE_HOME/magpie/$RUNDIR/fulldata.gdx"
+file_ok "report.rds present" "$FAKE_HOME/magpie/$RUNDIR/report.rds"
+# start.R update prompts are answered with two "n" lines on stdin, so
+# the run never asks and never auto-updates (locked versions stay).
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' \
+  run_fn STUB_FULLRUN_CAPTURE=1
+ret_is "prompt-fed run completes" 0
+cnt_is "two n answers reach Rscript" "^n$" "$STATE/fullrun_stdin" 2
+# Verified marker: rerun skips without touching the sandbox.
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"
+touch "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/fulldata.gdx \
+  "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/full.lst \
+  "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.rds \
+  "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.mif
+printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/magpie/.setup-fullrun-ok"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' run_fn
+ret_is "verified marker skips the run" 0
+grep_no "no sandbox run" "$STATE/nono.log" "runscripts=default.R"
+grep_no "no R run" "$STATE/rscript.log" "start.R"
+grep_ok "skip logged" "$FAKE_HOME/magpie/setup-log.txt" "full run: marker verified"
+grep_no "no heads-up on skip" "$STATE/screen.txt" "40 min"
+# Non-zero sandbox exit: straight to the help block, no marker.
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_PASS=2 magpie_step_full_run' run_fn STUB_FULLRUN_FAIL=1
+ret_is "non-zero sandbox exit fails" 1
+grep_ok "help block" "$STATE/screen.txt" "##"
+grep_ok "step named" "$STATE/screen.txt" "FAILED STEP (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
+grep_ok "FAIL fed" "$STATE/feed.log" "setup: FAIL full magpie run"
+nofile_ok "no marker on failure" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+# Exit 0 but swallowed run error (no output artifacts): artifacts fail it.
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_PASS=2 magpie_step_full_run' run_fn STUB_FULLRUN_NO_OUTPUT=1
+ret_is "missing postprocessing artifacts fail" 1
+grep_ok "artifact failure named" "$STATE/screen.txt" "FAILED STEP (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
+nofile_ok "no marker without artifacts" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+grep_no "no finished feed line" "$STATE/feed.log" "setup: full run finished"
+# An OLD complete run folder is not accepted as the NEW one (no-op run).
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"
+touch "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/fulldata.gdx \
+  "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/full.lst \
+  "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.rds \
+  "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.mif
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_PASS=2 magpie_step_full_run' run_fn STUB_FULLRUN_NOTHING=1
+ret_is "old folder is not accepted as new" 1
+nofile_ok "no marker without a new folder" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+# Non-zero inner Rscript exit despite COMPLETE artifacts: the exit code
+# fails the step too (spec: non-zero sandbox exit fails regardless).
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_PASS=2 magpie_step_full_run' run_fn STUB_FULLRUN_RSCRIPT_EXIT=1
+ret_is "non-zero exit with complete artifacts fails" 1
+grep_ok "exit-code failure named" "$STATE/screen.txt" "FAILED STEP (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
+nofile_ok "no marker on non-zero exit" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+grep_ok "exit-code FAIL fed" "$STATE/feed.log" "setup: FAIL full magpie run"
+# An old complete folder plus a NEW complete folder: the marker names
+# the NEWEST one (sort direction).
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"
+touch "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/fulldata.gdx \
+  "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/full.lst \
+  "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.rds \
+  "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.mif
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' run_fn
+ret_is "new folder wins over old complete one" 0
+file_ok "marker written (newest wins)" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+grep_no "marker is not the old folder" "$FAKE_HOME/magpie/.setup-fullrun-ok" \
+  "^output/default_2026-01-01_00\\.00\\.00$"
+file_ok "old run folder untouched" \
+  "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00/fulldata.gdx"
+# Escape hatch: MAGPIE_FULL_RUN=0 -> note + feed + return 0, no marker.
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' \
+  run_fn MAGPIE_FULL_RUN=0
+ret_is "escape hatch returns 0" 0
+grep_ok "screen note" "$STATE/screen.txt" "Full run skipped (MAGPIE_FULL_RUN=0)"
+grep_ok "feed note" "$STATE/feed.log" "setup: full run skipped (MAGPIE_FULL_RUN=0)"
+nofile_ok "no marker written" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+grep_no "no sandbox run" "$STATE/nono.log" "runscripts=default.R"
+# macOS: the whole call is wrapped in caffeinate -is.
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' \
+  run_fn STUB_FULLRUN_CAPTURE=1
+ret_is "darwin full run through caffeinate" 0
+grep_ok "caffeinate wraps the call" "$STATE/caffeinate.log" "caffeinate -is nono run --profile magpie-profile"
+file_ok "marker written (darwin)" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+cnt_is "prompt answers survive caffeinate" "^n$" "$STATE/fullrun_stdin" 2
+
+# ============================================================
+sec "full run check line"
+# ============================================================
+new_env
+make_tools
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
+grep_ok "first run must not FAIL" "$STATE/screen.txt" "SKIP full run (starts at the end of this setup)"
+new_env
+make_tools
+mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"
+touch "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/fulldata.gdx \
+  "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/full.lst \
+  "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.rds \
+  "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.mif
+printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/magpie/.setup-fullrun-ok"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
+ret_is "marker + artifacts PASS" 0
+grep_ok "PASS line" "$STATE/screen.txt" "PASS full run (output/default_2026-01-01_00.00.00)"
+new_env
+make_tools
+mkdir -p "$FAKE_HOME/magpie"
+printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/magpie/.setup-fullrun-ok"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
+ret_is "stale marker FAILs" 1
+grep_ok "FAIL line" "$STATE/screen.txt" "FAIL full run artifacts missing - rerun this file"
+# Each single artifact alone makes a folder-with-marker FAIL the check.
+for artifact in fulldata.gdx full.lst report.rds report.mif; do
+  new_env
+  make_tools
+  mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"
+  touch "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/fulldata.gdx \
+    "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/full.lst \
+    "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.rds \
+    "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.mif
+  rm "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00/$artifact"
+  printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/magpie/.setup-fullrun-ok"
+  FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
+  ret_is "missing $artifact alone FAILs the check" 1
+done
+new_env
+make_tools
+mkdir -p "$FAKE_HOME/magpie"
+printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/magpie/.setup-fullrun-ok"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn MAGPIE_FULL_RUN=0
+ret_is "escape hatch check SKIPs" 0
+grep_ok "SKIP via env line" "$STATE/screen.txt" "SKIP full run (skipped via MAGPIE_FULL_RUN=0)"
 
 # ============================================================
 sec "E2E day-one green run"
@@ -1135,11 +1478,20 @@ grep_ok "NOTE IT DOWN on first run" "$S" "NOTE IT DOWN"
 grep_no "no blind sudo prompt" "$S" "Type it blind"
 grep_ok "all checks PASS" "$S" "PASS gams"
 grep_ok "check block printed" "$S" "end of copy block"
-grep_ok "renv SKIP" "$S" "SKIP renv check"
+grep_ok "renv PASS (lock in clone, loads)" "$S" "PASS renv R library"
+grep_ok "full run SKIP before step" "$S" "SKIP full run (starts at the end of this setup)"
+grep_ok "full run heads-up" "$S" "full magpie run, about 40 min"
+grep_ok "full run OK line" "$S" "OK: full magpie run finished"
+grep_ok "next steps: full run done" "$S" "Full default run: done ->"
+grep_ok "next steps: own scenario" "$S" "Rscript start.R"
+grep_no "no manual renv line" "$S" "Rscript -e 'renv::restore()'"
+grep_no "old rerun-setup hint gone" "$S" "rerun this setup file"
 # feed protocol
 grep_ok "feed start" "$STATE/feed.log" "setup: start"
 grep_ok "feed check result block" "$STATE/feed.log" "check result"
 grep_ok "feed PASS gams line" "$STATE/feed.log" "PASS gams"
+grep_ok "feed full run start" "$STATE/feed.log" "setup: full run start"
+grep_ok "feed full run finished" "$STATE/feed.log" "setup: full run finished"
 grep_ok "feed run finished" "$STATE/feed.log" "setup: run finished"
 grep_no "no FAIL on the feed" "$STATE/feed.log" "FAIL"
 # state on disk
@@ -1163,6 +1515,15 @@ grep_ok "pull pinned" "$STATE/nono.log" "pull nolabs-ai/opencode@9.9.9"
 grep_ok "gate ran" "$STATE/nono.log" "--profile magpie-profile"
 grep_ok "keep-alive dead at gate" "$STATE/keepalive_at_gate.txt" "dead"
 grep_no "no sudo -v (all silent)" "$STATE/sudo.log" "sudo -v"
+file_ok "full run marker" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+RUNREL=$(sed -n 1p "$FAKE_HOME/magpie/.setup-fullrun-ok" 2>/dev/null)
+file_ok "marker folder holds fulldata.gdx" "$FAKE_HOME/magpie/$RUNREL/fulldata.gdx"
+file_ok "marker folder holds report.rds" "$FAKE_HOME/magpie/$RUNREL/report.rds"
+file_ok "madrat cache dir created" "$FAKE_HOME/.madrat"
+file_ok "renv cache dir created" "$FAKE_HOME/.cache/R/renv"
+cnt_is "rc MADRAT line once" "MADRAT_CACHE" "$FAKE_HOME/.bashrc" 1
+cnt_is "rc RENV line once" "RENV_PATHS_CACHE" "$FAKE_HOME/.bashrc" 1
+grep_ok "profile write list holds madrat" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json" "$FAKE_HOME/.madrat"
 
 # second run: everything skips
 run_e2e
@@ -1173,6 +1534,9 @@ cnt_is "rc lines stay deduped" ".opencode/bin" "$FAKE_HOME/.bashrc" 1
 grep_ok "licence already in place" "$FAKE_HOME/magpie/setup-log.txt" "already in place"
 cnt_is "feed start twice over two runs" "setup: start" "$STATE/feed.log" 2
 grep_ok "second run also finished" "$FAKE_HOME/magpie/setup-log.txt" "magpie: already cloned"
+grep_ok "second run checks full run PASS" "$STATE/screen.txt" "PASS full run (output/default_"
+grep_ok "second run skipped the run" "$FAKE_HOME/magpie/setup-log.txt" "full run: marker verified"
+cnt_is "start.R ran once over two runs" "runscripts=default.R" "$STATE/rscript.log" 1
 
 # ============================================================
 sec "E2E sudo prompt: keep-alive stopped before the gate"
@@ -1188,6 +1552,44 @@ grep_ok "blind prompt happened" "$STATE/screen.txt" "Type it blind"
 grep_ok "keep-alive dead at gate (live run)" "$STATE/keepalive_at_gate.txt" "dead"
 nofile_ok "pidfile gone after run" "$FAKE_HOME/magpie/.keepalive.pid"
 grep_ok "prompt run finished" "$STATE/feed.log" "run finished"
+
+# ============================================================
+sec "E2E MAGPIE_FULL_RUN=0 (escape hatch)"
+# ============================================================
+new_env
+E2E_SCRIPT="$ENV/magpie_lic.sh"
+run_e2e MAGPIE_FULL_RUN=0
+ret_is "green with the full run skipped" 0
+grep_ok "screen note" "$STATE/screen.txt" "Full run skipped (MAGPIE_FULL_RUN=0)"
+grep_ok "check SKIP line" "$STATE/screen.txt" "SKIP full run (skipped via MAGPIE_FULL_RUN=0)"
+grep_ok "feed skip note" "$STATE/feed.log" "setup: full run skipped (MAGPIE_FULL_RUN=0)"
+grep_ok "next steps: skipped note" "$STATE/screen.txt" "Full default run: skipped (MAGPIE_FULL_RUN=0)"
+grep_ok "still run finished" "$STATE/feed.log" "setup: run finished"
+nofile_ok "no marker written" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+grep_no "no start.R invocation" "$STATE/rscript.log" "runscripts=default.R"
+
+# ============================================================
+sec "E2E deleted artifacts -> FAIL -> marker removal heals"
+# ============================================================
+new_env
+E2E_SCRIPT="$ENV/magpie_lic.sh"
+run_e2e
+ret_is "green first" 0
+RUNREL=$(sed -n 1p "$FAKE_HOME/magpie/.setup-fullrun-ok")
+rm -rf "$FAKE_HOME/magpie/$RUNREL"
+run_e2e
+ret_is "missing artifacts block the rerun" 1
+grep_ok "full run FAIL line" "$STATE/screen.txt" "FAIL full run artifacts missing - rerun this file"
+grep_ok "help block" "$STATE/screen.txt" "##"
+grep_ok "FAIL fed" "$STATE/feed.log" "setup: FAIL checks"
+# Recovery: delete the marker, the step redoes the run.
+rm -f "$FAKE_HOME/magpie/.setup-fullrun-ok"
+run_e2e
+ret_is "heals after marker removal" 0
+grep_ok "SKIP line again" "$STATE/screen.txt" "SKIP full run (starts at the end of this setup)"
+file_ok "marker rewritten" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+RUNREL=$(sed -n 1p "$FAKE_HOME/magpie/.setup-fullrun-ok")
+file_ok "new run folder complete" "$FAKE_HOME/magpie/$RUNREL/report.mif"
 
 # ============================================================
 sec "E2E reproducible failure -> pass 2 -> help block"

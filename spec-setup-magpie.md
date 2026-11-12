@@ -1,7 +1,7 @@
 # setup-magpie.sh - spec (unified day-one course setup)
 
 Status: implemented in setup-magpie.sh (tests: tests/test-setup-magpie.sh,
-266 assertions (265 when shellcheck is absent), all green on a Linux
+405 assertions (404 when shellcheck is absent), all green on a Linux
 x86_64 dev host). Date: 2026-11-12.
 
 ## 1. Purpose
@@ -10,8 +10,10 @@ x86_64 dev host). Date: 2026-11-12.
 `bash setup-magpie.sh` on macOS (Apple Silicon or Intel) or in WSL Ubuntu,
 and the machine ends up ready for MAgPIE - git, opencode + nono + HU
 config, the course tool chain (R, gfortran, pandoc, TinyTeX, GAMS +
-course licence), the pinned nono profiles, a `~/magpie` clone, and a
-checks block (unsandboxed + inside the sandbox gate).
+course licence), the pinned nono profiles, a `~/magpie` clone, the
+restored renv R library, a checks block (unsandboxed + inside the
+sandbox gate), and ONE completed full default run (solve + default
+output scripts) INSIDE the course sandbox. Exit 0 guarantees all of it.
 
 It replaces `setup-ubuntu.sh` and `setup-macos.sh` (see 3) and is built
 on the skeleton of `magpie-opencode.sh`: the same helpers, the same
@@ -25,8 +27,8 @@ block feeds the students' LLM, students self-heal.
 ## 2. Design decisions
 
 - One file, both OSes. Branch on `uname` (Darwin | Linux), like
-  `magpie-opencode.sh`. Valid POSIX sh from line 1: survives
-  `sh file`, `bash file`, `zsh file` - no `[[`, no arrays, no `local`,
+  `magpie-opencode.sh`. Valid POSIX sh from line 1, run via `bash`
+  only - no `[[`, no arrays, no `local`,
   no `$RANDOM`, no process substitution.
 - The ntfy feed and the animal code name are KEPT (unlike
   `magpie-opencode.sh`): the teacher watches the feed on course day.
@@ -40,11 +42,14 @@ block feeds the students' LLM, students self-heal.
   `opencode-extract/`, `nono-dl.tar.gz`, `nono-extract/`).
   `.setup-finished` is `magpie-opencode.sh`'s finish marker ONLY -
   this script never writes it, so running both scripts side by side
-  stays consistent.
+  stays consistent. `.setup-fullrun-ok` (full-run marker, holds the
+  verified run folder path) is THIS script's own file - in the clone
+  guard allowlist, never cleaned.
 - Extra downloads (GAMS, R, gfortran, pandoc) go under `~/magpie` named
   `setup-dl-*` and are deleted on success AND in the EXIT trap - a
   crash never leaves foreign files behind. The clone guard's own-file
-  allowlist includes `setup-dl-*`.
+  allowlist includes `setup-dl-*`. Leftover or partial magpie RUN
+  folders (`output/default_*`) are NEVER cleaned or touched.
 - No Homebrew anywhere (Homebrew 5 refuses Intel Macs). macOS R /
   gfortran / pandoc / GAMS are pinned `.pkg` downloads, sha256-checked,
   installed with `sudo installer -pkg ... -target /`, each
@@ -60,12 +65,26 @@ block feeds the students' LLM, students self-heal.
   after FAIL and keep installing" behaviour.
 - The run ends with: unsandboxed checks -> all PASS: sandbox gate
   (`nono run --profile magpie-profile -- ... bash <thisfile>
-  --check-only`) -> next steps -> feed "run finished" -> exit 0.
+  --check-only`) -> full default run inside the same sandbox (see 6.10)
+  -> next steps -> feed "run finished" -> exit 0.
   Any FAIL (step-level, check, or gate): feed the FAIL line(s), print
   the help block, exit 1.
-- Disk guard has two tiers (from the old scripts, env-overridable):
-  below `MAGPIE_DISK_ABORT_GB=6` the help block aborts; below
-  `MAGPIE_DISK_WARN_GB=15` a warning goes on screen and to the feed.
+- The full default run (about 40 min on the students' machines) is part
+  of the exit-0 guarantee. Escape hatch: env `MAGPIE_FULL_RUN=0` skips
+  it (screen + feed note, checks line SKIP, no marker - setup still
+  exits 0). The run gets ONE attempt: no step retries, no second pass;
+  any failure goes straight to the help block, exit 1 - the next
+  manual rerun redoes it (the marker stays unwritten until verified).
+- Deterministic caches: `MADRAT_CACHE=$HOME/.madrat` and
+  `RENV_PATHS_CACHE=$HOME/.cache/R/renv` are fixed (not
+  env-overridable), exported into the run, written as grep-guarded rc
+  lines (`magpie_register_caches`), and passed explicitly into every
+  sandboxed child - the nono profile grants read+write in exactly
+  these folders.
+- Disk guard has two tiers (from the old scripts, env-overridable,
+  raised for the full run): below `MAGPIE_DISK_ABORT_GB=9` the help
+  block aborts; below `MAGPIE_DISK_WARN_GB=18` a warning goes on
+  screen and to the feed.
 - `HU_API_KEY`: exported for the run AND written as one grep-guarded
   rc line - there is no launcher in this script, students may start
   opencode later from a fresh terminal (the real credential is
@@ -149,11 +168,14 @@ exits with "already running" never touches the first run's state) -> `step_os_ba
 if missing; CLT unattended on macOS) -> opencode install (pinned npm
 tgz, AVX2/musl checks) -> nono install (pinned GitHub tarball to
 `~/.nono/bin`) -> PATH fixes -> opencode config -> HU key rc line ->
-OS tool steps -> TinyTeX + tex PATH -> GAMS install + PATH -> licence
--> nono pack pull/pin -> `magpie-profile` build -> magpie clone ->
-checks -> (green: stop keep-alive, sandbox gate, next steps, feed
+cache folders + rc lines -> OS tool steps -> TinyTeX + tex PATH -> GAMS
+install + PATH -> licence -> nono pack pull/pin -> `magpie-profile`
+build -> magpie clone -> renv library restore (6.9) -> checks -> (green:
+stop keep-alive, sandbox gate, full default run (6.10), next steps, feed
 "run finished", exit 0). Every slow step that RUNS gets one
 `[HH:MM:SS] - installing ...` heads-up; installs print `OK:` lines.
+The keep-alive is stopped once, before the gate; no warm sudo exists
+while the gate child OR the full run sandbox executes.
 
 ## 6. Steps
 
@@ -218,16 +240,23 @@ license env var anywhere.
 ### 6.7 magpie-profile + sandbox gate
 
 `~/.config/nono/profiles/magpie-profile.json`, extends
-`["opencode"]`, read list: Linux `$HOME/gams` + `$HOME/.TinyTeX`;
+`["opencode"]`. Read list: Linux `$HOME/gams` + `$HOME/.TinyTeX`;
 macOS `/Library/Frameworks/GAMS.framework`, `/Library/Frameworks/
 R.framework`, `/usr/local/gfortran`, `$HOME/.TinyTeX`, the licence
-dir. `nono profile validate` must pass before install; an existing
-different file is kept untouched. After the checks are green and the
-keep-alive is stopped, the gate reruns the checks inside the sandbox:
+dir. On both OSes the read list also holds the two cache folders,
+and the write list is exactly `$MADRAT_CACHE` (`$HOME/.madrat`) +
+`$RENV_PATHS_CACHE` (`$HOME/.cache/R/renv`) - the sandboxed full run
+downloads input data and restores the run-folder renv through them.
+The folders are created by `magpie_register_caches` before any
+sandboxed child runs (write rules need existing paths). `nono profile
+validate` must pass before install; an existing different file is kept
+untouched. After the checks are green and the keep-alive is stopped,
+the gate reruns the checks inside the sandbox:
 
 ```
 nono run --profile magpie-profile -- env MAGPIE_CHECK_ONLY=1 \
-  PATH=<texbin>:$PATH bash <thisfile> --check-only
+  PATH=<texbin>:$PATH MADRAT_CACHE=... RENV_PATHS_CACHE=... \
+  bash <thisfile> --check-only
 ```
 
 The child: greet + checks only, feed label "sandbox check result",
@@ -241,7 +270,67 @@ recursion-proof. Gate failure goes through the retry + pass-2 model
 `magpie-opencode.sh` 6.9, incl. foreign-dir / foreign-origin guards and
 the own-file allowlist (magpie-opencode's full list, incl. its
 `.setup-finished` marker - tolerated, never written here - extended
-with `setup-dl-*`).
+with `setup-dl-*` and `.setup-fullrun-ok`).
+
+### 6.9 renv library restore
+
+Runs right after the clone. Skips (log only) when `~/magpie/renv.lock`
+is missing or when the library already loads - the load test is
+exactly the checks' one (`cd ~/magpie` subshell,
+`Rscript -e 'suppressMessages(library(lucode2));
+suppressMessages(library(gms))'`, helper `magpie_renv_lib_ok`).
+Otherwise, inside `~/magpie`: bootstrap `renv` via
+`Rscript -e 'source("renv/activate.R")'` when plain Rscript cannot
+`requireNamespace("renv")` (magpie's shipped activate.R, renv 1.2.4,
+never asks anything), then
+`Rscript -e 'renv::restore(prompt = FALSE, restart = FALSE)'`.
+Wrapped in `magpie_retry 3`, failure -> `magpie_step_failed "renv
+restore" "wifi"`. Real restores feed "setup: renv restored"; progress
+heads-up "about 5-15 min". Fills `$RENV_PATHS_CACHE`, so the sandboxed
+run-folder renv restores (6.10) only copy from the cache.
+
+### 6.10 full default run (sandboxed)
+
+Runs after the gate, before the next steps. `MAGPIE_FULL_RUN=0`:
+screen + feed note, return 0, no marker. Skip when the marker
+`~/magpie/.setup-fullrun-ok` (contains the run folder path relative to
+`~/magpie`, e.g. `output/default_...`) points at a folder that still
+holds all verification artifacts. Otherwise ONE sandboxed attempt
+(macOS wrapped in `caffeinate -is`):
+
+```
+(cd ~/magpie && nono run --profile magpie-profile -- \
+  env MADRAT_CACHE=... RENV_PATHS_CACHE=... \
+      PATH=<gamsdir>:<texbin>:$PATH \
+  bash -c 'cd "$HOME/magpie" && \
+           Rscript start.R runscripts=default.R submit=direct')
+```
+
+Feed "setup: full run start" before, heads-up "about 40 min, keep the
+laptop plugged in and awake". The command's stdin gets two `n` lines:
+they answer `start.R`'s possible "Update now?" and `fixDeps` prompts
+with "no" - auto-updating would drift from the restored lockfile, and
+an EOF stdin would crash `gms::getLine` (empty `readLines` ->
+`logical(0)` in `&&`). ONE attempt - no retry, no pass 2.
+`start.R` runs the selected script through `sys.source` + `try` (a
+failing run is only a warning, exit code stays 0), so SUCCESS IS
+DECIDED BY ARTIFACTS: a NEW `~/magpie/output/default_<timestamp>`
+folder (pattern pinned from magpie master: `cfg$results_folder <-
+"output/:title::date:"` with `:date:` = `_%Y-%m-%d_%H.%M.%S`, title =
+`default`), different from the newest complete folder that existed
+before the run, containing `fulldata.gdx` + `full.lst` (the run-folder
+`submit.R` - copied from `scripts/run_submit/submit.R` - stops without
+`fulldata.gdx`; `full.lst` is the GAMS listing) plus `report.rds` +
+`report.mif` (written by `scripts/output/rds_report.R`, the last
+script of the default postprocessing `cfg$output <- c("output_check",
+"extra/disaggregation", "rds_report")`, which the run-folder
+`submit.R` runs automatically via `sys.source("output.R")` - no extra
+`output.R` call needed). Non-zero sandbox exit fails regardless of
+artifacts. Any failure: `magpie_fail "full magpie run (check the run
+folder under ~/magpie)" "wifi"`, exit 1. Verified success writes the
+marker, prints the OK line and feeds "setup: full run finished".
+Partial/failed run folders stay where they are (decision: never
+clean).
 
 ## 7. Error handling (from `magpie-opencode.sh`)
 
@@ -266,24 +355,41 @@ Results accumulate in a newline-separated string (no arrays):
 `gams` (found via PATH or the per-OS locations, run in a temp dir;
 banner must match `license is valid|licensee` - GAMS 54 + legacy
 wordings), `git >= 2.23` (integer compare), `Rscript >= 4.3`,
-`pandoc`, `tex`, and the `renv` library check (lucode2+gms via a
+`pandoc`, `tex`, the `renv` library check (lucode2+gms via a
 `cd ~/magpie` subshell) ONLY when `~/magpie/renv.lock` exists -
-otherwise the line reads SKIP. The block prints to screen, goes to the
-feed as "check result" (or "sandbox check result" in the child), and
-any FAIL line ends the run (help block + exit 1; in the child: exit
-non-zero for the gate).
+otherwise the line reads SKIP, and the `full run` line:
+`MAGPIE_FULL_RUN=0` -> SKIP (skipped via MAGPIE_FULL_RUN=0); no
+marker -> SKIP "starts at the end of this setup" (first runs must not
+FAIL here - the step enforces completion); marker present -> run
+folder + artifacts verified: PASS, else FAIL "full run artifacts
+missing - rerun this file" (delete the marker and rerun to have the
+step redo the run). The full run line is cheap and read-only (marker
++ file tests) - it also runs in the sandbox gate child. The block
+prints to screen, goes to the feed as "check result" (or "sandbox
+check result" in the child), and any FAIL line ends the run (help
+block + exit 1; in the child: exit non-zero for the gate).
 
 ## 9. Feed protocol (topic `https://ntfy.sh/magpie-course-cb3363c15a75`)
 
 Every message: `<handle> | <OS> <arch> | <text>`, `curl -m 5
 --data-binary @-` (the only form ntfy decodes), never fails the
 caller. Milestones: "setup: start"; installs (opencode, nono, gams
-<ver>, profile pulled); warnings (licence placeholder, low disk);
+<ver>, profile pulled); "setup: renv restored"; "setup: full run
+start" / "setup: full run finished" / "setup: full run skipped
+(MAGPIE_FULL_RUN=0)"; warnings (licence placeholder, low disk);
 `setup: FAIL <step>` before every abort; the check block; "sandbox
 check result"; "setup: run finished". Teacher keeps the page open,
 calls out code names of FAIL/silent students. No PII.
 
-## 10. Verification status
+## 10. Next steps block
+
+The manual `renv::restore()` line is GONE (6.9 does it). The block
+shows `cd ~/magpie`, the completed full run folder (from the marker)
+or the MAGPIE_FULL_RUN=0 skip note, and the own-scenario command
+`Rscript start.R` ("choose 1, then 1"; macOS: `caffeinate -is
+Rscript start.R`). The laptop advice stays (power, lid, overnight).
+
+## 11. Verification status
 
 Harness (tests/test-setup-magpie.sh, Linux x86_64 + AVX2 host else
 exit 77 - the pinned GAMS/opencode linux builds are x86_64-only, fake
@@ -291,10 +397,11 @@ HOME, stub binaries only, real git only against a local origin; PATH is
 a curated minimal bin dir so a host tex/pandoc/Rscript/gams can never
 shadow the stubs; pinned block sedded to 9.9.9/fake shas; from an
 interactive terminal the harness re-execs itself via `setsid -w` so the
-handle box's /dev/tty Enter prompt can never block the suite): 265
-assertions (266 with shellcheck on PATH) - syntax (bash/dash/zsh -n
-where present, shellcheck -s sh where present); pin placeholder guard;
-disk abort + warn tiers; root guard; lock live/stale (a second window
+handle box's /dev/tty Enter prompt can never block the suite): 407
+assertions (408 with shellcheck on PATH) - syntax (bash/dash -n,
+shellcheck -s sh where present); pin placeholder guard;
+disk abort + warn tiers (incl. the raised 9 GB / 18 GB boundaries);
+root guard; lock live/stale (a second window
 exits quietly and leaves the FIRST run's keep-alive + `setup-dl-*`
 untouched); system string before the OS is set; retry helper +
 fresh-process pass 2; sudo loop
@@ -303,16 +410,34 @@ in a dedicated sudo-prompt E2E, and `setup-dl-*.pkg` checksum mismatch
 asserting no sudo ran before verification); handle create-once/reuse +
 box;
 feed POSTs recorded (start, check block, FAIL, run finished); config
-write incl. foreign `.bak`; HU key dedupe; licence placeholder/pasted/
+write incl. foreign `.bak`; HU key dedupe; cache dirs created + rc
+lines deduped; licence placeholder/pasted/
 mode-600/never-clobber/darwin-700; checks table (GAMS 54 + licensee
-PASS, unlicensed FAIL, R/pandoc/tex/git lines, renv SKIP/PASS/FAIL);
+PASS, unlicensed FAIL, R/pandoc/tex/git lines, renv SKIP/PASS/FAIL,
+full run SKIP-first/PASS/FAIL (each single missing artifact
+FAILs)/SKIP-via-env);
 check-only child isolation; pack pull pin + drift + profile build/
-validate/keep-modified; macOS pkg steps incl. checksum mismatch
-blocking sudo; GAMS linux self-extractor; clone guards (foreign dir,
-foreign origin, interrupted heal, `setup-dl-*` leftovers tolerated);
+validate/keep-modified (+ cache write-list on both OSes); macOS pkg steps incl. checksum mismatch
+blocking sudo; GAMS linux self-extractor; renv step (no renv.lock skip,
+already-populated skip, broken library restored incl. activate.R
+bootstrap, no bootstrap when renv present, persistent failure -> help
+block, 3 attempts); clone guards (foreign dir,
+foreign origin, interrupted heal, `setup-dl-*` leftovers tolerated,
+`.setup-fullrun-ok` marker tolerated by the guard);
+full run step (sandbox command shape, caches + PATH passed, marker +
+artifacts written, keep-alive dead, verified marker skips, non-zero
+exit -> help block (also with complete artifacts), swallowed run error
+caught by missing artifacts, old folder not accepted as new, newest of
+two complete folders wins into the marker, escape hatch, caffeinate
+wrap on darwin);
 E2E day-one green run (7 heads-ups, OK lines, rc dedupe, licence
-written, clone checked out, no `.setup-finished`, `setup-dl-*` cleaned)
-+ second run all-skip + E2E reproducible failure -> pass 2 -> help
+written, clone checked out, no `.setup-finished`, `setup-dl-*` cleaned,
+full run marker + artifacts + two `n` prompt answers on stdin,
+profile write-list, cache rc lines)
++ second run all-skip (full run PASS line, start.R ran once)
++ E2E MAGPIE_FULL_RUN=0 (green, skip notes, no marker)
++ E2E deleted artifacts -> FAIL -> marker removal heals
++ E2E reproducible failure -> pass 2 -> help
 block + FAIL feed line. Regression: tests/test-magpie-opencode.sh still
 179/0 (incl. the new cleanup-ownership tests: owner exit stops the
 keep-alive and removes the lock; a non-owner exit leaves both alone).
@@ -320,15 +445,17 @@ keep-alive and removes the lock; a non-owner exit leaves both alone).
 Live pending (course day / reference machines): real GAMS download +
 extract, macOS pkg installs incl. Gatekeeper of `sudo installer`
 targets, unattended CLT install, CONOPT in the overnight run log, HU
-answer on HU network, the full day-one run on Intel + Apple Silicon +
-WSL, read-list completeness of `magpie-profile` (expect one denial
-round per platform).
+answer on HU network, the full day-one run incl. the real ~40 min
+full run on Intel + Apple Silicon +
+WSL, read/write-list completeness of `magpie-profile` (expect one denial
+round per platform), stdin forwarding of `nono run` to the sandboxed
+child (the full-run `n` answers rely on it).
 
-## 11. Teacher to-do before the session
+## 12. Teacher to-do before the session
 
 1. Paste `gamslice.txt` between the COURSE_GAMSLICE markers - in this
    ONE file only (the two old scripts are gone).
 2. Upload `setup-magpie.sh` to Moodle (licence inside = course-only).
-3. Run the live tests in 10; extend the profile read-list if a denial
-   appears.
+3. Run the live tests in 11; extend the profile read/write-list if a
+   denial appears.
 4. Bookmark the feed; archive it after the session.

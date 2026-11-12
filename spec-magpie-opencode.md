@@ -63,8 +63,8 @@ ntfy status feed, no code name - nothing is uploaded anywhere.
   That includes the log, so the magpie clone must cope with a non-empty
   target: `git init` + fetch + checkout instead of `git clone`
   (`git clone` refuses a non-empty directory).
-- Foolproof against how it is run: valid POSIX sh from line 1, so it
-  survives `sh file`, `bash file`, `zsh file`, and paste-into-terminal.
+- Foolproof against how it is run: valid POSIX sh from line 1, run via
+  `bash file` only.
   No bash-only syntax anywhere (no `[[ ]]`, no arrays, no process
   substitution). All paths absolute via `$HOME`; the starting directory
   never matters.
@@ -550,7 +550,7 @@ Offline harness (fake `$HOME`, stub `curl/apt/git/softwareupdate/sudo/df/
 tar/nono/opencode`), like the existing
 `.tmp/test-path-export.sh`:
 
-- syntax: `bash -n`, `dash -n`, and a `zsh -n` pass; shellcheck when
+- syntax: `bash -n`, `dash -n`; shellcheck when
   available (POSIX mode).
 - fast path: table of marker-present/absent x each check present/broken;
   broken install with marker falls into setup path;

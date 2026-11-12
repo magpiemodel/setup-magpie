@@ -319,11 +319,6 @@ sec "syntax"
 # ============================================================
 if bash -n "$SCRIPT" 2>/dev/null; then ok "bash -n"; else no "bash -n"; fi
 if dash -n "$SCRIPT" 2>/dev/null; then ok "dash -n"; else no "dash -n"; fi
-if command -v zsh >/dev/null 2>&1; then
-  if zsh -n "$SCRIPT" 2>/dev/null; then ok "zsh -n"; else no "zsh -n"; fi
-else
-  echo "  (zsh not installed - skipped)"
-fi
 if command -v shellcheck >/dev/null 2>&1; then
   if shellcheck -s sh "$SCRIPT" >/dev/null 2>&1; then ok "shellcheck"; else no "shellcheck"; fi
 else
