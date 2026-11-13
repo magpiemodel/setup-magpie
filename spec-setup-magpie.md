@@ -1,7 +1,7 @@
 # setup-magpie.sh - spec (unified day-one course setup)
 
 Status: implemented in setup-magpie.sh (tests: tests/test-setup-magpie.sh,
-460 assertions (461 when shellcheck is present), all green on a Linux
+490 assertions (491 when shellcheck is present), all green on a Linux
 x86_64 dev host). Date: 2026-11-13.
 
 ## 1. Purpose
@@ -20,9 +20,11 @@ on the skeleton of `magpie-opencode.sh`: the same helpers, the same
 error model, the same file layout under `~/magpie`. `magpie-opencode.sh`
 stays the daily launcher; the two scripts never clash (see 2).
 
-Support model unchanged from the old course scripts: the teacher watches
-the live ntfy feed under each student's animal code name, the `##` help
-block feeds the students' LLM, students self-heal.
+Support model as in the old course scripts, new transport: students post
+their progress and every help block to a PIK Nextcloud upload-only
+folder (see 9), where the teacher reads them under each machine's animal
+code name; the `##` help block feeds the students' LLM, students
+self-heal.
 
 ## 2. Design decisions
 
@@ -30,12 +32,13 @@ block feeds the students' LLM, students self-heal.
   `magpie-opencode.sh`. Valid POSIX sh from line 1, run via `bash`
   only - no `[[`, no arrays, no `local`,
   no `$RANDOM`, no process substitution.
-- The ntfy feed and the animal code name are KEPT (unlike
-  `magpie-opencode.sh`): the teacher watches the feed on course day.
+- The upload feed and the animal code name are KEPT (unlike
+  `magpie-opencode.sh`): the teacher reads the posts on course day.
   The handle is `Animal+3digits` in `~/.magpie-course-handle`, picked
   from `/dev/urandom` (dash has no `$RANDOM`). First creation is atomic
-  (noclobber): two concurrent first runs converge on one name. It prints
-  the "NOTE IT DOWN" box and waits for Enter on `/dev/tty`.
+  (noclobber): two concurrent first runs converge on one name. It is an
+  internal per-machine id (feed posts and the username replacement),
+  reported in `magpie_greet`; there is no interactive prompt.
 - All state lives under `~/magpie` with EXACTLY the file names
   `magpie-opencode.sh` expects (`setup-log.txt`, `setup-help.txt`,
   `.setup.lock/`, `.keepalive.pid`, `opencode-dl.tgz`,
@@ -387,20 +390,40 @@ prints to screen, goes to the feed as "check result" (or "sandbox
 check result" in the child), and any FAIL line ends the run (help
 block + exit 1; in the child: exit non-zero for the gate).
 
-## 9. Feed protocol (topic `https://ntfy.sh/magpie-course-cb3363c15a75`)
+## 9. Upload protocol (feed folder `https://cloud.pik-potsdam.de/public.php/webdav`)
 
-Every message: `<handle> | <OS> <arch> | v<hash> | <text>` (text may
-be multi-line), `curl -m 5 --data-binary @-` (the only form ntfy
-decodes), never fails the caller. `v<hash>` = first 12 sha256 hex of
-this file, computed at entry (uname-based shasum/sha256sum, "unknown"
-if the tools are missing): an agent maps hash -> build, an unknown
-hash = truncated/edited download. Every body passes `magpie_sanitize`
+`STATUS_URL` is the WebDAV URL of a PIK Nextcloud folder shared
+"upload only". The share credentials go directly after `https://`,
+where curl reads them from the URL - full example, `SHARE-TOKEN` and
+`SHARE-PASSWORD` being the teacher's paste step:
+
+`https://SHARE-TOKEN:SHARE-PASSWORD@cloud.pik-potsdam.de/public.php/webdav`
+
+The filled-in file is NEVER committed (public repository); the anchored
+test on that line catches it, because credentials in the URL make the
+line no longer match. Upload-only means holders of the credential can
+write but cannot read or list: write-only by construction.
+`STATUS_URL=""` disables uploading entirely; a refused or unreachable
+upload is silent (`curl -s`, `|| true`), so the course endpoint can die
+mid-run without costing a student their setup.
+
+Every post: `<handle> | <OS> <arch> | v<hash> | <text>` (text may be
+multi-line) is written to a `mktemp` file and sent with `curl -m 5 -T
+<file>` - a PUT with a real `Content-Length`, one file per post named
+`<handle>-<YYYYMMDD>-<HHMMSS>-<pid>-<n>.log`. The counter matters: PUT
+overwrites on the target, so two posts in one second must not share a
+name. Never fails the caller. `v<hash>` = first 12 sha256 hex of this
+file, computed at entry (uname-based shasum/sha256sum, "unknown" if the
+tools are missing): an agent maps hash -> build, an unknown hash =
+truncated/edited download. Every body passes `magpie_sanitize`
 (one PII choke point inside `magpie_report`): $HOME -> `~`, hostname
--> `HOST`, username -> `USER` (order: home, host, user). Secrets
+-> `HOST`, username -> the code name (`${MAGPIE_HANDLE:-unknown}`;
+order: home, host, user). Secrets
 never reach the log by design: sudo reads the password from the tty
 only, the licence text is written to its file only, HU_API_KEY is the
-literal placeholder here. Sanitizing third-party output is
-best-effort; handles stay pseudonymous.
+literal placeholder here. The upload URL (with its credentials) never
+reaches the log either: `curl -s -o /dev/null`. Sanitizing third-party
+output is best-effort; handles stay pseudonymous.
 
 Milestones: "setup: start"; installs (opencode, nono, gams <ver>,
 profile pulled); "setup: renv restored"; "setup: full run start" /
@@ -411,13 +434,18 @@ starts; the check block; "sandbox check result"; "setup: run
 finished". `setup: FAIL <step>` before every abort carries the WHOLE
 help block (system string, check results or failed step, last 25 log
 lines, hint) in the same post, capped at 3200 bytes for the whole
-block (ntfy.sh rejects > 4096). The EXIT trap reports unexpected
+block (kept from the old transport: no server limit forces it now, and
+small posts stay readable in the folder). The EXIT trap reports unexpected
 deaths as "setup: CRASH exit=<code>" + last 10 log lines (same cap):
 any code but 0/130, or 1 without a prior FAIL post; never in the
-check-only child (the gate reports there). Teacher keeps the page
-open, calls out code names of FAIL/silent students. Students that
-never appear on the feed never started the script (PowerShell
-instead of WSL, failed download) - absence is a signal too.
+check-only child (the gate reports there). Teacher reads the folder in
+the Nextcloud web UI (no live page: files arrive as runs progress, and
+`watch` on the folder listing works too), uses code names to track
+FAIL/silent students. Students that never appear in the folder never
+started the script (PowerShell instead of WSL, failed download) -
+absence is a signal too. Retirement: untick the share link (further
+uploads are refused, the scripts ignore it), delete the folder to purge
+the data - no server state is left anywhere.
 
 ## 10. Next steps block
 
@@ -433,10 +461,10 @@ Harness (tests/test-setup-magpie.sh, Linux x86_64 + AVX2 host else
 exit 77 - the pinned GAMS/opencode linux builds are x86_64-only, fake
 HOME, stub binaries only, real git only against a local origin; PATH is
 a curated minimal bin dir so a host tex/pandoc/Rscript/gams can never
-shadow the stubs; pinned block sedded to 9.9.9/fake shas; from an
-interactive terminal the harness re-execs itself via `setsid -w` so the
-handle box's /dev/tty Enter prompt can never block the suite): 460
-assertions (461 with shellcheck on PATH) - syntax (bash/dash -n,
+shadow the stubs; pinned block sedded to 9.9.9/fake shas; scenario
+trees cloned from one template via hardlinks; previous scratch moved
+aside with a detached background rm): 490
+assertions (491 with shellcheck on PATH) - syntax (bash/dash -n,
 shellcheck -s sh where present); pin placeholder guard;
 disk abort + warn tiers (incl. the raised 9 GB / 18 GB boundaries);
 root guard; lock live/stale (a second window
@@ -445,10 +473,19 @@ untouched); system string before the OS is set; retry helper +
 fresh-process pass 2; sudo loop
 + keep-alive (killed BEFORE the gate - asserted with a live keep-alive
 in a dedicated sudo-prompt E2E, and `setup-dl-*.pkg` checksum mismatch
-asserting no sudo ran before verification); handle create-once/reuse +
-box;
-feed POSTs recorded (start with file-hash header, check block, FAIL,
-run finished); feed v2: sanitizer (home/host/user), combined FAIL
+asserting no sudo ran before verification); handle create-once/reuse
+(no box - the greet line only);
+feed target guard (anchored credential-free `STATUS_URL`); PUT
+uploads recorded with credentials stripped - the stub strips (a password
+holding "@" too), a fake filled-in link proves no token/password reaches
+any artifact (start
+with file-hash header, check block, FAIL, run finished); upload names
+unique (handle-date-time-pid-counter, two posts in one second); feed
+v2: sanitizer (home/host/user, `unknown` fallback without a handle),
+`-s -o /dev/null` proven (stub response/progress noise never reaches
+the log), failing upload never fails the caller, mktemp failure
+silent, failing uploads ignored, `STATUS_URL=""`
+uploads nothing, combined FAIL
 block with 3200 B cap (deep tail cut, screen + help file uncapped),
 CRASH on unexpected exit (3, silent 1; none after a FAIL post, none
 in the check-only child), retry-pass-2 announce; config
@@ -502,7 +539,11 @@ child (the full-run `n` answers rely on it).
 
 1. Paste `gamslice.txt` between the COURSE_GAMSLICE markers - in this
    ONE file only (the two old scripts are gone).
-2. Upload `setup-magpie.sh` to Moodle (licence inside = course-only).
-3. Run the live tests in 11; extend the profile read/write-list if a
+2. Insert the share token and password right after `https://` in
+   `STATUS_URL` (see 9) - NEVER commit or upload the filled-in file.
+3. Upload `setup-magpie.sh` to Moodle (licence + credentials inside =
+   course-only).
+4. Run the live tests in 11; extend the profile read/write-list if a
    denial appears.
-4. Bookmark the feed; archive it after the session.
+5. Read the feed folder in the Nextcloud web UI during the session;
+   afterwards untick the share link and delete the folder (see 9).

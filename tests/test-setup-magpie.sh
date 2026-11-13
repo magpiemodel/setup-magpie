@@ -1,26 +1,20 @@
 #!/usr/bin/env bash
 # Offline harness for setup-magpie.sh. Fake HOME, stub binaries only.
-# Nothing touches the network (the curl stub records feed POSTs locally).
+# Nothing touches the network (the curl stub records feed uploads locally).
 set -u
 umask 077
-
-# magpie_init_handle reads /dev/tty. Wherever /dev/tty is openable
-# (interactive terminal) that read could block forever. Re-exec
-# detached (new session, no controlling terminal) so /dev/tty fails
-# and the run never waits.
-if [ -z "${MAGPIE_HARNESS_DETACHED:-}" ] \
-  && command -v setsid >/dev/null 2>&1 \
-  && ( : </dev/tty ) 2>/dev/null \
-  && setsid -w /bin/true >/dev/null 2>&1; then
-  MAGPIE_HARNESS_DETACHED=1
-  export MAGPIE_HARNESS_DETACHED
-  exec setsid -w bash "$0" "$@"
-fi
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 SCRIPT="$HERE/../setup-magpie.sh"
 RUNROOT="$HERE/../.tmp/testrun-setup"
-rm -rf "$RUNROOT"
+# Previous scratch moves aside instantly (rename), then a detached rm
+# sweeps it while this run works. GPFS deletes cost seconds; blocking
+# on them dominated the startup.
+if [ -e "$RUNROOT" ]; then
+  TRASH="$RUNROOT.old.$$"
+  mv "$RUNROOT" "$TRASH"
+  ( rm -rf "$TRASH" >/dev/null 2>&1 & )
+fi
 mkdir -p "$RUNROOT"
 # Canonicalize: the script's cd folds ".." away, paths must match.
 RUNROOT=$(cd "$RUNROOT" && pwd)
@@ -286,21 +280,36 @@ while [ $# -gt 0 ]; do
 done
 exec "$@"
 EOS
-  # curl: feed POSTs (--data-binary) -> feed.log; archives -> state files.
+  # curl: feed uploads (-T file = PUT) -> feed.log + feed_url.log
+  # (credentials stripped up to the last @, as curl splits them; a
+  # filled-in share link cannot leak into test artifacts);
+  # archives -> state files. The upload branch emits
+  # a response body (stdout unless -o /dev/null) and progress on stderr
+  # (unless -s), so a script dropping either flag pollutes its own log.
   cat > "$FAKE_BIN/curl" <<'EOS'
 #!/bin/sh
 prev=""
 out=""
 url=""
-post=0
+up=""
 for a in "$@"; do
-  case $prev in -o) out=$a ;; esac
+  case $prev in -o) out=$a ;; -T) up=$a ;; esac
   case $a in http*|https*) url=$a ;; esac
-  case $a in --data-binary) post=1 ;; esac
   prev=$a
 done
-if [ "$post" = "1" ]; then
-  printf '%s\n' "$(cat)" >> "$STATE/feed.log"
+if [ -n "$up" ]; then
+  cat "$up" >> "$STATE/feed.log"
+  printf 'PUT %s\n' "$url" | sed -e 's|://[^/]*@|://|' >> "$STATE/feed_url.log"
+  quiet=0
+  for a in "$@"; do
+    case $a in -s*|*silent*) quiet=1 ;; esac
+  done
+  if [ "$quiet" = 0 ]; then
+    echo "stub-progress-noise" >&2
+  fi
+  if [ "$out" != "/dev/null" ]; then
+    echo "stub-response-noise"
+  fi
   exit "${STUB_FEED_FAIL:-0}"
 fi
 echo "$url" >> "$STATE/curl.log"
@@ -475,14 +484,18 @@ EOS
   sed '/^__PASTE_CONTENTS_OF_gamslice.txt_HERE__$/s|__PASTE_CONTENTS_OF_gamslice.txt_HERE__|TEST-LICENCE-CONTENT|' \
     "$ENV/magpie.sh" > "$ENV/magpie_lic.sh"
   chmod +x "$ENV/magpie_lic.sh"
+  # Teacher left the feed URL empty -> uploads must be off entirely.
+  sed 's|^STATUS_URL=.*|STATUS_URL=""|' \
+    "$ENV/magpie_lic.sh" > "$ENV/magpie_nofeed.sh"
+  chmod +x "$ENV/magpie_nofeed.sh"
 
   SRC="$SCRIPT"
   E2E_SCRIPT="$ENV/magpie.sh"
 }
 
-# Per-scenario clone of the template. cp -a = fresh inodes (scenarios
-# mutate their own copies); cp -al for minbin = same hardlinks to host
-# tools the old inline loop made, so exec behaviour is unchanged.
+# Per-scenario clone of the template via hardlinks (cp -al): cheap on
+# GPFS, and safe because scenario writes only create new files, never
+# modify shipped ones. Host tools in minbin keep their exec behaviour.
 new_env() {
   ENV=$(mktemp -d "$RUNROOT/env.XXXXXX")
   export ENV
@@ -493,11 +506,15 @@ new_env() {
   MINBIN="$ENV/minbin"
   export TMPDIR="$ENV/tmp"
   mkdir -p "$FAKE_HOME" "$MINBIN" "$TMPDIR"
-  cp -a "$TEMPLATE/state" "$STATE"
-  cp -a "$TEMPLATE/bin/." "$FAKE_BIN/"
+  # Hardlinks throughout: scenarios only ever CREATE files inside the
+  # env (logs, counters, installed binaries), never edit shipped ones in
+  # place, so shared inodes cannot leak state between scenarios.
+  cp -al "$TEMPLATE/state" "$STATE"
+  cp -al "$TEMPLATE/bin/." "$FAKE_BIN/"
   cp -al "$TEMPLATE/minbin/." "$MINBIN/"
-  cp -a "$TEMPLATE/magpie.sh" "$ENV/magpie.sh"
-  cp -a "$TEMPLATE/magpie_lic.sh" "$ENV/magpie_lic.sh"
+  cp -l "$TEMPLATE/magpie.sh" "$ENV/magpie.sh"
+  cp -l "$TEMPLATE/magpie_lic.sh" "$ENV/magpie_lic.sh"
+  cp -l "$TEMPLATE/magpie_nofeed.sh" "$ENV/magpie_nofeed.sh"
   SRC="$SCRIPT"
   E2E_SCRIPT="$ENV/magpie.sh"
 }
@@ -625,6 +642,15 @@ if command -v shellcheck >/dev/null 2>&1; then
 else
   echo "  (shellcheck not installed - skipped)"
 fi
+
+# ============================================================
+sec "feed target guard"
+# ============================================================
+# The end anchor doubles as the credential guard: pasting the share
+# token and password into STATUS_URL (the teacher's paste step before
+# distributing) no longer matches this line.
+grep_ok "committed feed URL holds no credentials" "$SCRIPT" \
+  '^STATUS_URL="https://cloud\.pik-potsdam\.de/public\.php/webdav"$'
 
 # ============================================================
 sec "placeholder pin guard"
@@ -864,7 +890,7 @@ case $h in
   [A-Z][a-z]*[0-9][0-9][0-9]) ok "handle format: Animal+3digits ($h)" ;;
   *) no "handle format: Animal+3digits ($h)" ;;
 esac
-grep_ok "NOTE IT DOWN box on first creation" "$STATE/screen.txt" "NOTE IT DOWN"
+grep_no "no user-facing box" "$STATE/screen.txt" "NOTE IT DOWN"
 new_env
 echo "Fox123" > "$FAKE_HOME/.magpie-course-handle"
 FN_BODY='magpie_greet' run_fn
@@ -1540,7 +1566,7 @@ grep_ok "clone OK line" "$S" "OK: magpie cloned"
 cnt_is "exactly 7 heads-ups" "installing" "$S" 7
 grep_no "apt skipped no heads-up" "$S" "apt update"
 grep_no "no help block" "$S" "##"
-grep_ok "NOTE IT DOWN on first run" "$S" "NOTE IT DOWN"
+grep_ok "greet shows handle on first run" "$S" "Reporting status as"
 grep_no "no blind sudo prompt" "$S" "Type it blind"
 grep_ok "all checks PASS" "$S" "PASS gams"
 grep_ok "check block printed" "$S" "end of copy block"
@@ -1563,6 +1589,18 @@ grep_ok "feed full run start" "$STATE/feed.log" "setup: full run start"
 grep_ok "feed full run finished" "$STATE/feed.log" "setup: full run finished"
 grep_ok "feed run finished" "$STATE/feed.log" "setup: run finished"
 grep_no "no FAIL on the feed" "$STATE/feed.log" "FAIL"
+# upload shape: PUT into the share, one file per post, no credentials
+grep_ok "feed posts are PUT uploads" "$STATE/feed_url.log" \
+  "PUT https://cloud\.pik-potsdam\.de/public\.php/webdav/"
+grep_ok "upload name holds handle and date" "$STATE/feed_url.log" \
+  "webdav/[A-Za-z][A-Za-z]*[0-9][0-9][0-9]-[0-9][0-9][0-9][0-9]"
+grep_no "no credentials in upload urls" "$STATE/feed_url.log" "@"
+# curl output stays suppressed (-s, -o /dev/null): the stub emits a
+# response body + progress noise, none of it may reach the student log.
+grep_no "no upload response noise in the log" "$FAKE_HOME/magpie/setup-log.txt" \
+  "stub-response-noise"
+grep_no "no upload progress noise in the log" "$FAKE_HOME/magpie/setup-log.txt" \
+  "stub-progress-noise"
 # state on disk
 file_ok "clone checked out" "$FAKE_HOME/magpie/README.md"
 file_ok "log under ~/magpie" "$FAKE_HOME/magpie/setup-log.txt"
@@ -1685,33 +1723,53 @@ ret_is "transient download failure heals" 0
 grep_no "no failure heads-up" "$STATE/screen.txt" "retrying automatically"
 
 # ============================================================
-sec "feed v2: sanitize, combined FAIL, cap, crash, retry"
+sec "feed v2: sanitize, combined FAIL, cap, crash, retry, transport"
 # ============================================================
 new_env
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_report "home=$HOME host=$(uname -n) user=$(id -un)"' run_fn
 grep_ok "home replaced by ~" "$STATE/feed.log" "home=~ "
 grep_ok "host replaced" "$STATE/feed.log" "host=HOST"
-grep_ok "user replaced" "$STATE/feed.log" "user=USER"
+grep_ok "user replaced by code name" "$STATE/feed.log" "user=T1"
 grep_ok "unit feed falls back to vunknown" "$STATE/feed.log" "vunknown"
 grep_no "no real username in feed" "$STATE/feed.log" "$(id -un)"
 grep_no "no real hostname in feed" "$STATE/feed.log" "$(uname -n)"
 grep_no "no real home path in feed" "$STATE/feed.log" "$FAKE_HOME"
+grep_ok "upload PUT into the share" "$STATE/feed_url.log" \
+  "PUT https://cloud\.pik-potsdam\.de/public\.php/webdav/T1-"
+grep_ok "upload name is a .log file" "$STATE/feed_url.log" "/T1-.*\.log$"
+# Two posts inside the same second must not replace each other (PUT
+# overwrites on the target).
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_report "first post"; magpie_report "second post"' run_fn
+cnt_is "two posts make two uploads" "PUT " "$STATE/feed_url.log" 2
+grep_ok "first post keeps counter 1" "$STATE/feed_url.log" "/T1-.*-1\.log$"
+grep_ok "second post keeps counter 2" "$STATE/feed_url.log" "/T1-.*-2\.log$"
+grep_ok "both bodies recorded" "$STATE/feed.log" "second post"
+# Exact name shape: handle-date-time-pid-counter (pid separates runs).
+grep_ok "upload name holds date, pid and counter" "$STATE/feed_url.log" \
+  "/T1-[0-9]\{8\}-[0-9]\{6\}-[0-9]\+-[0-9]\+\.log$"
+
+# No handle yet (early crash): header and username fallback = unknown.
+new_env
+FN_BODY='MAGPIE_OS=linux; magpie_report "user=$(id -un)"' run_fn
+grep_ok "header falls back to unknown" "$STATE/feed.log" "^unknown | "
+grep_ok "user falls back to unknown" "$STATE/feed.log" "user=unknown"
 
 # Combined FAIL post: block content in the feed, cap cuts deep tail.
 new_env
 mkdir -p "$FAKE_HOME/magpie"
-{
-  i=1
-  while [ "$i" -le 401 ]; do
-    case $i in
-      377) printf 'TAILKEEP %s\n' "$(head -c 200 /dev/zero | tr '\0' 'x')" ;;
-      400) printf 'TAILCUT %s\n' "$(head -c 200 /dev/zero | tr '\0' 'x')" ;;
-      401) echo 'LASTLINE short' ;;
-      *) printf 'filler %s %s\n' "$i" "$(head -c 200 /dev/zero | tr '\0' 'x')" ;;
-    esac
-    i=$((i + 1))
-  done
-} > "$FAKE_HOME/magpie/setup-log.txt"
+# One awk process (~800 forks saved; bytes identical to the old
+# head|tr loop, verified with cmp).
+awk 'BEGIN{
+  x = ""
+  for (j = 0; j < 200; j++) x = x "x"
+  for (i = 1; i <= 401; i++) {
+    if (i == 377) printf "TAILKEEP %s\n", x
+    else if (i == 400) printf "TAILCUT %s\n", x
+    else if (i == 401) print "LASTLINE short"
+    else printf "filler %d %s\n", i, x
+  }
+}' > "$FAKE_HOME/magpie/setup-log.txt"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_fail "cap step" "wifi"' run_fn
 ret_is "capped fail exits 1" 1
 grep_ok "FAIL header keeps step" "$STATE/feed.log" "vunknown | setup: FAIL cap step"
@@ -1750,6 +1808,46 @@ new_env
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; MAGPIE_SELF="$MINBIN/true"; magpie_step_failed "wifi blip" "wifi"' run_fn
 ret_is "retry execs the self script" 0
 grep_ok "retry pass 2 announced" "$STATE/feed.log" "setup: retry pass 2 after: wifi blip"
+
+# Upload transport: a failing upload (401, dead server) never breaks a
+# run; a bad TMPDIR (mktemp failure) is a silent no-op; an empty feed
+# URL uploads nothing at all.
+new_env
+E2E_SCRIPT="$ENV/magpie_lic.sh"
+run_e2e STUB_FEED_FAIL=22
+ret_is "upload failures are ignored" 0
+grep_ok "run finished despite upload failures" "$STATE/feed.log" "setup: run finished"
+grep_ok "uploads were still attempted" "$STATE/feed_url.log" \
+  "PUT https://cloud\.pik-potsdam\.de/public\.php/webdav/"
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_report "endpoint down"' run_fn STUB_FEED_FAIL=22
+ret_is "failing upload never fails the caller" 0
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; TMPDIR=/nonexistent magpie_report "never uploaded"' run_fn
+ret_is "mktemp failure stays silent" 0
+nofile_ok "no curl call on mktemp failure" "$STATE/curl.log"
+# Teacher's filled-in copy: a share credential in the URL must never
+# reach any test artifact, while the upload itself still goes through.
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; STATUS_URL=https://tok123:pw456@cloud.pik-potsdam.de/public.php/webdav; magpie_report "filled link post"' run_fn
+grep_ok "filled share link still uploads" "$STATE/feed_url.log" \
+  "PUT https://cloud\.pik-potsdam\.de/public\.php/webdav/T1-"
+grep_no "share token never in upload urls" "$STATE/feed_url.log" "tok123"
+grep_no "share password never in upload urls" "$STATE/feed_url.log" "pw456"
+grep_no "share token never in feed bodies" "$STATE/feed.log" "tok123"
+# A password that itself holds "@" (curl splits userinfo at the LAST
+# "@"): the stub must strip the whole userinfo, not stop at the first.
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; STATUS_URL=https://tok123:pa@ss@cloud.pik-potsdam.de/public.php/webdav; magpie_report "at-password post"' run_fn
+grep_ok "at-password url fully stripped" "$STATE/feed_url.log" \
+  "PUT https://cloud\.pik-potsdam\.de/public\.php/webdav/T1-"
+grep_no "no @ left in upload urls" "$STATE/feed_url.log" "@"
+new_env
+E2E_SCRIPT="$ENV/magpie_nofeed.sh"
+run_e2e
+ret_is "run without feed succeeds" 0
+nofile_ok "no upload when feed URL is empty" "$STATE/feed_url.log"
+nofile_ok "no feed body when feed URL is empty" "$STATE/feed.log"
 
 # ============================================================
 printf '\n========================================\n'

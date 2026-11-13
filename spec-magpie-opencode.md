@@ -22,7 +22,7 @@ Works on macOS (Apple Silicon and Intel) and WSL Ubuntu. No Homebrew -
 Homebrew 5 refuses Intel Macs, which broke one student.
 
 Support model: the student pastes the `##` help block into an LLM. No
-ntfy status feed, no code name - nothing is uploaded anywhere.
+course status feed, no code name - nothing is uploaded anywhere.
 
 ## 2. Design decisions
 
@@ -68,8 +68,8 @@ ntfy status feed, no code name - nothing is uploaded anywhere.
   No bash-only syntax anywhere (no `[[ ]]`, no arrays, no process
   substitution). All paths absolute via `$HOME`; the starting directory
   never matters.
-- No course-support extras: the ntfy status feed and the animal code name
-  are gone. Nothing is uploaded, and the `##` help block is the only
+- No course-support extras: the course status feed and the animal code
+  name are gone. Nothing is uploaded; the `##` help block is the only
   support channel.
 - HU LLM service is preselected by `"model": "hu/llm3"` in the opencode
   config. It cannot be tested off HU network - not part of any check.

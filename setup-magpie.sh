@@ -58,8 +58,16 @@ PANDOC_SHA256_DARWIN_X64="145a39969291a8af79fe81037be3eb6e56511f0056b4dfd5625713
 # TEACHER SECTION - edit only here before distributing
 # ============================================================
 
-# Live status feed. Set to "" to disable all uploading.
-STATUS_URL="https://ntfy.sh/magpie-course-cb3363c15a75"
+# Live status feed: a PIK Nextcloud folder, shared "upload only" and
+# reached over WebDAV. Every post lands there as one small text file.
+# Before distributing, insert the share credentials right after
+# "https://" - curl reads them from the URL, so students do nothing.
+# Full example, replace the two placeholders, keep the rest as it is:
+# https://SHARE-TOKEN:SHARE-PASSWORD@cloud.pik-potsdam.de/public.php/webdav
+# NEVER COMMIT the filled-in file - this repository is public. The
+# committed value below holds no credentials. Set to "" to disable all
+# uploading.
+STATUS_URL="https://cloud.pik-potsdam.de/public.php/webdav"
 
 # Paste the course gamslice.txt between the two COURSE_GAMSLICE lines.
 magpie_licence_text() {
@@ -162,8 +170,8 @@ magpie_pick() {
   return 1
 }
 
-# Handle file = Animal+3digits, created once, reused forever.
-# First creation prints the "NOTE IT DOWN" box (teacher calls names out).
+# Handle file = Animal+3digits, created once, reused forever. Internal
+# per-machine id for feed posts and the username replacement; no prompt.
 magpie_init_handle() {
   if [ -f "$MAGPIE_HANDLE_FILE" ]; then
     MAGPIE_HANDLE=$(cat "$MAGPIE_HANDLE_FILE")
@@ -177,21 +185,12 @@ magpie_init_handle() {
     Wombat Toad Crane Hare Eagle Snake Turtle Parrot Hedgehog Beaver \
     Llama Alpaca Toucan Pelican Ferret)
   # Atomic first creation: two concurrent first runs converge on one
-  # name; the loser keeps the winner's handle and shows no box.
+  # name; the loser keeps the winner's handle.
   if ! ( set -C; printf '%s\n' "$new_handle" > "$MAGPIE_HANDLE_FILE" ) 2>/dev/null; then
     MAGPIE_HANDLE=$(cat "$MAGPIE_HANDLE_FILE")
     return 0
   fi
   MAGPIE_HANDLE=$new_handle
-  magpie_say ""
-  magpie_say "====================================================="
-  magpie_say "Your setup status is reported under the name: $MAGPIE_HANDLE"
-  magpie_say "NOTE IT DOWN (paper or phone)."
-  magpie_say "The course team will call out this name in the room."
-  magpie_say "Press Enter below once you noted the name."
-  magpie_say "====================================================="
-  read -r _ < /dev/tty || true
-  magpie_say ""
 }
 
 magpie_greet() {
@@ -200,31 +199,38 @@ magpie_greet() {
 }
 
 # PII choke point for every feed upload: replaces $HOME, hostname and
-# username. Best effort against arbitrary child output; order matters
+# username. The username becomes the code name (same token as the feed
+# header). Best effort against arbitrary child output; order matters
 # (a hostname can contain the username).
 magpie_sanitize() {
   awk -v home="$HOME" -v host="$(uname -n 2>/dev/null)" \
-    -v user="$(id -un 2>/dev/null)" '
+    -v user="$(id -un 2>/dev/null)" -v handle="${MAGPIE_HANDLE:-unknown}" '
   {
     if (home != "") gsub(home, "~")
     if (host != "") gsub(host, "HOST")
-    if (user != "") gsub(user, "USER")
+    if (user != "") gsub(user, handle)
     print
   }'
 }
 
-# magpie_report "<text>": one feed post, text may be multi-line.
-# Header: "<handle> | <OS arch> | v<file hash> | <text>". Keep bodies
-# under ~3.2 KB (ntfy.sh rejects messages above 4096 bytes).
-# Never fails the caller. --data-binary is the only form ntfy decodes.
+# magpie_report "<text>": one upload into the feed folder, text may be
+# multi-line. Header: "<handle> | <OS arch> | v<file hash> | <text>".
+# Bodies stay under ~3.2 KB (the help block cap). Never fails the
+# caller. -T sends PUT with a real Content-Length. The name holds date,
+# time, pid and a per-run counter, so a PUT can never replace an earlier
+# post (PUT overwrites on the WebDAV target).
 magpie_report() {
   if [ -z "$STATUS_URL" ] || ! command -v curl >/dev/null 2>&1; then
     return 0
   fi
+  post_file=$(mktemp 2>/dev/null) || return 0
+  MAGPIE_REPORT_SEQ=$((${MAGPIE_REPORT_SEQ:-0} + 1))
   printf '%s | %s %s | v%s | %s' "${MAGPIE_HANDLE:-unknown}" \
     "$(uname -s)" "$(uname -m)" "${MAGPIE_SETUP_VERSION:-unknown}" "$1" \
-    | magpie_sanitize \
-    | curl -m 5 -s -o /dev/null --data-binary @- "$STATUS_URL" || true
+    | magpie_sanitize > "$post_file"
+  curl -m 5 -s -o /dev/null -T "$post_file" \
+    "$STATUS_URL/${MAGPIE_HANDLE:-unknown}-$(date +%Y%m%d-%H%M%S)-$$-$MAGPIE_REPORT_SEQ.log" || true
+  rm -f "$post_file"
   return 0
 }
 
