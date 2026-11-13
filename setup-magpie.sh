@@ -246,27 +246,12 @@ magpie_sys_string() {
 }
 
 # Final verdict: help block to fd 4 + saved file + feed post + exit 1.
-# $1 step text, $2 hint (landlock|clt|wifi|sudo|""), $3 check results ("").
+# No fix hints: the student pastes the block into an AI chat and fixes
+# the problem with LLM help. $1 step text, $2 check results ("").
 magpie_fail() {
   step=$1
-  hint=${2:-}
-  results=${3:-}
+  results=${2:-}
   MAGPIE_FAIL_POSTED=1
-  hint_line=""
-  case $hint in
-    landlock)
-      hint_line="If the error mentions Landlock: close Ubuntu, open Windows PowerShell, run wsl --update, wait for it, reopen Ubuntu, run this file again."
-      ;;
-    clt)
-      hint_line="Run: softwareupdate --list - then run this file again."
-      ;;
-    wifi)
-      hint_line="Room Wi-Fi may need a browser login: open any website in your browser first, or use your phone hotspot, then run this file again."
-      ;;
-    sudo)
-      hint_line="The password you typed was never accepted. Use your own login/administrator password, then run this file again."
-      ;;
-  esac
   tmp=$(mktemp 2>/dev/null) || tmp="/tmp/magpie-help.$$"
   {
     printf 'I am a beginner setting up MAgPIE. Fix the FAIL line below.\n'
@@ -282,9 +267,6 @@ magpie_fail() {
     fi
     printf -- '--- last 25 log lines ---\n'
     tail -n 25 "$HOME/magpie/setup-log.txt" 2>/dev/null
-    if [ -n "$hint_line" ]; then
-      printf '%s\n' "$hint_line"
-    fi
   } > "$tmp" 2>/dev/null
   # The whole help block rides along (capped): an agent reading the
   # feed needs the log tail, not just the step name.
@@ -305,10 +287,9 @@ magpie_fail() {
 # process; pass 2 -> help block. Never a third pass.
 magpie_step_failed() {
   step=$1
-  hint=${2:-}
   magpie_log "step failed after retries: $step"
   if [ "${MAGPIE_PASS:-1}" = "2" ]; then
-    magpie_fail "$step" "$hint"
+    magpie_fail "$step"
   fi
   magpie_report "setup: retry pass 2 after: $step"
   magpie_say "[$(magpie_now)] - something failed, retrying automatically in $MAGPIE_PASS_SECS s"
@@ -384,7 +365,7 @@ magpie_sudo_warm() {
     magpie_say "Password not accepted - try again"
     sleep "$MAGPIE_SUDO_RETRY_SECS"
   done
-  magpie_fail "password was never accepted" "sudo"
+  magpie_fail "password was never accepted"
 }
 
 # ---------------- lock + traps ----------------
@@ -649,7 +630,7 @@ magpie_step_os_base() {
     fi
     magpie_say_progress "apt update (git, curl)" "about 1-2 min"
     if ! magpie_retry 3 magpie_apt_body; then
-      magpie_step_failed "apt git curl" "wifi"
+      magpie_step_failed "apt git curl"
     fi
     return 0
   fi
@@ -662,7 +643,7 @@ magpie_step_os_base() {
   fi
   magpie_say_progress "Xcode Command Line Tools" "about 5-20 min, please wait"
   if ! magpie_retry 3 magpie_clt_body; then
-    magpie_step_failed "Xcode Command Line Tools" "clt"
+    magpie_step_failed "Xcode Command Line Tools"
   fi
 }
 
@@ -720,7 +701,7 @@ magpie_install_opencode() {
   esac
   magpie_say_progress "opencode" "about 1 min"
   if ! magpie_retry 3 magpie_install_opencode_body; then
-    magpie_step_failed "opencode install" "wifi"
+    magpie_step_failed "opencode install"
   fi
   magpie_fix_bin_path opencode
   magpie_say "OK: opencode $OPENCODE_VERSION installed"
@@ -780,7 +761,7 @@ magpie_install_nono() {
   esac
   magpie_say_progress "nono" "about 1 min"
   if ! magpie_retry 3 magpie_install_nono_body; then
-    magpie_step_failed "nono install" "wifi"
+    magpie_step_failed "nono install"
   fi
   magpie_fix_bin_path nono
   magpie_say "OK: nono $NONO_VERSION installed"
@@ -877,19 +858,32 @@ magpie_register_gfortran() {
   fi
 }
 
-# Linux: base tools + the -dev libraries R packages compile against,
-# one apt call. Skip when R and pandoc are already there.
-magpie_apt_tools_body() {
-  magpie_sudo_warm || return 1
-  sudo apt-get -o DPkg::Lock::Timeout=120 update || return 1
+# The -dev library list for R package compilation. Ubuntu 26.04+
+# marks the libcurl4-*-dev flavours as conflicting - request the
+# openssl one only (renv builds the R curl/httr stack against it).
+magpie_apt_tools_install() {
   sudo apt-get -o DPkg::Lock::Timeout=120 install -y -o Acquire::Retries=3 \
     git wget zip unzip r-base pandoc build-essential cmake gfortran \
-    gdal-bin libcurl4-gnutls-dev libcurl4-openssl-dev \
+    gdal-bin libcurl4-openssl-dev \
     libfontconfig1 libfontconfig1-dev libfreetype-dev libfribidi-dev \
     libgdal-dev libgit2-dev libglpk-dev libharfbuzz-dev libjpeg-dev \
     libnetcdf-dev libpng-dev libpoppler-cpp-dev libcairo2-dev libssl-dev \
-    libtiff5-dev libudunits2-dev libxml2-dev libuv1-dev pari-gp qpdf \
-    || return 1
+    libtiff5-dev libudunits2-dev libxml2-dev libuv1-dev pari-gp qpdf
+}
+
+# Linux: base tools + the -dev libraries R packages compile against,
+# one apt call. Skip when R and pandoc are already there. A failed
+# install often means a stale image: runtime libs older than the -dev
+# candidates. One dist-upgrade, then retry the same install.
+magpie_apt_tools_body() {
+  magpie_sudo_warm || return 1
+  sudo apt-get -o DPkg::Lock::Timeout=120 update || return 1
+  if ! magpie_apt_tools_install; then
+    magpie_log "bulk install failed - retrying after dist-upgrade"
+    sudo apt-get -o DPkg::Lock::Timeout=120 dist-upgrade -y \
+      -o Acquire::Retries=3 || return 1
+    magpie_apt_tools_install || return 1
+  fi
   command -v pandoc >/dev/null 2>&1
 }
 
@@ -900,7 +894,7 @@ magpie_step_apt_tools() {
   fi
   magpie_say_progress "apt R + pandoc + build libraries" "5-15 min, just wait"
   if ! magpie_retry 3 magpie_apt_tools_body; then
-    magpie_step_failed "apt course tools" "wifi"
+    magpie_step_failed "apt course tools"
   fi
   magpie_say "OK: apt course tools installed"
 }
@@ -916,7 +910,7 @@ magpie_step_gfortran() {
   MAGPIE_PKG_SHA=$GFORTRAN_SHA256
   magpie_say_progress "gfortran $GFORTRAN_VERSION (pkg)" "about 2-5 min"
   if ! magpie_retry 3 magpie_gfortran_body; then
-    magpie_step_failed "gfortran install" "wifi"
+    magpie_step_failed "gfortran install"
   fi
   magpie_register_gfortran
   magpie_say "OK: gfortran installed"
@@ -938,7 +932,7 @@ magpie_step_r() {
   esac
   magpie_say_progress "R $R_VERSION (pkg)" "about 2-5 min"
   if ! magpie_retry 3 magpie_r_body; then
-    magpie_step_failed "R install" "wifi"
+    magpie_step_failed "R install"
   fi
   magpie_say "OK: R installed"
 }
@@ -959,7 +953,7 @@ magpie_step_pandoc() {
   esac
   magpie_say_progress "pandoc $PANDOC_VERSION (pkg)" "about 1-2 min"
   if ! magpie_retry 3 magpie_pandoc_body; then
-    magpie_step_failed "pandoc install" "wifi"
+    magpie_step_failed "pandoc install"
   fi
   magpie_say "OK: pandoc installed"
 }
@@ -1000,7 +994,7 @@ magpie_step_tinytex() {
     fi
     magpie_say_progress "TinyTeX" "a few minutes"
     if ! magpie_retry 3 magpie_tinytex_body; then
-      magpie_step_failed "TinyTeX install" "wifi"
+      magpie_step_failed "TinyTeX install"
     fi
     magpie_say "OK: TinyTeX installed"
   fi
@@ -1116,7 +1110,7 @@ magpie_install_gams() {
   fi
   magpie_say_progress "GAMS $GAMS_VERSION" "about 3-10 min (~500-670 MB download)"
   if ! magpie_retry 3 magpie_gams_body; then
-    magpie_step_failed "GAMS install" "wifi"
+    magpie_step_failed "GAMS install"
   fi
   magpie_say "OK: GAMS $GAMS_VERSION installed"
   magpie_report "setup: gams $GAMS_VERSION installed"
@@ -1230,7 +1224,7 @@ magpie_pull_nono_profile() {
   fi
   magpie_say_progress "nono profile" "about 1 min"
   if ! magpie_retry 3 magpie_nono_pull; then
-    magpie_step_failed "nono profile pull" "wifi"
+    magpie_step_failed "nono profile pull"
   fi
   # Pin keeps the pack out of `nono update`: the sandbox policy stays
   # exactly as pinned until this script raises the pin. Best effort.
@@ -1375,7 +1369,7 @@ magpie_clone_magpie() {
   done
   magpie_say_progress "magpie" "about 2-5 min"
   if ! magpie_retry 3 magpie_clone_body; then
-    magpie_step_failed "magpie clone" "wifi"
+    magpie_step_failed "magpie clone"
   fi
   magpie_say "OK: magpie cloned"
 }
@@ -1414,7 +1408,7 @@ magpie_step_renv_restore() {
   fi
   magpie_say_progress "renv library restore" "about 5-15 min, just wait"
   if ! magpie_retry 3 magpie_renv_restore_body; then
-    magpie_step_failed "renv restore" "wifi"
+    magpie_step_failed "renv restore"
   fi
   magpie_say "OK: renv library restored"
   magpie_report "setup: renv restored"
@@ -1620,11 +1614,11 @@ magpie_step_full_run() {
   magpie_report "setup: full run start"
   before=$(magpie_latest_full_run)
   if ! magpie_full_run_body "$runpath"; then
-    magpie_fail "full magpie run (check the run folder under ~/magpie)" "wifi"
+    magpie_fail "full magpie run (check the run folder under ~/magpie)"
   fi
   after=$(magpie_latest_full_run)
   if [ -z "$after" ] || [ "$after" = "$before" ]; then
-    magpie_fail "full magpie run (check the run folder under ~/magpie)" "wifi"
+    magpie_fail "full magpie run (check the run folder under ~/magpie)"
   fi
   printf 'output/%s\n' "$after" > "$marker"
   magpie_say "OK: full magpie run finished (output/$after)"
@@ -1692,18 +1686,14 @@ magpie_setup_path() {
   # Reproducible-failure model: any check FAIL ends the run with the
   # help block - the old "continue after FAIL" is gone.
   if ! magpie_run_checks; then
-    magpie_fail "checks" "" "$MAGPIE_CHECK_RESULTS"
+    magpie_fail "checks" "$MAGPIE_CHECK_RESULTS"
   fi
 
   # No warm sudo credential may exist while a sandboxed child runs
   # (gate + full run).
   magpie_stop_keepalive
   if ! magpie_sandbox_gate; then
-    hint=""
-    if [ "$MAGPIE_OS" = "linux" ]; then
-      hint=landlock
-    fi
-    magpie_step_failed "sandbox gate" "$hint"
+    magpie_step_failed "sandbox gate"
   fi
 
   magpie_step_full_run

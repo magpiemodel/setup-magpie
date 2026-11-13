@@ -383,6 +383,8 @@ fi
 exec /usr/bin/id "$@"
 EOS
   # apt-get: succeeds and "installs" the two tools the script checks.
+  # STUB_APT_INSTALL_FAILS=N: the first N install calls exit 100
+  # (update and dist-upgrade never fail) - drives the escalation path.
   cat > "$FAKE_BIN/apt-get" <<'EOS'
 #!/bin/sh
 echo "apt-get $*" >> "$STATE/apt.log"
@@ -390,6 +392,9 @@ if [ "${STUB_APT_FAIL:-0}" = "1" ]; then exit 100; fi
 seen_install=0
 for a in "$@"; do [ "$a" = install ] && seen_install=1; done
 if [ "$seen_install" = 1 ]; then
+  c="$STATE/apt_install_count"
+  n=$(cat "$c" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$c"
+  if [ "$n" -le "${STUB_APT_INSTALL_FAILS:-0}" ]; then exit 100; fi
   for a in "$@"; do
     case $a in
       r-base) cp "$STATE/binlib/Rscript" "$FAKE_BIN/Rscript" 2>/dev/null || true ;;
@@ -889,6 +894,33 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_st
 ret_is "apt tools step ok" 0
 grep_ok "tools update lock timeout" "$STATE/apt.log" "DPkg::Lock::Timeout=120 update"
 grep_ok "tools install lock timeout" "$STATE/apt.log" "DPkg::Lock::Timeout=120 install"
+# Ubuntu 26.04: libcurl4-*-dev are mutually conflicting (feed Lynx729)
+# - the list must never request both flavours.
+grep_no "no libcurl gnutls dev in list" "$STATE/apt.log" "libcurl4-gnutls-dev"
+grep_no "healthy path no dist-upgrade" "$STATE/apt.log" "dist-upgrade"
+
+# ============================================================
+sec "apt tools: dist-upgrade escalation"
+# ============================================================
+# First bulk install fails (stale image deps) -> one dist-upgrade ->
+# install retried inside the same attempt.
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_apt_tools' \
+  run_fn STUB_APT_INSTALL_FAILS=1
+ret_is "apt tools recover after escalation" 0
+grep_ok "escalation dist-upgrade runs" "$STATE/apt.log" "DPkg::Lock::Timeout=120 dist-upgrade"
+cnt_is "install retried after escalation" " install -y" "$STATE/apt.log" 2
+grep_ok "tools OK after escalation" "$STATE/screen.txt" "OK: apt course tools installed"
+# Persistent fail: 3 attempts x (install + dist-upgrade + install),
+# then pass-2 blocked with the help block.
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; MAGPIE_PASS=2 magpie_step_apt_tools' \
+  run_fn STUB_APT_INSTALL_FAILS=99
+ret_is "persistent apt fail blocks" 1
+cnt_is "3 attempts x 2 installs" " install -y" "$STATE/apt.log" 6
+cnt_is "3 escalations" " dist-upgrade" "$STATE/apt.log" 3
+grep_ok "FAIL apt tools fed" "$STATE/feed.log" "FAIL apt course tools"
+grep_no "no hint lines in help block" "$STATE/screen.txt" "run this file again"
 
 # ============================================================
 sec "handle (code name)"
@@ -1718,7 +1750,8 @@ ret_is "corrupt download blocks" 1
 S="$STATE/screen.txt"
 grep_ok "help block" "$S" "##"
 grep_ok "failed step named" "$S" "FAILED STEP (twice, reproducible): opencode install"
-grep_ok "wifi hint" "$S" "Wi-Fi"
+grep_no "no wifi hint text" "$S" "Wi-Fi"
+grep_no "no hint lines in help block" "$S" "run this file again"
 grep_ok "code name in help block" "$S" "code name:"
 cnt_is "retry heads-up once per pass" "retrying automatically" "$S" 1
 cnt_is "failing step logged in both passes" "step failed after retries" "$FAKE_HOME/magpie/setup-log.txt" 2
@@ -1781,7 +1814,7 @@ awk 'BEGIN{
     else printf "filler %d %s\n", i, x
   }
 }' > "$FAKE_HOME/magpie/setup-log.txt"
-FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_fail "cap step" "wifi"' run_fn
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_fail "cap step"' run_fn
 ret_is "capped fail exits 1" 1
 grep_ok "FAIL header keeps step" "$STATE/feed.log" "vunknown | setup: FAIL cap step"
 grep_ok "beginner prompt in feed" "$STATE/feed.log" "I am a beginner setting up MAgPIE"
@@ -1816,7 +1849,7 @@ grep_no "no crash line from check-only child" "$STATE/feed.log" "CRASH"
 
 # Retry pass 2 announce (MAGPIE_SELF=/bin/true: exec ends the unit).
 new_env
-FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; MAGPIE_SELF="$MINBIN/true"; magpie_step_failed "wifi blip" "wifi"' run_fn
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; MAGPIE_SELF="$MINBIN/true"; magpie_step_failed "wifi blip"' run_fn
 ret_is "retry execs the self script" 0
 grep_ok "retry pass 2 announced" "$STATE/feed.log" "setup: retry pass 2 after: wifi blip"
 

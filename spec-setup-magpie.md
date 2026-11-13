@@ -201,18 +201,24 @@ pin`). Feed lines "setup: opencode installed" / "setup: nono installed"
 
 ### 6.3 Course tools - Linux
 
-One step, one apt call: base tools (`git wget zip unzip r-base pandoc
+One step: base tools (`git wget zip unzip r-base pandoc
 build-essential cmake gfortran`) plus the full -dev library list from
-the old `setup-ubuntu.sh` (gdal, libcurl, fontconfig, freetype,
-fribidi, gdal, git2, glpk, harfbuzz, jpeg, netcdf, png, poppler-cpp,
-cairo, ssl, tiff5, udunits2, xml2, uv1, pari-gp, qpdf),
-`Acquire::Retries=3`, `magpie_sudo_warm` inside. Skipped when R >= 4.3
-AND pandoc are already present. Both apt calls (also the git/curl one
-in 6.1) carry `-o DPkg::Lock::Timeout=120`: the old feed's biggest
-Linux failure cluster (`FAIL apt install of libraries`) is the dpkg
-lock held by WSL's unattended-upgrades - far past the step-retry
-waits. apt now waits up to 2 min per attempt for the lock
-(option since apt 1.9.11, i.e. Ubuntu 20.04+ = the WSL floor).
+the old `setup-ubuntu.sh` (gdal, fontconfig, freetype, fribidi, gdal,
+git2, glpk, harfbuzz, jpeg, netcdf, png, poppler-cpp, cairo, ssl,
+tiff5, udunits2, xml2, uv1, pari-gp, qpdf) and `libcurl4-openssl-dev`
+only - Ubuntu 26.04 marks the two `libcurl4-*-dev` flavours as
+conflicting (feed Lynx729), and renv source builds need the openssl
+one alone. `Acquire::Retries=3`, `magpie_sudo_warm` inside. A failed
+bulk install logs one escalation: `dist-upgrade -y` (stale WSL images
+carry runtime libs older than the -dev candidates), then the same
+install runs again inside the attempt (`magpie_apt_tools_install`
+helper). Skipped when R >= 4.3 AND pandoc are already present. All
+three apt calls (also the git/curl one in 6.1) carry
+`-o DPkg::Lock::Timeout=120`: the old feed's biggest Linux failure
+cluster (`FAIL apt install of libraries`) is the dpkg lock held by
+WSL's unattended-upgrades - far past the step-retry waits. apt now
+waits up to 2 min per attempt for the lock (option since apt 1.9.11,
+i.e. Ubuntu 20.04+ = the WSL floor).
 
 ### 6.4 Course tools - macOS
 
@@ -282,8 +288,7 @@ nono run --profile magpie-profile -- env MAGPIE_CHECK_ONLY=1 \
 
 The child: greet + checks only, feed label "sandbox check result",
 exit code = checks result, no lock/sudo/tee/installs -
-recursion-proof. Gate failure goes through the retry + pass-2 model
-(landlock hint on Linux).
+recursion-proof. Gate failure goes through the retry + pass-2 model.
 
 ### 6.8 magpie clone
 
@@ -306,7 +311,7 @@ Otherwise, inside `~/magpie`: bootstrap `renv` via
 never asks anything), then
 `Rscript -e 'renv::restore(prompt = FALSE, restart = FALSE)'`.
 Wrapped in `magpie_retry 3`, failure -> `magpie_step_failed "renv
-restore" "wifi"`. Real restores feed "setup: renv restored"; progress
+restore"`. Real restores feed "setup: renv restored"; progress
 heads-up "about 5-15 min". Fills `$RENV_PATHS_CACHE`, so the sandboxed
 run-folder renv restores (6.10) only copy from the cache.
 
@@ -348,7 +353,7 @@ script of the default postprocessing `cfg$output <- c("output_check",
 `submit.R` runs automatically via `sys.source("output.R")` - no extra
 `output.R` call needed). Non-zero sandbox exit fails regardless of
 artifacts. Any failure: `magpie_fail "full magpie run (check the run
-folder under ~/magpie)" "wifi"`, exit 1. Verified success writes the
+folder under ~/magpie)"`, exit 1. Verified success writes the
 marker, prints the OK line and feeds "setup: full run finished".
 Partial/failed run folders stay where they are (decision: never
 clean).
@@ -366,8 +371,9 @@ clean).
   The help block = beginner prompt lines + `System: <sys> | <arch> |
   code name: <handle>` + (`FAILED STEP (twice, reproducible): <step>`
   for step failures, the results list for check failures) + last 25 log
-  lines + the per-hint lines (landlock/clt/wifi/sudo). Saved to
-  `~/magpie/setup-help.txt`, framed between `##` lines.
+  lines. No fix hints: the student pastes the block into an AI chat and
+  fixes it with LLM help. Saved to `~/magpie/setup-help.txt`, framed
+  between `##` lines.
 - sudo: blind retry loop, cap 6, keep-alive only after a real prompt.
 
 ## 8. Checks (`magpie_run_checks`, bash 3.2 rewrite of the old block)
@@ -433,7 +439,7 @@ profile pulled); "setup: renv restored"; "setup: full run start" /
 starts; the check block; "sandbox check result"; "setup: run
 finished". `setup: FAIL <step>` before every abort carries the WHOLE
 help block (system string, check results or failed step, last 25 log
-lines, hint) in the same post, capped at 3200 bytes for the whole
+lines) in the same post, capped at 3200 bytes for the whole
 block (kept from the old transport: no server limit forces it now, and
 small posts stay readable in the folder). The EXIT trap reports unexpected
 deaths as "setup: CRASH exit=<code>" + last 10 log lines (same cap):
