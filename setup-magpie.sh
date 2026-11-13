@@ -1,11 +1,11 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Unified MAgPIE course setup for macOS (arm64 + x86_64) and WSL Ubuntu.
 # One file, run with: bash setup-magpie.sh. Safe to rerun.
 # Installs: git/curl (or Xcode CLT), opencode, nono, HU config, course tools
 # (apt libs | pinned pkgs), TinyTeX, GAMS + licence, nono profile, magpie
 # clone, renv restore. Then checks (unsandboxed + sandbox gate), one full
 # default run inside the sandbox, and the next steps.
-# Valid POSIX sh - no bashisms.
+# Bash - baseline macOS stock /bin/bash 3.2, no bash4+ constructs.
 
 # ============================================================
 # Re-pin per asset: curl -fsSL <url> | sha256sum (macOS: shasum -a 256)

@@ -1,9 +1,9 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # MAgPIE course: essential setup + daily launcher. Standalone, safe to rerun.
 # Bootstrapping: installs opencode + nono + HU config + nono profile + magpie
 # clone, then opens opencode inside the nono sandbox in ~/magpie.
 # Regular (bootstrapping finished): starts the sandbox directly - no sudo, no network.
-# Works on macOS (Apple Silicon and Intel) and WSL Ubuntu. Valid POSIX sh.
+# Works on macOS (Apple Silicon and Intel) and WSL Ubuntu. Baseline bash 3.2.
 
 # ============================================================
 # Re-pin per asset: curl -fsSL <url> | sha256sum (macOS: shasum -a 256)

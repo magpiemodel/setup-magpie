@@ -29,13 +29,13 @@ self-heal.
 ## 2. Design decisions
 
 - One file, both OSes. Branch on `uname` (Darwin | Linux), like
-  `magpie-opencode.sh`. Valid POSIX sh from line 1, run via `bash`
-  only - no `[[`, no arrays, no `local`,
-  no `$RANDOM`, no process substitution.
+  `magpie-opencode.sh`. Shebang `#!/usr/bin/env bash` from line 1, run
+  via `bash` only, baseline bash 3.2 (macOS stock /bin/bash) - no `[[`,
+  no arrays, no `local`, no `$RANDOM`, no process substitution.
 - The upload feed and the animal code name are KEPT (unlike
   `magpie-opencode.sh`): the teacher reads the posts on course day.
   The handle is `Animal+3digits` in `~/.magpie-course-handle`, picked
-  from `/dev/urandom` (dash has no `$RANDOM`). First creation is atomic
+  from `/dev/urandom` (no `$RANDOM`). First creation is atomic
   (noclobber): two concurrent first runs converge on one name. It is an
   internal per-machine id (feed posts and the username replacement),
   reported in `magpie_greet`; there is no interactive prompt.
@@ -370,7 +370,7 @@ clean).
   `~/magpie/setup-help.txt`, framed between `##` lines.
 - sudo: blind retry loop, cap 6, keep-alive only after a real prompt.
 
-## 8. Checks (`magpie_run_checks`, POSIX rewrite of the old block)
+## 8. Checks (`magpie_run_checks`, bash 3.2 rewrite of the old block)
 
 Results accumulate in a newline-separated string (no arrays):
 `gams` (found via PATH or the per-OS locations, run in a temp dir;
@@ -463,9 +463,10 @@ HOME, stub binaries only, real git only against a local origin; PATH is
 a curated minimal bin dir so a host tex/pandoc/Rscript/gams can never
 shadow the stubs; pinned block sedded to 9.9.9/fake shas; scenario
 trees cloned from one template via hardlinks; previous scratch moved
-aside with a detached background rm): 490
-assertions (491 with shellcheck on PATH) - syntax (bash/dash -n,
-shellcheck -s sh where present); pin placeholder guard;
+aside with a detached background rm): 491
+assertions (492 with shellcheck on PATH) - syntax (bash -n, bash32
+guard on script and harness, shellcheck -s bash where present); pin
+placeholder guard;
 disk abort + warn tiers (incl. the raised 9 GB / 18 GB boundaries);
 root guard; lock live/stale (a second window
 exits quietly and leaves the FIRST run's keep-alive + `setup-dl-*`

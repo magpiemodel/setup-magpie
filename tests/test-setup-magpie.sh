@@ -42,6 +42,20 @@ mode_is() {
   if [ "$m" = "$3" ]; then ok "$1 (mode $m)"; else no "$1 (mode $m want $3)"; fi
 }
 
+# Bash 3.2 gate: flags bash4+ constructs. Bracketed first letters keep
+# this pattern text from matching itself.
+BASH32_PAT='[d]eclare -A|[l]ocal -A|[m]apfile|[r]eadarray|[&]>>|[|]&|[d]eclare -n|[l]ocal -n|\$\{[A-Za-z_][A-Za-z0-9_]*(,,|\^\^|@)'
+bash32_guard() {
+  local hits
+  hits=$(grep -nE "$BASH32_PAT" "$1" 2>/dev/null || true)
+  if [ -z "$hits" ]; then
+    ok "bash32 guard: $(basename "$1")"
+  else
+    no "bash32 guard: bash4+ constructs in $1"
+    printf '%s\n' "$hits"
+  fi
+}
+
 # Bounded polls instead of fixed sleeps (2s cap, 20ms steps).
 wait_gone() {
   local i=0
@@ -632,13 +646,10 @@ build_template
 sec "syntax"
 # ============================================================
 if bash -n "$SCRIPT" 2>/dev/null; then ok "bash -n"; else no "bash -n"; fi
-if command -v dash >/dev/null 2>&1; then
-  if dash -n "$SCRIPT" 2>/dev/null; then ok "dash -n"; else no "dash -n"; fi
-else
-  echo "  (dash not installed - skipped)"
-fi
+bash32_guard "$SCRIPT"
+bash32_guard "$HERE/test-setup-magpie.sh"
 if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck -s sh "$SCRIPT" >/dev/null 2>&1; then ok "shellcheck"; else no "shellcheck"; fi
+  if shellcheck -s bash "$SCRIPT" >/dev/null 2>&1; then ok "shellcheck"; else no "shellcheck"; fi
 else
   echo "  (shellcheck not installed - skipped)"
 fi

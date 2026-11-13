@@ -30,6 +30,20 @@ cnt_is()  {
 file_ok() { if [ -e "$2" ]; then ok "$1"; else no "$1"; fi; }
 nofile_ok() { if [ ! -e "$2" ]; then ok "$1"; else no "$1"; fi; }
 
+# Bash 3.2 gate: flags bash4+ constructs. Bracketed first letters keep
+# this pattern text from matching itself.
+BASH32_PAT='[d]eclare -A|[l]ocal -A|[m]apfile|[r]eadarray|[&]>>|[|]&|[d]eclare -n|[l]ocal -n|\$\{[A-Za-z_][A-Za-z0-9_]*(,,|\^\^|@)'
+bash32_guard() {
+  local hits
+  hits=$(grep -nE "$BASH32_PAT" "$1" 2>/dev/null || true)
+  if [ -z "$hits" ]; then
+    ok "bash32 guard: $(basename "$1")"
+  else
+    no "bash32 guard: bash4+ constructs in $1"
+    printf '%s\n' "$hits"
+  fi
+}
+
 # Linux only: the stub archives carry linux builds (macOS gets live
 # tests, spec 8). Exit 77 marks "skipped, not failed".
 if [ "$(uname)" != "Linux" ]; then
@@ -318,9 +332,10 @@ map_target
 sec "syntax"
 # ============================================================
 if bash -n "$SCRIPT" 2>/dev/null; then ok "bash -n"; else no "bash -n"; fi
-if dash -n "$SCRIPT" 2>/dev/null; then ok "dash -n"; else no "dash -n"; fi
+bash32_guard "$SCRIPT"
+bash32_guard "$HERE/test-magpie-opencode.sh"
 if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck -s sh "$SCRIPT" >/dev/null 2>&1; then ok "shellcheck"; else no "shellcheck"; fi
+  if shellcheck -s bash "$SCRIPT" >/dev/null 2>&1; then ok "shellcheck"; else no "shellcheck"; fi
 else
   echo "  (shellcheck not installed - skipped)"
 fi

@@ -63,8 +63,9 @@ course status feed, no code name - nothing is uploaded anywhere.
   That includes the log, so the magpie clone must cope with a non-empty
   target: `git init` + fetch + checkout instead of `git clone`
   (`git clone` refuses a non-empty directory).
-- Foolproof against how it is run: valid POSIX sh from line 1, run via
-  `bash file` only.
+- Foolproof against how it is run: shebang `#!/usr/bin/env bash` from
+  line 1, run via `bash file` only. Baseline: bash 3.2 (macOS stock
+  /bin/bash), enforced by the harness bash32 guard.
   No bash-only syntax anywhere (no `[[ ]]`, no arrays, no process
   substitution). All paths absolute via `$HOME`; the starting directory
   never matters.
@@ -550,8 +551,9 @@ Offline harness (fake `$HOME`, stub `curl/apt/git/softwareupdate/sudo/df/
 tar/nono/opencode`), like the existing
 `.tmp/test-path-export.sh`:
 
-- syntax: `bash -n`, `dash -n`; shellcheck when
-  available (POSIX mode).
+- syntax: `bash -n`, bash32 guard (no bash4+ constructs, run on the
+  script and the harness); shellcheck when
+  available (bash mode).
 - fast path: table of marker-present/absent x each check present/broken;
   broken install with marker falls into setup path;
   `MAGPIE_FORCE_SETUP`/`MAGPIE_REPAIR` both respected (repair must NOT
