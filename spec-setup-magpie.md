@@ -1,8 +1,8 @@
 # setup-magpie.sh - spec (unified day-one course setup)
 
 Status: implemented in setup-magpie.sh (tests: tests/test-setup-magpie.sh,
-431 assertions (432 when shellcheck is present), all green on a Linux
-x86_64 dev host). Date: 2026-11-12.
+460 assertions (461 when shellcheck is present), all green on a Linux
+x86_64 dev host). Date: 2026-11-13.
 
 ## 1. Purpose
 
@@ -389,15 +389,35 @@ block + exit 1; in the child: exit non-zero for the gate).
 
 ## 9. Feed protocol (topic `https://ntfy.sh/magpie-course-cb3363c15a75`)
 
-Every message: `<handle> | <OS> <arch> | <text>`, `curl -m 5
---data-binary @-` (the only form ntfy decodes), never fails the
-caller. Milestones: "setup: start"; installs (opencode, nono, gams
-<ver>, profile pulled); "setup: renv restored"; "setup: full run
-start" / "setup: full run finished" / "setup: full run skipped
+Every message: `<handle> | <OS> <arch> | v<hash> | <text>` (text may
+be multi-line), `curl -m 5 --data-binary @-` (the only form ntfy
+decodes), never fails the caller. `v<hash>` = first 12 sha256 hex of
+this file, computed at entry (uname-based shasum/sha256sum, "unknown"
+if the tools are missing): an agent maps hash -> build, an unknown
+hash = truncated/edited download. Every body passes `magpie_sanitize`
+(one PII choke point inside `magpie_report`): $HOME -> `~`, hostname
+-> `HOST`, username -> `USER` (order: home, host, user). Secrets
+never reach the log by design: sudo reads the password from the tty
+only, the licence text is written to its file only, HU_API_KEY is the
+literal placeholder here. Sanitizing third-party output is
+best-effort; handles stay pseudonymous.
+
+Milestones: "setup: start"; installs (opencode, nono, gams <ver>,
+profile pulled); "setup: renv restored"; "setup: full run start" /
+"setup: full run finished" / "setup: full run skipped
 (MAGPIE_FULL_RUN=0)"; warnings (licence placeholder, low disk);
-`setup: FAIL <step>` before every abort; the check block; "sandbox
-check result"; "setup: run finished". Teacher keeps the page open,
-calls out code names of FAIL/silent students. No PII.
+"setup: retry pass 2 after: <step>" when the fresh-process retry
+starts; the check block; "sandbox check result"; "setup: run
+finished". `setup: FAIL <step>` before every abort carries the WHOLE
+help block (system string, check results or failed step, last 25 log
+lines, hint) in the same post, capped at 3200 bytes for the whole
+block (ntfy.sh rejects > 4096). The EXIT trap reports unexpected
+deaths as "setup: CRASH exit=<code>" + last 10 log lines (same cap):
+any code but 0/130, or 1 without a prior FAIL post; never in the
+check-only child (the gate reports there). Teacher keeps the page
+open, calls out code names of FAIL/silent students. Students that
+never appear on the feed never started the script (PowerShell
+instead of WSL, failed download) - absence is a signal too.
 
 ## 10. Next steps block
 
@@ -415,8 +435,8 @@ HOME, stub binaries only, real git only against a local origin; PATH is
 a curated minimal bin dir so a host tex/pandoc/Rscript/gams can never
 shadow the stubs; pinned block sedded to 9.9.9/fake shas; from an
 interactive terminal the harness re-execs itself via `setsid -w` so the
-handle box's /dev/tty Enter prompt can never block the suite): 431
-assertions (432 with shellcheck on PATH) - syntax (bash/dash -n,
+handle box's /dev/tty Enter prompt can never block the suite): 460
+assertions (461 with shellcheck on PATH) - syntax (bash/dash -n,
 shellcheck -s sh where present); pin placeholder guard;
 disk abort + warn tiers (incl. the raised 9 GB / 18 GB boundaries);
 root guard; lock live/stale (a second window
@@ -427,7 +447,11 @@ fresh-process pass 2; sudo loop
 in a dedicated sudo-prompt E2E, and `setup-dl-*.pkg` checksum mismatch
 asserting no sudo ran before verification); handle create-once/reuse +
 box;
-feed POSTs recorded (start, check block, FAIL, run finished); config
+feed POSTs recorded (start with file-hash header, check block, FAIL,
+run finished); feed v2: sanitizer (home/host/user), combined FAIL
+block with 3200 B cap (deep tail cut, screen + help file uncapped),
+CRASH on unexpected exit (3, silent 1; none after a FAIL post, none
+in the check-only child), retry-pass-2 announce; config
 write incl. foreign `.bak`; HU key dedupe; cache dirs created + rc
 lines deduped; licence placeholder/pasted/
 mode-600/never-clobber/darwin-700; checks table (GAMS 54 + licensee

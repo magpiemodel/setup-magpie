@@ -1554,6 +1554,9 @@ grep_no "no manual renv line" "$S" "Rscript -e 'renv::restore()'"
 grep_no "old rerun-setup hint gone" "$S" "rerun this setup file"
 # feed protocol
 grep_ok "feed start" "$STATE/feed.log" "setup: start"
+WANTV=$(sha256sum "$E2E_SCRIPT" | cut -c1-12)
+grep_ok "feed carries script hash" "$STATE/feed.log" " | v$WANTV | setup: start"
+grep_no "no fake home in feed" "$STATE/feed.log" "$FAKE_HOME"
 grep_ok "feed check result block" "$STATE/feed.log" "check result"
 grep_ok "feed PASS gams line" "$STATE/feed.log" "PASS gams"
 grep_ok "feed full run start" "$STATE/feed.log" "setup: full run start"
@@ -1671,6 +1674,7 @@ grep_ok "code name in help block" "$S" "code name:"
 cnt_is "retry heads-up once per pass" "retrying automatically" "$S" 1
 cnt_is "failing step logged in both passes" "step failed after retries" "$FAKE_HOME/magpie/setup-log.txt" 2
 grep_ok "FAIL line on the feed" "$STATE/feed.log" "setup: FAIL opencode install"
+grep_ok "retry pass 2 announced on feed" "$STATE/feed.log" "setup: retry pass 2 after: opencode install"
 grep_no "run not finished" "$STATE/feed.log" "run finished"
 nofile_ok "no lock left behind" "$FAKE_HOME/magpie/.setup.lock"
 ls "$FAKE_HOME/magpie" | grep -q '^setup-dl-' && no "crash leaves no setup-dl-*" || ok "crash leaves no setup-dl-*"
@@ -1679,6 +1683,73 @@ new_env
 run_e2e STUB_CURL_DL_FAILS=1
 ret_is "transient download failure heals" 0
 grep_no "no failure heads-up" "$STATE/screen.txt" "retrying automatically"
+
+# ============================================================
+sec "feed v2: sanitize, combined FAIL, cap, crash, retry"
+# ============================================================
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_report "home=$HOME host=$(uname -n) user=$(id -un)"' run_fn
+grep_ok "home replaced by ~" "$STATE/feed.log" "home=~ "
+grep_ok "host replaced" "$STATE/feed.log" "host=HOST"
+grep_ok "user replaced" "$STATE/feed.log" "user=USER"
+grep_ok "unit feed falls back to vunknown" "$STATE/feed.log" "vunknown"
+grep_no "no real username in feed" "$STATE/feed.log" "$(id -un)"
+grep_no "no real hostname in feed" "$STATE/feed.log" "$(uname -n)"
+grep_no "no real home path in feed" "$STATE/feed.log" "$FAKE_HOME"
+
+# Combined FAIL post: block content in the feed, cap cuts deep tail.
+new_env
+mkdir -p "$FAKE_HOME/magpie"
+{
+  i=1
+  while [ "$i" -le 401 ]; do
+    case $i in
+      377) printf 'TAILKEEP %s\n' "$(head -c 200 /dev/zero | tr '\0' 'x')" ;;
+      400) printf 'TAILCUT %s\n' "$(head -c 200 /dev/zero | tr '\0' 'x')" ;;
+      401) echo 'LASTLINE short' ;;
+      *) printf 'filler %s %s\n' "$i" "$(head -c 200 /dev/zero | tr '\0' 'x')" ;;
+    esac
+    i=$((i + 1))
+  done
+} > "$FAKE_HOME/magpie/setup-log.txt"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_fail "cap step" "wifi"' run_fn
+ret_is "capped fail exits 1" 1
+grep_ok "FAIL header keeps step" "$STATE/feed.log" "vunknown | setup: FAIL cap step"
+grep_ok "beginner prompt in feed" "$STATE/feed.log" "I am a beginner setting up MAgPIE"
+grep_ok "FAILED STEP line in feed" "$STATE/feed.log" "FAILED STEP (twice, reproducible): cap step"
+grep_ok "log tail start survives cap" "$STATE/feed.log" "TAILKEEP"
+grep_no "deep tail cut by cap" "$STATE/feed.log" "TAILCUT"
+grep_ok "screen block uncapped" "$STATE/screen.txt" "TAILCUT"
+grep_ok "help file still saved" "$FAKE_HOME/magpie/setup-help.txt" "TAILCUT"
+
+# Crash reporting from the EXIT trap.
+new_env
+mkdir -p "$FAKE_HOME/magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_log "before the crash"; exit 3' run_fn
+ret_is "body exit 3 propagates" 3
+grep_ok "crash reported" "$STATE/feed.log" "setup: CRASH exit=3"
+grep_ok "crash carries log tail" "$STATE/feed.log" "before the crash"
+new_env
+mkdir -p "$FAKE_HOME/magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; false' run_fn
+ret_is "silent exit 1 propagates" 1
+grep_ok "unreported exit 1 is a crash" "$STATE/feed.log" "setup: CRASH exit=1"
+new_env
+mkdir -p "$FAKE_HOME/magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_fail "posted step"' run_fn
+ret_is "fail exits 1" 1
+grep_no "no crash line after FAIL post" "$STATE/feed.log" "CRASH"
+new_env
+mkdir -p "$FAKE_HOME/magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; MAGPIE_CHECK_ONLY=1; exit 3' run_fn
+ret_is "check-only exit 3 propagates" 3
+grep_no "no crash line from check-only child" "$STATE/feed.log" "CRASH"
+
+# Retry pass 2 announce (MAGPIE_SELF=/bin/true: exec ends the unit).
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; MAGPIE_SELF="$MINBIN/true"; magpie_step_failed "wifi blip" "wifi"' run_fn
+ret_is "retry execs the self script" 0
+grep_ok "retry pass 2 announced" "$STATE/feed.log" "setup: retry pass 2 after: wifi blip"
 
 # ============================================================
 printf '\n========================================\n'

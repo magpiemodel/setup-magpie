@@ -133,6 +133,16 @@ magpie_rand() {
   printf '%s\n' "$r"
 }
 
+# First 12 hex of the file's sha256 ("" if the tools are missing).
+# uname, not $MAGPIE_OS: runs before the OS is set.
+magpie_setup_version() {
+  if [ "$(uname)" = "Darwin" ]; then
+    shasum -a 256 "$1" 2>/dev/null
+  else
+    sha256sum "$1" 2>/dev/null
+  fi | cut -d ' ' -f 1 | cut -c1-12
+}
+
 # magpie_pick <r1> <r2> <animal>...: Animal+3digits from two randoms.
 magpie_pick() {
   r1=$1
@@ -189,13 +199,31 @@ magpie_greet() {
   magpie_say "Reporting status as $MAGPIE_HANDLE."
 }
 
-# magpie_report "<text>": one feed post "<handle> | <OS arch> | <text>".
+# PII choke point for every feed upload: replaces $HOME, hostname and
+# username. Best effort against arbitrary child output; order matters
+# (a hostname can contain the username).
+magpie_sanitize() {
+  awk -v home="$HOME" -v host="$(uname -n 2>/dev/null)" \
+    -v user="$(id -un 2>/dev/null)" '
+  {
+    if (home != "") gsub(home, "~")
+    if (host != "") gsub(host, "HOST")
+    if (user != "") gsub(user, "USER")
+    print
+  }'
+}
+
+# magpie_report "<text>": one feed post, text may be multi-line.
+# Header: "<handle> | <OS arch> | v<file hash> | <text>". Keep bodies
+# under ~3.2 KB (ntfy.sh rejects messages above 4096 bytes).
 # Never fails the caller. --data-binary is the only form ntfy decodes.
 magpie_report() {
   if [ -z "$STATUS_URL" ] || ! command -v curl >/dev/null 2>&1; then
     return 0
   fi
-  printf '%s' "${MAGPIE_HANDLE:-unknown} | $(uname -s) $(uname -m) | $1" \
+  printf '%s | %s %s | v%s | %s' "${MAGPIE_HANDLE:-unknown}" \
+    "$(uname -s)" "$(uname -m)" "${MAGPIE_SETUP_VERSION:-unknown}" "$1" \
+    | magpie_sanitize \
     | curl -m 5 -s -o /dev/null --data-binary @- "$STATUS_URL" || true
   return 0
 }
@@ -211,13 +239,13 @@ magpie_sys_string() {
   fi
 }
 
-# Final verdict: help block to fd 4 + saved file + exit 1.
+# Final verdict: help block to fd 4 + saved file + feed post + exit 1.
 # $1 step text, $2 hint (landlock|clt|wifi|sudo|""), $3 check results ("").
 magpie_fail() {
   step=$1
   hint=${2:-}
   results=${3:-}
-  magpie_report "setup: FAIL $step"
+  MAGPIE_FAIL_POSTED=1
   hint_line=""
   case $hint in
     landlock)
@@ -252,6 +280,10 @@ magpie_fail() {
       printf '%s\n' "$hint_line"
     fi
   } > "$tmp" 2>/dev/null
+  # The whole help block rides along (capped): an agent reading the
+  # feed needs the log tail, not just the step name.
+  magpie_report "$(printf 'setup: FAIL %s\n%s' "$step" \
+    "$(head -c 3200 "$tmp" 2>/dev/null)")"
   cp "$tmp" "$HOME/magpie/setup-help.txt" 2>/dev/null || true
   magpie_say ""
   magpie_say "===== NEED HELP? Select EVERYTHING between the ## lines below and"
@@ -272,6 +304,7 @@ magpie_step_failed() {
   if [ "${MAGPIE_PASS:-1}" = "2" ]; then
     magpie_fail "$step" "$hint"
   fi
+  magpie_report "setup: retry pass 2 after: $step"
   magpie_say "[$(magpie_now)] - something failed, retrying automatically in $MAGPIE_PASS_SECS s"
   sleep "$MAGPIE_PASS_SECS"
   if [ -n "${MAGPIE_SELF:-}" ]; then
@@ -372,6 +405,16 @@ magpie_stop_keepalive() {
 # keep-alive. keep-alive and setup-dl-* only ever exist once the lock
 # is held, so ownership gating loses nothing.
 magpie_cleanup() {
+  # Unexpected exit: report it - a silent crash would look like a
+  # healthy run on the feed. 0/130 = clean/abort, 1 after a FAIL post
+  # is magpie_fail's own exit; the check-only child reports via the
+  # gate instead.
+  code=$?
+  if [ -z "${MAGPIE_CHECK_ONLY:-}" ] && [ "$code" != 0 ] && [ "$code" != 130 ] \
+    && { [ "$code" != 1 ] || [ "${MAGPIE_FAIL_POSTED:-}" != 1 ]; }; then
+    magpie_report "$(printf 'setup: CRASH exit=%s\n%s' "$code" \
+      "$(tail -n 10 "$HOME/magpie/setup-log.txt" 2>/dev/null | head -c 3200)")"
+  fi
   lock="$HOME/magpie/.setup.lock"
   if [ -f "$lock/pid" ] && [ "$(cat "$lock/pid" 2>/dev/null)" = "$$" ]; then
     magpie_stop_keepalive
@@ -1701,6 +1744,10 @@ magpie_main() {
 
 # Resolve this file's absolute path, for the fresh-process pass 2.
 magpie_entry() {
+  # Feed fingerprint of this exact file: the agent maps hash -> build.
+  # Unknown hash = truncated or edited download.
+  MAGPIE_SETUP_VERSION=$(magpie_setup_version "$0")
+  MAGPIE_SETUP_VERSION=${MAGPIE_SETUP_VERSION:-unknown}
   MAGPIE_SELF=""
   if [ -f "$0" ]; then
     # shellcheck disable=SC1007  # CDPATH= applies to cd only, not an assignment.
