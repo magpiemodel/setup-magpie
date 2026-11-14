@@ -1063,6 +1063,26 @@ magpie_find_gams_dir() {
   return 1
 }
 
+# The GAMS system folder: holds the gams binary and is where GAMS
+# reads gamslice.txt. On Linux: the ~/gams sfx folder, else the folder
+# of any gams found on PATH (e.g. /opt/gams). On macOS: the pkg
+# framework folder.
+magpie_gams_sysdir() {
+  if [ "$MAGPIE_OS" != "linux" ]; then
+    if [ -x "/Library/Frameworks/GAMS.framework/Resources/gams" ]; then
+      printf '%s\n' "/Library/Frameworks/GAMS.framework/Resources"
+      return 0
+    fi
+    return 1
+  fi
+  d=$(magpie_find_gams_dir) && {
+    printf '%s\n' "$d"
+    return 0
+  }
+  gbin=$(command -v gams 2>/dev/null) || return 1
+  printf '%s\n' "$(dirname "$gbin")"
+}
+
 magpie_find_gams() {
   if command -v gams >/dev/null 2>&1; then
     command -v gams
@@ -1164,7 +1184,7 @@ magpie_licence_dir() {
     printf '%s\n' "$HOME/Library/Application Support/GAMS"
     return 0
   fi
-  magpie_find_gams_dir
+  magpie_gams_sysdir
 }
 
 # True when the teacher pasted the licence text into this script
@@ -1204,6 +1224,13 @@ magpie_install_licence() {
     return 0
   fi
   magpie_licence_available || return 1
+  # A missing dir is created below; only an EXISTING folder that
+  # refuses writes is a dead end (e.g. a root-owned /opt GAMS).
+  if [ -e "$dir" ] && [ ! -w "$dir" ]; then
+    magpie_say "GAMS folder $dir is not writable - the licence needs a rerun of this file."
+    magpie_report "setup: WARNING licence dir not writable"
+    return 1
+  fi
   mkdir -p "$dir"
   if [ "$MAGPIE_OS" = "darwin" ]; then
     chmod 700 "$dir"
@@ -1301,6 +1328,14 @@ magpie_build_nono_profile() {
 }
 EOF
   else
+    # A GAMS found outside ~/gams (any PATH install) must be readable
+    # in the sandbox too.
+    gams_extra=""
+    gd=$(magpie_gams_sysdir 2>/dev/null) || gd=""
+    case $gd in
+      ""|"$HOME/gams"|"$HOME/gams"/*) ;;
+      *) gams_extra=$(printf '      "%s",\n' "$gd") ;;
+    esac
     cat > "$tmp" <<EOF
 {
   "meta": {
@@ -1311,7 +1346,7 @@ EOF
   "filesystem": {
     "read": [
       "$HOME/gams",
-      "$HOME/.TinyTeX",
+$gams_extra      "$HOME/.TinyTeX",
       "$MADRAT_MAINFOLDER",
       "$RENV_PATHS_CACHE"
     ],
@@ -1659,7 +1694,7 @@ magpie_step_full_run() {
     runpath="$texbin:$runpath"
   fi
   if [ "$MAGPIE_OS" = "linux" ]; then
-    gamsdir=$(magpie_find_gams_dir) && runpath="$gamsdir:$runpath"
+    gamsdir=$(magpie_gams_sysdir) && runpath="$gamsdir:$runpath"
   elif [ -d "/Library/Frameworks/GAMS.framework/Resources" ]; then
     runpath="/Library/Frameworks/GAMS.framework/Resources:$runpath"
   fi

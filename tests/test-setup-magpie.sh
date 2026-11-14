@@ -1261,6 +1261,20 @@ put_nono
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
 ret_is "marker-stamped edit regenerated" 0
 grep_ok "edit kept in bak" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json.bak" "/student/added/path"
+# GAMS outside ~/gams (PATH install): licence + sandbox read entry.
+new_env
+put_nono
+cp "$STATE/binlib/gams" "$FAKE_BIN/gams"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
+ret_is "profile with PATH-gams builds" 0
+PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+grep_ok "profile reads the PATH-gams folder" "$PJSON" "$FAKE_BIN"
+grep_ok "profile still reads ~/gams" "$PJSON" "$FAKE_HOME/gams"
+new_env
+SRC="$ENV/magpie_lic.sh"
+cp "$STATE/binlib/gams" "$FAKE_BIN/gams"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_licence_dir' run_fn
+grep_ok "licence dir follows PATH-gams" "$FAKE_HOME/magpie/setup-log.txt" "$FAKE_BIN"
 new_env
 make_tools
 put_nono
@@ -1369,6 +1383,17 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_in
   run_fn STUB_BAD_GAMS=1
 ret_is "gams corrupt download blocks" 1
 grep_ok "gams step named" "$STATE/screen.txt" "FAILED STEP (twice, reproducible): GAMS install"
+# A root-owned GAMS folder (outside ~/gams): licence write warns, no crash.
+new_env
+SRC="$ENV/magpie_lic.sh"
+mkdir -p "$ENV/ro-gams"
+cp "$STATE/binlib/gams" "$ENV/ro-gams/gams"
+chmod 555 "$ENV/ro-gams"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; PATH="$ENV/ro-gams:$PATH"; magpie_install_licence' run_fn
+ret_is "non-writable gams dir warns" 1
+grep_ok "not writable message" "$STATE/screen.txt" "is not writable"
+grep_ok "not writable fed" "$STATE/feed.log" "licence dir not writable"
+chmod 755 "$ENV/ro-gams"
 
 # ============================================================
 sec "download temp-file guard"
