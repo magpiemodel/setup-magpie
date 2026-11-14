@@ -113,8 +113,8 @@ build_template() {
   MINBIN="$ENV/minbin"
   export TMPDIR="$ENV/tmp"
   mkdir -p "$FAKE_HOME" "$FAKE_BIN" "$MINBIN" "$STATE" "$STATE/archives" "$STATE/binlib" "$TMPDIR"
-  # Default supported release for the Ubuntu floor check (overridable
-  # per scenario via STUB_OS_RELEASE).
+  # Default supported release for the Ubuntu floor check: scenarios
+  # override it by re-exporting MAGPIE_OS_RELEASE as a run_fn arg.
   printf 'ID=ubuntu\nVERSION_ID="24.04"\n' > "$STATE/os-release"
   # Only these core tools exist for the tested script (host tex/pandoc/
   # Rscript/gams on PATH would shadow the stubs and trigger REAL downloads).
@@ -1003,6 +1003,7 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; MAGPIE_PA
   run_fn "MAGPIE_OS_RELEASE=$ENV/os22"
 ret_is "ubuntu 22.04 blocked early" 1
 grep_ok "floor message" "$STATE/screen.txt" "Ubuntu 22.04 ships an R older than 4.3"
+grep_ok "wsl hint in help block" "$STATE/screen.txt" "wsl --install -d Ubuntu-24.04"
 grep_no "no apt call" "$STATE/apt.log" "apt-get"
 # Other distros are not blocked by the ubuntu floor.
 new_env
