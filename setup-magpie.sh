@@ -1649,10 +1649,16 @@ magpie_sandbox_gate() {
   fi
   texbin=$(magpie_texbin)
   magpie_say "Final check inside the course sandbox (nono, profile magpie-profile)..."
+  # The child's stdout is this shell's stdout (the log), so its fd 4 is
+  # the log too: tee to the real terminal as well, or the result block
+  # never reaches the screen. The child's exit code decides, not tee's.
   ( cd "$HOME/magpie" && nono run --profile magpie-profile -- \
     env MAGPIE_CHECK_ONLY=1 "PATH=${texbin:+$texbin:}$PATH" \
     "MADRAT_MAINFOLDER=$MADRAT_MAINFOLDER" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
-    bash "$MAGPIE_SELF" --check-only )
+    bash "$MAGPIE_SELF" --check-only ) 2>&1 \
+    | tee -a "$HOME/magpie/setup-log.txt" >&4
+  rc=${PIPESTATUS[0]}
+  return "$rc"
 }
 
 # ---------------- full default run (sandboxed) ----------------

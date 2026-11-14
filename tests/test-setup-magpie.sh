@@ -119,8 +119,8 @@ build_template() {
   # Only these core tools exist for the tested script (host tex/pandoc/
   # Rscript/gams on PATH would shadow the stubs and trigger REAL downloads).
   for tool in bash cmp awk basename cat chmod cp cut date dirname env git \
-    head ln ls mkdir mv od rm sed sha256sum shasum sleep sort stat tail tar gzip \
-    tr touch grep mktemp sh uname; do
+    head ln ls mkdir mv od rm sed sha256sum shasum sleep sort stat tail tar \
+    tee gzip tr touch grep mktemp sh uname; do
     src=$(command -v "$tool" || true)
     [ -n "$src" ] && ln -sf "$src" "$MINBIN/$tool"
   done
@@ -174,6 +174,9 @@ case "$1" in
         else
           echo dead >> "$STATE/keepalive_at_gate.txt"
         fi
+        # Proxy for the sandboxed child's stdout: it must reach BOTH
+        # the screen and the log (the script tees the gate output).
+        echo "GATE-CHILD-OUTPUT-MARKER"
         exit "${STUB_NONO_GATE_EXIT:-0}"
         ;;
       *runscripts=default.R*)
@@ -864,6 +867,18 @@ grep_ok "gate args: renv cache passed" "$STATE/nono.log" "RENV_PATHS_CACHE="
 # The cached sudo credential is dropped with the refresher (no warm
 # sudo may exist while sandboxed children run).
 grep_ok "sudo cooled before the gate" "$STATE/sudo.log" "sudo -k"
+# The gate child's output reaches the screen (fd 4) through the tee.
+grep_ok "gate child output reaches screen" "$STATE/screen.txt" "GATE-CHILD-OUTPUT-MARKER"
+grep_ok "gate child output reaches log" "$FAKE_HOME/magpie/setup-log.txt" "GATE-CHILD-OUTPUT-MARKER"
+# A failing gate child stays failing through the pipe (exit code of the
+# sandboxed child, not of tee).
+new_env
+make_tools
+put_nono
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_SELF=/bin/true; magpie_take_lock; magpie_sandbox_gate' \
+  run_fn STUB_NONO_GATE_EXIT=1 STUB_SUDO_N_OK=1
+ret_is "gate exit code survives the tee" 1
 
 # ============================================================
 sec "cache folders + rc lines"
@@ -1852,6 +1867,7 @@ grep_ok "pull pinned" "$STATE/nono.log" "pull nolabs-ai/opencode@9.9.9"
 grep_ok "gate ran" "$STATE/nono.log" "--profile magpie-profile"
 grep_ok "keep-alive dead at gate" "$STATE/keepalive_at_gate.txt" "dead"
 grep_ok "sudo cooled before gate" "$STATE/sudo.log" "sudo -k"
+grep_ok "gate child output on screen" "$S" "GATE-CHILD-OUTPUT-MARKER"
 grep_no "no sudo -v (all silent)" "$STATE/sudo.log" "sudo -v"
 file_ok "full run marker" "$FAKE_HOME/magpie/.setup-fullrun-ok"
 RUNREL=$(sed -n 1p "$FAKE_HOME/magpie/.setup-fullrun-ok" 2>/dev/null)
