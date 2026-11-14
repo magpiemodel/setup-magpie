@@ -409,6 +409,17 @@ if [ "$seen_install" = 1 ]; then
 fi
 exit 0
 EOS
+  # dpkg -s: everything "installed" by default; STUB_DPKG_MISSING names
+  # one package whose status query fails (drives the -dev libs skip).
+  cat > "$FAKE_BIN/dpkg" <<'EOS'
+#!/bin/sh
+for a in "$@"; do
+  if [ -n "${STUB_DPKG_MISSING:-}" ] && [ "$a" = "$STUB_DPKG_MISSING" ]; then
+    exit 1
+  fi
+done
+exit 0
+EOS
   # installer: macOS .pkg stub; "installs" per-lookup tools by pkg name.
   cat > "$FAKE_BIN/installer" <<'EOS'
 #!/bin/sh
@@ -912,7 +923,7 @@ grep_no "no libcurl gnutls dev in list" "$STATE/apt.log" "libcurl4-gnutls-dev"
 grep_no "healthy path no dist-upgrade" "$STATE/apt.log" "dist-upgrade"
 
 # ============================================================
-sec "apt tools: ubuntu floor, R age"
+sec "apt tools: ubuntu floor, R age, -dev libs skip"
 # ============================================================
 # Ubuntu before 24.04 ships an R too old for magpie: fail up front.
 new_env
@@ -934,6 +945,20 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; MAGPIE_PA
   run_fn STUB_R_OLD=1
 ret_is "old R after install blocks step" 1
 grep_no "no OK line with old R" "$STATE/screen.txt" "OK: apt course tools installed"
+# The skip needs R + pandoc AND the -dev libraries: R+pandoc alone with
+# a missing build library must run apt again.
+new_env
+make_tools
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_apt_tools' \
+  run_fn STUB_DPKG_MISSING=libgdal-dev
+ret_is "missing -dev lib reruns apt step" 0
+grep_ok "apt install ran" "$STATE/apt.log" "DPkg::Lock::Timeout=120 install"
+new_env
+make_tools
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_apt_tools' run_fn
+ret_is "all build libs present skips" 0
+grep_no "skip when libs present" "$STATE/apt.log" "DPkg::Lock::Timeout=120 install"
+grep_ok "skip logged" "$FAKE_HOME/magpie/setup-log.txt" "build libraries present"
 
 # ============================================================
 sec "apt tools: dist-upgrade escalation"

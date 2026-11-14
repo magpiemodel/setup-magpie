@@ -901,6 +901,17 @@ magpie_ubuntu_floor() {
   fi
 }
 
+# Representative subset of the -dev/build package list below: an old
+# install that predates them must not skip the apt step (renv compile
+# of sf/terra would fail later).
+magpie_apt_have_devlibs() {
+  for pkg in build-essential cmake gfortran libudunits2-dev libgdal-dev \
+    libcurl4-openssl-dev libgit2-dev libglpk-dev libxml2-dev; do
+    dpkg -s "$pkg" >/dev/null 2>&1 || return 1
+  done
+  return 0
+}
+
 # Linux: base tools + the -dev libraries R packages compile against,
 # one apt call. Skip when R, pandoc AND the build libraries are all
 # there. A failed install often means a stale image: runtime libs
@@ -922,8 +933,9 @@ magpie_apt_tools_body() {
 
 magpie_step_apt_tools() {
   magpie_ubuntu_floor
-  if magpie_have_r && command -v pandoc >/dev/null 2>&1; then
-    magpie_log "R + pandoc present - apt tools step skipped"
+  if magpie_have_r && command -v pandoc >/dev/null 2>&1 \
+    && magpie_apt_have_devlibs; then
+    magpie_log "R + pandoc + build libraries present - apt tools step skipped"
     return 0
   fi
   magpie_say_progress "apt R + pandoc + build libraries" "5-15 min, just wait"
