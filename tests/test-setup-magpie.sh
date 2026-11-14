@@ -1429,6 +1429,7 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_st
 ret_is "profile with PATH-gams builds" 0
 PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
 grep_ok "profile reads the PATH-gams folder" "$PJSON" "$FAKE_BIN"
+grep_ok "extra entry comma-terminated" "$PJSON" "${FAKE_BIN}\","
 grep_ok "profile still reads ~/gams" "$PJSON" "$FAKE_HOME/gams"
 new_env
 SRC="$ENV/magpie_lic.sh"
