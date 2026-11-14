@@ -208,18 +208,58 @@ magpie_greet() {
   magpie_say "Reporting status as $MAGPIE_HANDLE."
 }
 
+# The account's real name from the user database ("" if unavailable).
+magpie_realname() {
+  if [ "$(uname)" = "Darwin" ]; then
+    command -v dscacheutil >/dev/null 2>&1 || return 0
+    dscacheutil -q user -a "$(id -un 2>/dev/null)" 2>/dev/null \
+      | sed -n 's/^realname: //p' | head -n 1
+  else
+    command -v getent >/dev/null 2>&1 || return 0
+    getent passwd "$(id -u)" 2>/dev/null | cut -d: -f5 | cut -d, -f1
+  fi
+}
+
 # PII choke point for every feed upload: replaces $HOME, hostname and
 # username. The username becomes the code name (same token as the feed
 # header). Best effort against arbitrary child output; order matters
-# (a hostname can contain the username).
+# (a hostname can contain the username). Literal, token-boundary
+# matching: no regex metachars, and short names like "pi" never hit
+# inside unrelated words. The ".local" suffix (macOS mDNS hostnames) is
+# filtered in both shapes; the real name too, when the OS exposes it.
 magpie_sanitize() {
   awk -v home="$HOME" -v host="$(uname -n 2>/dev/null)" \
-    -v user="$(id -un 2>/dev/null)" -v handle="${MAGPIE_HANDLE:-unknown}" '
+    -v user="$(id -un 2>/dev/null)" -v real="$(magpie_realname)" \
+    -v handle="${MAGPIE_HANDLE:-unknown}" '
+  function litrep(s, old, new,   p, b, a, out) {
+    if (length(old) < 2) {
+      return s
+    }
+    out = ""
+    while ((p = index(s, old)) > 0) {
+      b = (p == 1) ? "" : substr(s, p - 1, 1)
+      a = substr(s, p + length(old), 1)
+      out = out substr(s, 1, p - 1)
+      if (b ~ /[A-Za-z0-9._-]/ || a ~ /[A-Za-z0-9._-]/) {
+        out = out old
+      } else {
+        out = out new
+      }
+      s = substr(s, p + length(old))
+    }
+    return out s
+  }
   {
-    if (home != "") gsub(home, "~")
-    if (host != "") gsub(host, "HOST")
-    if (user != "") gsub(user, handle)
-    print
+    line = litrep($0, home, "~")
+    line = litrep(line, host, "HOST")
+    if (host ~ /\.local$/) {
+      line = litrep(line, substr(host, 1, length(host) - 6), "HOST")
+    }
+    if (length(real) >= 3) {
+      line = litrep(line, real, handle)
+    }
+    line = litrep(line, user, handle)
+    print line
   }'
 }
 
@@ -347,10 +387,13 @@ magpie_start_keepalive() {
   if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
     return 0
   fi
+  # 720 ticks (12 h cap) - long enough that no install step re-prompts;
+  # the loop also ends once this script's process is gone.
   (
     trap - EXIT INT TERM
+    parent=$PPID
     i=0
-    while [ "$i" -lt 90 ]; do
+    while [ "$i" -lt 720 ] && kill -0 "$parent" 2>/dev/null; do
       sleep "$MAGPIE_KEEPALIVE_SECS"
       sudo -n true >/dev/null 2>&1 || true
       i=$((i + 1))
@@ -533,19 +576,41 @@ magpie_download() {
   return 0
 }
 
+# True when an rc PATH line already carries dir as its own entry. A
+# plain substring grep would also match comments and longer paths
+# ("/usr/local/bin/foo" hiding "/usr/local/bin").
+magpie_rc_has_path() {
+  awk -v d="$2" -v q="'" '
+    !found && /PATH/ {
+      s = $0
+      while ((p = index(s, d)) > 0) {
+        b = (p == 1) ? "" : substr(s, p - 1, 1)
+        a = substr(s, p + length(d), 1)
+        if ((b == ":" || b == "=" || b == "\"" || b == q || b == "/") &&
+            (a == "" || a == ":" || a == "\"" || a == q)) {
+          found = 1
+          break
+        }
+        s = substr(s, p + length(d))
+      }
+    }
+    END { exit !found }
+  ' "$1" 2>/dev/null
+}
+
 # rc_add_path <rc> <dir>: one PATH line per dir, exported into this run.
 magpie_rc_add_path() {
   rc=$1
   dir=$2
   touch "$rc" 2>/dev/null || true
-  if ! grep -qF "$dir" "$rc" 2>/dev/null; then
-    # shellcheck disable=SC2016  # $PATH must stay literal in the rc line.
-    printf 'export PATH="%s:$PATH"\n' "$dir" >> "$rc"
+  if magpie_rc_has_path "$rc" "$dir"; then
     export PATH="$dir:$PATH"
-    return 0
+    return 1
   fi
+  # shellcheck disable=SC2016  # $PATH must stay literal in the rc line.
+  printf 'export PATH="%s:$PATH"\n' "$dir" >> "$rc"
   export PATH="$dir:$PATH"
-  return 1
+  return 0
 }
 
 magpie_fix_bin_path() {
@@ -829,7 +894,7 @@ EOF
 # terminal later: the rc line must carry the placeholder key too.
 magpie_register_hu_key() {
   touch "$MAGPIE_RC" 2>/dev/null || true
-  if ! grep -q HU_API_KEY "$MAGPIE_RC" 2>/dev/null; then
+  if ! grep -q '^export HU_API_KEY=' "$MAGPIE_RC" 2>/dev/null; then
     printf 'export HU_API_KEY="required-but-not-used"\n' >> "$MAGPIE_RC"
     magpie_log "HU_API_KEY exported to $MAGPIE_RC"
   fi
@@ -840,11 +905,11 @@ magpie_register_hu_key() {
 magpie_register_caches() {
   mkdir -p "$MADRAT_MAINFOLDER" "$RENV_PATHS_CACHE" || return 1
   touch "$MAGPIE_RC" 2>/dev/null || true
-  if ! grep -q MADRAT_MAINFOLDER "$MAGPIE_RC" 2>/dev/null; then
+  if ! grep -q '^export MADRAT_MAINFOLDER=' "$MAGPIE_RC" 2>/dev/null; then
     printf 'export MADRAT_MAINFOLDER="%s"\n' "$MADRAT_MAINFOLDER" >> "$MAGPIE_RC"
     magpie_log "MADRAT_MAINFOLDER exported to $MAGPIE_RC"
   fi
-  if ! grep -q RENV_PATHS_CACHE "$MAGPIE_RC" 2>/dev/null; then
+  if ! grep -q '^export RENV_PATHS_CACHE=' "$MAGPIE_RC" 2>/dev/null; then
     printf 'export RENV_PATHS_CACHE="%s"\n' "$RENV_PATHS_CACHE" >> "$MAGPIE_RC"
     magpie_log "RENV_PATHS_CACHE exported to $MAGPIE_RC"
   fi
@@ -1086,6 +1151,13 @@ magpie_register_tex() {
 # ---------------- GAMS ----------------
 
 magpie_find_gams_dir() {
+  # The pinned version's folder first: with several installs, never
+  # hand out (or delete) a version this script did not choose.
+  d="$HOME/gams/gams${GAMS_VERSION}_linux_x64_64_sfx"
+  if [ -d "$d" ]; then
+    printf '%s\n' "$d"
+    return 0
+  fi
   for d in "$HOME"/gams/gams*_linux_x64_64_sfx; do
     if [ -d "$d" ]; then
       printf '%s\n' "$d"
@@ -1147,7 +1219,9 @@ magpie_gams_body_linux() {
     return 1
   fi
   mkdir -p "$HOME/gams" || return 1
-  part=$(magpie_find_gams_dir) && rm -rf "$part"
+  # Remove this version's folder only (what the extractor recreates) -
+  # never another version that might still work.
+  rm -rf "$HOME/gams/gams${GAMS_VERSION}_linux_x64_64_sfx"
   if ! ( cd "$HOME/gams" && chmod +x "$dl" && "$dl" >/dev/null 2>&1 ); then
     magpie_log "GAMS self-extractor failed"
     return 1
@@ -1574,8 +1648,15 @@ magpie_run_checks() {
   MAGPIE_CHECK_RESULTS=""
 
   if gbin=$(magpie_find_gams); then
-    # shellcheck disable=SC2015  # any failure must still yield output, not abort.
-    gout=$( cd "$(mktemp -d)" && "$gbin" 2>&1 || true )
+    # Fresh scratch dir (GAMS writes there) - removed afterwards.
+    gtmp=$(mktemp -d 2>/dev/null) || gtmp=""
+    if [ -n "$gtmp" ]; then
+      # shellcheck disable=SC2015  # any failure must still yield output, not abort.
+      gout=$( cd "$gtmp" && "$gbin" 2>&1 || true )
+      rm -rf "$gtmp"
+    else
+      gout=$("$gbin" 2>&1 || true)
+    fi
     # Name check only when BOTH the licensee constant and the pasted
     # licence exist; otherwise the weak generic check decides.
     lic_named=""

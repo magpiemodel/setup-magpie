@@ -890,6 +890,32 @@ file_ok "madrat dir created" "$FAKE_HOME/.madrat"
 file_ok "renv cache dir created" "$FAKE_HOME/.cache/R/renv"
 cnt_is "MADRAT rc line deduped" "MADRAT_MAINFOLDER" "$FAKE_HOME/.bashrc" 1
 cnt_is "RENV rc line deduped" "RENV_PATHS_CACHE" "$FAKE_HOME/.bashrc" 1
+# A comment merely mentioning the variable must NOT suppress the export
+# (old unanchored grep did) - and the real export line must appear.
+new_env
+printf '# discussed MADRAT_MAINFOLDER and RENV_PATHS_CACHE here\n' > "$FAKE_HOME/.bashrc"
+FN_BODY='MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_register_caches' run_fn
+cnt_is "MADRAT export still written once" '^export MADRAT_MAINFOLDER=' "$FAKE_HOME/.bashrc" 1
+cnt_is "RENV export still written once" '^export RENV_PATHS_CACHE=' "$FAKE_HOME/.bashrc" 1
+# PATH lines: only real PATH entries count - a comment mentioning a
+# longer path ("/usr/local/bin/foo") must not suppress the add, and
+# already-present entries (own form or the tex installer's form) must
+# not be appended twice.
+new_env
+printf '# see /usr/local/bin/foo for details\n' > "$FAKE_HOME/.bashrc"
+FN_BODY='MAGPIE_RC="$HOME/.bashrc"; magpie_rc_add_path "$MAGPIE_RC" /usr/local/bin' run_fn
+ret_is "comment mention does not suppress add" 0
+cnt_is "PATH line added" '^export PATH="/usr/local/bin' "$FAKE_HOME/.bashrc" 1
+new_env
+printf 'export PATH="/usr/local/bin:$PATH"\n' > "$FAKE_HOME/.bashrc"
+FN_BODY='MAGPIE_RC="$HOME/.bashrc"; magpie_rc_add_path "$MAGPIE_RC" /usr/local/bin' run_fn
+ret_is "own PATH entry recognised (no add)" 1
+cnt_is "still one PATH line" '^export PATH="/usr/local/bin' "$FAKE_HOME/.bashrc" 1
+new_env
+printf 'export PATH=$PATH:"/usr/local/bin"\n' > "$FAKE_HOME/.bashrc"
+FN_BODY='MAGPIE_RC="$HOME/.bashrc"; magpie_rc_add_path "$MAGPIE_RC" /usr/local/bin' run_fn
+ret_is "foreign installer PATH form recognised" 1
+cnt_is "no second PATH line" 'usr/local/bin' "$FAKE_HOME/.bashrc" 1
 
 # ============================================================
 sec "TERM trap cleanup"
@@ -1043,6 +1069,11 @@ FN_BODY='MAGPIE_RC="$HOME/.bashrc"; magpie_register_hu_key' run_fn
 ret_is "hu key registered" 0
 FN_BODY='MAGPIE_RC="$HOME/.bashrc"; magpie_register_hu_key' run_fn
 cnt_is "rc line stays deduped" "HU_API_KEY" "$FAKE_HOME/.bashrc" 1
+new_env
+# A comment mentioning HU_API_KEY must not suppress the export.
+printf '# TODO set HU_API_KEY later\n' > "$FAKE_HOME/.bashrc"
+FN_BODY='MAGPIE_RC="$HOME/.bashrc"; magpie_register_hu_key' run_fn
+cnt_is "hu export written despite comment" '^export HU_API_KEY=' "$FAKE_HOME/.bashrc" 1
 
 # ============================================================
 sec "licence: placeholder / pasted / never-clobber / darwin"
@@ -1171,6 +1202,15 @@ SRC="$ENV/magpie_lic.sh"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; MAGPIE_COURSE_LICENSEE=; magpie_run_checks' run_fn
 grep_ok "empty licensee falls back to weak check" "$STATE/screen.txt" \
   "PASS gams (license found"
+# The gams probe temp folder is removed after the checks.
+new_env
+make_tools
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
+if [ -z "$(ls -A "$ENV/tmp" 2>/dev/null)" ]; then
+  ok "probe temp dir cleaned"
+else
+  no "probe temp dir cleaned"
+fi
 
 # ============================================================
 sec "check-only child (sandbox side, no nono)"
@@ -1454,6 +1494,22 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_in
   run_fn STUB_BAD_GAMS=1
 ret_is "gams corrupt download blocks" 1
 grep_ok "gams step named" "$STATE/screen.txt" "FAILED STEP (twice, reproducible): GAMS install"
+# With several installs the pinned version's folder wins for finding.
+new_env
+mkdir -p "$FAKE_HOME/gams/gams47.6.0_linux_x64_64_sfx" \
+  "$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx"
+FN_BODY='MAGPIE_OS=linux; magpie_find_gams_dir' run_fn
+grep_ok "pinned version folder preferred" "$FAKE_HOME/magpie/setup-log.txt" \
+  "gams54.6.1_linux_x64_64_sfx"
+# A reinstall removes the pinned folder only - other versions stay.
+new_env
+mkdir -p "$FAKE_HOME/gams/gams47.6.0_linux_x64_64_sfx" \
+  "$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx"
+touch "$FAKE_HOME/gams/gams47.6.0_linux_x64_64_sfx/KEEPME"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_gams_body_linux' run_fn
+ret_is "reinstall extract ok" 0
+file_ok "other version folder untouched" "$FAKE_HOME/gams/gams47.6.0_linux_x64_64_sfx/KEEPME"
+file_ok "pinned folder re-extracted" "$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx/gams"
 # A root-owned GAMS folder (outside ~/gams): licence write warns, no crash.
 new_env
 SRC="$ENV/magpie_lic.sh"
@@ -2015,6 +2071,33 @@ grep_no "no real home path in feed" "$STATE/feed.log" "$FAKE_HOME"
 grep_ok "upload PUT into the share" "$STATE/feed_url.log" \
   "PUT https://cloud\.pik-potsdam\.de/public\.php/webdav/T1-"
 grep_ok "upload name is a .log file" "$STATE/feed_url.log" "/T1-.*\.log$"
+# .local hostnames (macOS) are filtered in both shapes; the account's
+# real name too (fake uname + getent for a deterministic scenario).
+new_env
+cat > "$FAKE_BIN/uname" <<'EOS'
+#!/bin/sh
+case "${1:-}" in
+  -s) echo Linux ;;
+  -m) echo x86_64 ;;
+  *) echo testhost.local ;;
+esac
+EOS
+cat > "$FAKE_BIN/getent" <<'EOS'
+#!/bin/sh
+echo "testuser:x:1000:1000:Testy Tester:/home/testuser:/bin/sh"
+EOS
+chmod 755 "$FAKE_BIN/uname" "$FAKE_BIN/getent"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_report "signed Testy Tester on testhost.local and testhost today"' run_fn
+grep_ok "real name replaced" "$STATE/feed.log" "signed T1 on"
+grep_ok "host and host base replaced" "$STATE/feed.log" "on HOST and HOST today"
+grep_no "no testhost in feed" "$STATE/feed.log" "testhost"
+grep_no "no real name in feed" "$STATE/feed.log" "Testy"
+# Token boundaries: the username inside a longer word survives, the
+# username as its own token (also before "/") is replaced.
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_report "keep $(id -un)x and $(id -un)/x"' run_fn
+grep_ok "username inside word kept" "$STATE/feed.log" "keep $(id -un)x and"
+grep_ok "username token replaced" "$STATE/feed.log" "and T1/x"
 # Two posts inside the same second must not replace each other (PUT
 # overwrites on the target).
 new_env
