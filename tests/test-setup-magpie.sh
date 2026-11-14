@@ -1695,6 +1695,27 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_cl
 ret_is "same-name fork accepted with note" 0
 grep_ok "fork url note" "$FAKE_HOME/magpie/setup-log.txt" "origin is"
 grep_no "no false not-a-clone (fork)" "$STATE/screen.txt" "not a magpie clone"
+# A trailing slash is spelling, not another repo.
+new_env
+make_installed
+git -C "$FAKE_HOME/magpie" remote set-url origin https://github.com/magpiemodel/magpie/
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_clone_magpie' run_fn
+ret_is "official url with trailing slash accepted" 0
+grep_no "no false not-a-clone (slash)" "$STATE/screen.txt" "not a magpie clone"
+# A removed origin is own state: proceed, no bogus note, heal re-adds it.
+new_env
+make_installed
+git -C "$FAKE_HOME/magpie" remote remove origin
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_clone_magpie' run_fn
+ret_is "removed origin proceeds" 0
+grep_no "no note for empty origin" "$FAKE_HOME/magpie/setup-log.txt" "origin is"
+new_env
+make_installed
+rm -rf "$FAKE_HOME/magpie/.git"
+git -C "$FAKE_HOME/magpie" init -q
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_clone_magpie' run_fn
+ret_is "heal re-adds a removed origin" 0
+grep_ok "heal checked out file" "$FAKE_HOME/magpie/README.md" "readme"
 new_env
 FN_BODY='mkdir -p "$HOME/magpie"; magpie_clone_body && magpie_clone_body' run_fn
 ret_is "clone body idempotent twice" 0

@@ -1531,9 +1531,13 @@ magpie_clone_ok() {
 }
 
 # Normalise a git URL for comparison: strip scheme, user@, the
-# scp-style colon and the trailing .git.
+# scp-style colon, the trailing .git and any trailing slash.
 magpie_url_key() {
   u=$1
+  # A trailing slash is spelling, not another path.
+  while [ "${u%/}" != "$u" ]; do
+    u=${u%/}
+  done
   u=${u%.git}
   case $u in
     *://*) u=${u#*://}; u=${u#*@} ;;
@@ -1574,7 +1578,7 @@ magpie_clone_magpie() {
     if [ -n "$cur" ] && ! magpie_clone_url_ok "$cur"; then
       magpie_fail "magpie folder exists but is not a magpie clone - move it away or delete it"
     fi
-    if [ "$cur" != "$MAGPIE_MAGPIE_URL" ]; then
+    if [ -n "$cur" ] && [ "$cur" != "$MAGPIE_MAGPIE_URL" ]; then
       magpie_log "magpie: origin is $cur (not the configured URL) - using the existing clone"
     fi
     if magpie_clone_ok; then
