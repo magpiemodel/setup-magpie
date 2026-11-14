@@ -384,6 +384,10 @@ magpie_stop_keepalive() {
     fi
     rm -f "$pidfile"
   fi
+  # Killing the refresher alone is not enough: sudo remembers the
+  # password for minutes after. -k drops the cached credential (never
+  # prompts itself) so no warm sudo survives into a sandboxed run.
+  command -v sudo >/dev/null 2>&1 && sudo -k >/dev/null 2>&1 || true
 }
 
 # A crash must leave no foreign files in ~/magpie (magpie clone guard).
@@ -1687,6 +1691,9 @@ magpie_setup_path() {
   magpie_install_gams
   magpie_register_gams
   magpie_install_licence || true
+  # Last step that may need sudo is done: stop refreshing and cool the
+  # cached credential already here (the gate + full run follow).
+  magpie_stop_keepalive
 
   magpie_pull_nono_profile
   magpie_step_magpie_profile

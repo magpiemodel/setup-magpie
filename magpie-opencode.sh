@@ -217,6 +217,11 @@ magpie_stop_keepalive() {
       kill "$pid" 2>/dev/null
     fi
     rm -f "$pidfile"
+    # The pidfile proves a sudo prompt happened: killing the refresher
+    # alone is not enough, sudo remembers the password for minutes.
+    # -k drops the cached credential (it never prompts itself). Without
+    # a pidfile this stays a no-op - the fast path touches sudo never.
+    command -v sudo >/dev/null 2>&1 && sudo -k >/dev/null 2>&1 || true
   fi
 }
 

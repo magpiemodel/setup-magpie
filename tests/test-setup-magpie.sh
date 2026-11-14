@@ -843,6 +843,9 @@ grep_ok "gate args: check-only child" "$STATE/nono.log" "--check-only"
 grep_ok "gate args: env switch" "$STATE/nono.log" "MAGPIE_CHECK_ONLY=1"
 grep_ok "gate args: madrat mainfolder passed" "$STATE/nono.log" "MADRAT_MAINFOLDER="
 grep_ok "gate args: renv cache passed" "$STATE/nono.log" "RENV_PATHS_CACHE="
+# The cached sudo credential is dropped with the refresher (no warm
+# sudo may exist while sandboxed children run).
+grep_ok "sudo cooled before the gate" "$STATE/sudo.log" "sudo -k"
 
 # ============================================================
 sec "cache folders + rc lines"
@@ -1688,6 +1691,7 @@ grep_ok "tex registered" "$FAKE_HOME/magpie/setup-log.txt" "TinyTeX registered"
 grep_ok "pull pinned" "$STATE/nono.log" "pull nolabs-ai/opencode@9.9.9"
 grep_ok "gate ran" "$STATE/nono.log" "--profile magpie-profile"
 grep_ok "keep-alive dead at gate" "$STATE/keepalive_at_gate.txt" "dead"
+grep_ok "sudo cooled before gate" "$STATE/sudo.log" "sudo -k"
 grep_no "no sudo -v (all silent)" "$STATE/sudo.log" "sudo -v"
 file_ok "full run marker" "$FAKE_HOME/magpie/.setup-fullrun-ok"
 RUNREL=$(sed -n 1p "$FAKE_HOME/magpie/.setup-fullrun-ok" 2>/dev/null)
