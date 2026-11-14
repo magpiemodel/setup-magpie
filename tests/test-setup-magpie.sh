@@ -1385,6 +1385,12 @@ ret_is "stale generated profile regenerated" 0
 grep_ok "regenerated content current" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json" "(setup v2)"
 grep_ok "stale copy kept as bak" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json.bak" "/stale/old/path"
 grep_ok "regeneration logged" "$FAKE_HOME/magpie/setup-log.txt" "regenerated"
+# Rerun right after regeneration: content is current now, so the cmp
+# branch reports "already in place" - no second regeneration.
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
+ret_is "rerun after regen: profile current" 0
+grep_ok "rerun: already in place logged" "$FAKE_HOME/magpie/setup-log.txt" "already in place"
+cnt_is "regenerated exactly once over two runs" "regenerated" "$FAKE_HOME/magpie/setup-log.txt" 1
 # A hand-edited copy of our template keeps the marker: still
 # regenerated (documented tradeoff) - the edit survives in .bak.
 new_env
