@@ -102,6 +102,11 @@ MAGPIE_GFORTRAN_DIR="${MAGPIE_GFORTRAN_DIR:-/usr/local/gfortran}"
 
 MAGPIE_HANDLE_FILE="$HOME/.magpie-course-handle"
 
+# Bump when the generated magpie-profile content changes: profiles
+# written by an older script version are detected by the marker in
+# meta.description and regenerated (old copy kept as .bak).
+MAGPIE_PROFILE_SCHEMA="2"
+
 # Deterministic madrat mainfolder + renv cache folder. The nono profile
 # allows writes in them and the sandboxed children get them passed in,
 # so the values stay fixed (not env-overridable).
@@ -1261,7 +1266,7 @@ magpie_build_nono_profile() {
 {
   "meta": {
     "name": "magpie-profile",
-    "description": "MAgPIE course: opencode + GAMS + R + TinyTeX"
+    "description": "MAgPIE course: opencode + GAMS + R + TinyTeX (setup v$MAGPIE_PROFILE_SCHEMA)"
   },
   "extends": ["opencode"],
   "filesystem": {
@@ -1287,7 +1292,7 @@ EOF
 {
   "meta": {
     "name": "magpie-profile",
-    "description": "MAgPIE course: opencode + GAMS + R + TinyTeX"
+    "description": "MAgPIE course: opencode + GAMS + R + TinyTeX (setup v$MAGPIE_PROFILE_SCHEMA)"
   },
   "extends": ["opencode"],
   "filesystem": {
@@ -1313,6 +1318,14 @@ EOF
   if [ -f "$f" ]; then
     if cmp -s "$tmp" "$f"; then
       magpie_log "nono profile magpie-profile: already in place"
+    elif grep -q '"description".*"MAgPIE course' "$f" 2>/dev/null; then
+      # Carries our marker: written by this script (an older schema
+      # version) - regenerate, keep the old copy as .bak. A hand-made
+      # profile keeps no marker and is left alone.
+      cp "$f" "$f.bak" 2>/dev/null || true
+      mv "$tmp" "$f"
+      magpie_log "nono profile regenerated (stale generated copy kept as $f.bak)"
+      return 0
     else
       magpie_log "nono profile $f was changed - keeping it (delete it to regenerate)"
     fi

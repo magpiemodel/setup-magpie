@@ -1182,6 +1182,48 @@ put_nono
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
 ret_is "modified profile kept" 0
 grep_ok "modified file untouched" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json" "changed by student"
+# A profile written by an OLDER script version (our description marker,
+# old content) is regenerated; the stale copy survives as .bak.
+new_env
+mkdir -p "$FAKE_HOME/.config/nono/profiles"
+cat > "$FAKE_HOME/.config/nono/profiles/magpie-profile.json" <<'OFP'
+{
+  "meta": {
+    "name": "magpie-profile",
+    "description": "MAgPIE course: opencode + GAMS + R + TinyTeX"
+  },
+  "extends": ["opencode"],
+  "filesystem": {
+    "read": ["/stale/old/path"]
+  }
+}
+OFP
+put_nono
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
+ret_is "stale generated profile regenerated" 0
+grep_ok "regenerated content current" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json" "(setup v2)"
+grep_ok "stale copy kept as bak" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json.bak" "/stale/old/path"
+grep_ok "regeneration logged" "$FAKE_HOME/magpie/setup-log.txt" "regenerated"
+# A hand-edited copy of our template keeps the marker: still
+# regenerated (documented tradeoff) - the edit survives in .bak.
+new_env
+mkdir -p "$FAKE_HOME/.config/nono/profiles"
+cat > "$FAKE_HOME/.config/nono/profiles/magpie-profile.json" <<'OFP'
+{
+  "meta": {
+    "name": "magpie-profile",
+    "description": "MAgPIE course: opencode + GAMS + R + TinyTeX (setup v2)"
+  },
+  "extends": ["opencode"],
+  "filesystem": {
+    "read": ["/student/added/path"]
+  }
+}
+OFP
+put_nono
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
+ret_is "marker-stamped edit regenerated" 0
+grep_ok "edit kept in bak" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json.bak" "/student/added/path"
 new_env
 make_tools
 put_nono
