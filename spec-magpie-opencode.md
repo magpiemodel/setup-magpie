@@ -38,7 +38,8 @@ course status feed, no code name - nothing is uploaded anywhere.
   CLT install) - never upfront, so machines that already have
   git+curl/CLT see no password prompt at all. Asked blind, in a retry
   loop. The keep-alive loop prevents timeout re-prompts during that step
-  but is stopped before any opencode launch: no warm sudo credential may
+  but is stopped before any opencode launch, together with the cached
+  sudo timestamp (`sudo -k`): no warm sudo credential may
   exist while the sandboxed agent runs.
 - Mistyped password = ask again, in a loop; never an error block.
 - Errors are only reported when reproducible: every failing step first
@@ -229,8 +230,12 @@ path (escape hatch for the TA).
   5) and ALWAYS at the start of the launch step (6.11) - the launch
   stops it even on the fast path, where no lock is held. Non-owner
   exits never touch it: a second window must not kill the running
-  owner's loop. The sandboxed opencode must never find a warm sudo
-  credential.
+  owner's loop. Stopping also runs `sudo -k` - but only when the
+  pidfile existed: it proves a prompt happened, and killing the
+  refresher alone is not enough (sudo remembers the password for
+  minutes). Without a pidfile the stop is a no-op, so the fast path
+  never touches sudo. The sandboxed opencode must never find a warm
+  sudo credential.
 - When is sudo asked: only inside a sudo-requiring step that actually
   runs (apt or CLT) - both bodies warm up through this same loop first.
   Machines that skip those steps (git+curl present, CLT installed) see

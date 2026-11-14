@@ -1,8 +1,8 @@
 # setup-magpie.sh - spec (unified day-one course setup)
 
 Status: implemented in setup-magpie.sh (tests: tests/test-setup-magpie.sh,
-490 assertions (491 when shellcheck is present), all green on a Linux
-x86_64 dev host). Date: 2026-11-13.
+609 assertions (610 when shellcheck is present), all green on a Linux
+x86_64 dev host). Date: 2026-11-14.
 
 ## 1. Purpose
 
@@ -58,9 +58,11 @@ self-heal.
   installed with `sudo installer -pkg ... -target /`, each
   skip-if-done. Xcode CLT installs unattended via `softwareupdate`.
 - Sudo is asked only inside steps that actually run, through the
-  `magpie-opencode.sh` warm loop + keep-alive. The keep-alive is
-  stopped BEFORE the sandbox gate: no warm sudo credential may exist
-  while a sandboxed process runs.
+  `magpie-opencode.sh` warm loop + keep-alive. The keep-alive stops
+  right after the licence step - no later step touches sudo - and
+  again BEFORE the sandbox gate; `magpie_stop_keepalive` also runs
+  `sudo -k`, so no warm sudo credential may exist while a sandboxed
+  process runs.
 - Errors are only reported when reproducible (the `magpie-opencode.sh`
   model): in-step retries, then one full second pass in a fresh
   process; only a failure repeating in pass 2 prints the `##` help
@@ -150,15 +152,18 @@ any pin is empty or `TBD`.
   distributions folder, and the opencode npm registry / nono releases.
 
 The TEACHER SECTION below the pins holds `STATUS_URL` ("" disables the
-feed) and `magpie_licence_text()` - the single place the teacher pastes
+feed), `magpie_licence_text()` - the single place the teacher pastes
 `gamslice.txt` (placeholder still inside = early warning on screen +
-feed, nothing is written).
+feed, nothing is written) - and `MAGPIE_COURSE_LICENSEE`
+(`Potsdam-Institut`): the substring the checks demand in the GAMS
+banner while the licence is embedded; empty = weak generic check only.
 
 ## 5. Script skeleton and order of operations
 
 Same scoped-redirect entry as `magpie-opencode.sh`: the real terminal is
 saved on fd 4, the whole main run goes to `~/magpie/setup-log.txt`,
-screen output only through `magpie_say`. The `--check-only` child (env
+screen output only through `magpie_say` and the
+tee'd sandbox-gate child (6.7). The `--check-only` child (env
 `MAGPIE_CHECK_ONLY=1` or argument) is branched BEFORE the log
 redirect - it writes no log, takes no lock, runs no installs.
 
@@ -173,13 +178,16 @@ if missing; CLT unattended on macOS) -> opencode install (pinned npm
 tgz, AVX2/musl checks) -> nono install (pinned GitHub tarball to
 `~/.nono/bin`) -> PATH fixes -> opencode config -> HU key rc line ->
 cache folders + rc lines -> OS tool steps -> TinyTeX + tex PATH -> GAMS
-install + PATH -> licence -> nono pack pull/pin -> `magpie-profile`
-build -> magpie clone -> renv library restore (6.9) -> checks -> (green:
-stop keep-alive, sandbox gate, full default run (6.10), next steps, feed
-"run finished", exit 0). Every slow step that RUNS gets one
-`[HH:MM:SS] - installing ...` heads-up; installs print `OK:` lines.
-The keep-alive is stopped once, before the gate; no warm sudo exists
-while the gate child OR the full run sandbox executes.
+install + PATH -> licence -> stop keep-alive + `sudo -k` -> nono pack
+pull/pin -> `magpie-profile` build -> magpie clone -> renv library
+restore (6.9) -> checks -> (green: sandbox gate, full default run
+(6.10), next steps, feed "run finished", exit 0). Every slow step that
+RUNS gets one `[HH:MM:SS] - installing ...` heads-up; installs print
+`OK:` lines.
+The keep-alive stops right after the licence step (no later step
+touches sudo) and again before the gate; `sudo -k` drops the cached
+timestamp, so no warm sudo exists while the gate child OR the full run
+sandbox executes.
 
 ## 6. Steps
 
@@ -212,9 +220,15 @@ one alone. `Acquire::Retries=3`, `magpie_sudo_warm` inside. A failed
 bulk install logs one escalation: `dist-upgrade -y` (stale WSL images
 carry runtime libs older than the -dev candidates), then the same
 install runs again inside the attempt (`magpie_apt_tools_install`
-helper). Skipped when R >= 4.3, pandoc AND the build libraries are all
-present (`magpie_apt_have_devlibs`: `dpkg -s` on nine representative
-packages, status `install ok installed` required). All
+helper). The body then verifies the result: `pandoc` on PATH AND
+`magpie_have_r` (Rscript >= 4.3) - an apt `r-base` older than 4.3 must
+not read as success here. Up front, `magpie_ubuntu_floor` rejects
+Ubuntu < 24.04 (its `r-base` is older than 4.3): `magpie_fail` names
+the fix (`wsl --install -d Ubuntu-24.04`) instead of letting the checks
+fail much later; it reads `/etc/os-release`, env-overridable via
+`MAGPIE_OS_RELEASE`. Skipped when R >= 4.3, pandoc AND the build
+libraries are all present (`magpie_apt_have_devlibs`: `dpkg -s` on nine
+representative packages, status `install ok installed` required). All
 three apt calls (also the git/curl one in 6.1) carry
 `-o DPkg::Lock::Timeout=120`: the old feed's biggest Linux failure
 cluster (`FAIL apt install of libraries`) is the dpkg lock held by
@@ -242,14 +256,19 @@ system path.
 ### 6.5 TinyTeX + tex PATH
 
 Skip only when a working tex exists: `magpie_texbin()` output
-non-empty (`command -v tex`, else the first `~/.TinyTeX/bin/*/`
-holding an executable tex). A bare `~/.TinyTeX` DIRECTORY is NOT
-enough - a run killed mid-install left exactly the old feed's
-permanent `FAIL tex not found` state; an existing incomplete dir is
-`rm -rf`-ed and the install reruns.
+non-empty (`command -v tex`, else the first TinyTeX bin dir holding an
+executable tex - it searches `$HOME/Library/TinyTeX/bin/*/` then
+`$HOME/.TinyTeX/bin/*/` on EVERY OS: `tinytex::install_tinytex()`
+installs under `~/Library/TinyTeX` on macOS, under `~/.TinyTeX` on
+Linux). A bare TinyTeX DIRECTORY
+is NOT enough - a run killed mid-install left exactly the old feed's
+permanent `FAIL tex not found` state; with no usable tex anywhere the
+heal loop `rm -rf`s BOTH roots (`$HOME/Library/TinyTeX` and
+`$HOME/.TinyTeX`) and the install reruns.
 `magpie_texbin()` / `magpie_register_tex()` from the old scripts: the
-registered dir goes through `rc_add_path` (rc line + export into this
-run) so the checks and the gate see tex without a new terminal.
+registered dir goes through `magpie_rc_add_path` (adjacency-checked rc
+line + export into this run) so the checks and the gate see tex
+without a new terminal.
 
 ### 6.6 GAMS + licence
 
@@ -257,20 +276,39 @@ Pinned download per OS/arch (see 4). Linux: self-extractor run inside
 `~/gams` with the sha256 RE-checked right before the exe runs; x86_64
 only (ARM-WRL = clean feed-reported help block, by design). No
 gamsinst. macOS: `sudo installer -pkg`. GAMS PATH registered via
-`rc_add_path`. Licence (from the old scripts, merged):
-Linux `~/gams/gams*_linux_x64_64_sfx/gamslice.txt` ("rerun" note + feed
-line when the GAMS dir is missing yet), macOS
-`~/Library/Application Support/GAMS/` (dir chmod 700), file mode 600,
-an existing file is never overwritten. GAMS reads it from there - no
-license env var anywhere.
+`magpie_rc_add_path`. `magpie_gams_sysdir()` locates the GAMS SYSTEM folder -
+the binary's home and where GAMS reads `gamslice.txt`: Linux prefers
+the pinned `~/gams/gams*_linux_x64_64_sfx` folder (exact version
+first), else the folder of any `gams` found on PATH; macOS the pkg
+framework folder `/Library/Frameworks/GAMS.framework/Resources`.
+Licence: `gamslice.txt` goes into `magpie_licence_dir()` - the system
+folder on Linux, `~/Library/Application Support/GAMS` on macOS (dir
+chmod 700; the root-owned pkg folder cannot hold mode 600). File mode
+600, an existing file is never overwritten; a missing GAMS folder
+yields the "rerun" note + feed line. `magpie_licence_embedded()`
+decides SILENTLY whether the teacher pasted the text;
+`magpie_licence_available()` warns + feeds ONCE per run (cached in
+`MAGPIE_LIC_MISSING` - the early placeholder check and this step share
+one warning). A missing licence dir is created; an EXISTING dir that
+refuses writes gets a "licence dir not writable" warning + feed line,
+no write attempt. With the licence embedded and
+`MAGPIE_COURSE_LICENSEE` set, the checks demand that licensee in the
+GAMS banner (see 8). GAMS reads the file from there - no license env
+var anywhere.
 
 ### 6.7 magpie-profile + sandbox gate
 
 `~/.config/nono/profiles/magpie-profile.json`, extends
-`["opencode"]`. Read list: Linux `$HOME/gams` + `$HOME/.TinyTeX`;
-macOS `/Library/Frameworks/GAMS.framework`, `/Library/Frameworks/
-R.framework`, `/usr/local/gfortran`, `$HOME/.TinyTeX`, the licence
-dir. On both OSes the read list also holds the two data folders,
+`["opencode"]`; `meta.description` carries the `MAgPIE course` marker
+plus the `MAGPIE_PROFILE_SCHEMA` version (bumped whenever the generated
+content changes - the marker identifies the file as ours, see below).
+Read list: Linux `$HOME/gams` + `$HOME/.TinyTeX`, plus one extra entry
+when `magpie_gams_sysdir()` reports a GAMS folder OUTSIDE `$HOME/gams`
+(any PATH install); macOS
+`/Library/Frameworks/GAMS.framework`, `/Library/Frameworks/
+R.framework`, `/usr/local/gfortran`, `$HOME/Library/TinyTeX`,
+`$HOME/.TinyTeX`, the licence dir. On both OSes the read list also
+holds the two data folders,
 and the write list is exactly `$MADRAT_MAINFOLDER` (`$HOME/.madrat`) +
 `$RENV_PATHS_CACHE` (`$HOME/.cache/R/renv`). The full run downloads
 input data into the run folder (`gms::download_distribute`); the
@@ -278,9 +316,12 @@ madrat mainfolder is the pinned cache for any madrat read, the renv
 cache fills on renv restores.
 The folders are created by `magpie_register_caches` before any
 sandboxed child runs (write rules need existing paths). `nono profile
-validate` must pass before install; an existing different file is kept
-untouched. After the checks are green and the keep-alive is stopped,
-the gate reruns the checks inside the sandbox:
+validate` must pass before install. An existing file: identical - kept;
+different but carrying the `MAgPIE course` description marker - stale
+output of an older script version: replaced, old copy kept as `.bak`;
+different WITHOUT the marker (hand-made or edited): kept untouched
+(delete it to regenerate). After the checks are green and the
+keep-alive is stopped, the gate reruns the checks inside the sandbox:
 
 ```
 nono run --profile magpie-profile -- env MAGPIE_CHECK_ONLY=1 \
@@ -288,6 +329,11 @@ nono run --profile magpie-profile -- env MAGPIE_CHECK_ONLY=1 \
   bash <thisfile> --check-only
 ```
 
+The call runs in a subshell whose combined output goes through
+`tee -a "$HOME/magpie/setup-log.txt" >&4`: the parent's stdout is the
+log, so the tee is what puts the child's check block on the screen -
+and into the log, exactly once. The gate returns `PIPESTATUS[0]`: the
+child's exit code decides, never tee's.
 The child: greet + checks only, feed label "sandbox check result",
 exit code = checks result, no lock/sudo/tee/installs -
 recursion-proof. Gate failure goes through the retry + pass-2 model.
@@ -299,6 +345,14 @@ recursion-proof. Gate failure goes through the retry + pass-2 model.
 the own-file allowlist (magpie-opencode's full list, incl. its
 `.setup-finished` marker - tolerated, never written here - extended
 with `setup-dl-*` and `.setup-fullrun-ok`).
+Origin acceptance (`magpie_clone_url_ok`, keys from `magpie_url_key`):
+a stored origin is normalized - trailing slash(es), trailing `.git`,
+scheme, `user@`, scp-style `host:path` colon -> `/` - and accepted when
+the key equals the configured URL's, names `magpiemodel/magpie`, or
+ends in the same repo basename (a student's fork; a log line notes
+"origin is ... using the existing clone"). An accepted but different
+origin is kept as-is. An empty origin proceeds to the clone body (it
+adds the configured remote). Any other origin: foreign-origin failure.
 
 ### 6.9 renv library restore
 
@@ -335,7 +389,9 @@ holds all verification artifacts. Otherwise ONE sandboxed attempt
 ```
 
 Feed "setup: full run start" before, heads-up "about 40 min, keep the
-laptop plugged in and awake". The command's stdin gets two `n` lines:
+laptop plugged in and awake". The run's own output goes to the log only
+(no tee, unlike the gate) - the R noise stays off the screen. The
+command's stdin gets two `n` lines:
 they answer `start.R`'s possible "Update now?" and `fixDeps` prompts
 with "no" - auto-updating would drift from the restored lockfile, and
 an EOF stdin would crash `gms::getLine` (empty `readLines` ->
@@ -376,14 +432,25 @@ clean).
   lines. No fix hints: the student pastes the block into an AI chat and
   fixes it with LLM help. Saved to `~/magpie/setup-help.txt`, framed
   between `##` lines.
-- sudo: blind retry loop, cap 6, keep-alive only after a real prompt.
+- sudo: blind retry loop, cap 6, keep-alive only after a real prompt:
+  `sudo -n true` every 60 s, cap 720 ticks (12 h), self-exit once the
+  owner process is gone - the loop watches `$$`, captured BEFORE the
+  fork (bash keeps `$PPID` at the OUTER parent inside a subshell).
+  `magpie_stop_keepalive` kills the loop, removes the pidfile and runs
+  `sudo -k` - killing the refresher alone is not enough, sudo
+  remembers the password for minutes.
 
 ## 8. Checks (`magpie_run_checks`, bash 3.2 rewrite of the old block)
 
 Results accumulate in a newline-separated string (no arrays):
-`gams` (found via PATH or the per-OS locations, run in a temp dir;
-banner must match `license is valid|licensee` - GAMS 54 + legacy
-wordings), `git >= 2.23` (integer compare), `Rscript >= 4.3`,
+`gams` (found via PATH or the per-OS locations, run in a `mktemp -d`
+scratch dir, removed afterwards; with `MAGPIE_COURSE_LICENSEE` set AND
+the licence embedded, a banner naming that licensee PASSes
+("course licence found"); else a banner matching `demo|expired` FAILs
+(demo licence); else, while the name check is on, FAIL "not the course
+licence"; else the weak match `license is valid|licensee` (GAMS 54 +
+legacy wordings) PASSes; else FAIL - licence file missing),
+`git >= 2.23` (integer compare), `Rscript >= 4.3`,
 `pandoc`, `tex`, the `renv` library check (lucode2+gms via a
 `cd ~/magpie` subshell) ONLY when `~/magpie/renv.lock` exists -
 otherwise the line reads SKIP, and the `full run` line:
@@ -425,8 +492,12 @@ file, computed at entry (uname-based shasum/sha256sum, "unknown" if the
 tools are missing): an agent maps hash -> build, an unknown hash =
 truncated/edited download. Every body passes `magpie_sanitize`
 (one PII choke point inside `magpie_report`): $HOME -> `~`, hostname
--> `HOST`, username -> the code name (`${MAGPIE_HANDLE:-unknown}`;
-order: home, host, user). Secrets
+-> `HOST`, the hostname minus its `.local` suffix -> `HOST`, the
+account's real name (`magpie_realname`, when at least 3 characters) ->
+the code name, username -> the code name (`${MAGPIE_HANDLE:-unknown}`).
+Replacement is literal and token-boundary only: a token counts between
+non-token characters, so a short name never hits inside an unrelated
+word. Order: home, host, host base, real name, user. Secrets
 never reach the log by design: sudo reads the password from the tty
 only, the licence text is written to its file only, HU_API_KEY is the
 literal placeholder here. The upload URL (with its credentials) never
@@ -471,8 +542,8 @@ HOME, stub binaries only, real git only against a local origin; PATH is
 a curated minimal bin dir so a host tex/pandoc/Rscript/gams can never
 shadow the stubs; pinned block sedded to 9.9.9/fake shas; scenario
 trees cloned from one template via hardlinks; previous scratch moved
-aside with a detached background rm): 491
-assertions (492 with shellcheck on PATH) - syntax (bash -n, bash32
+aside with a detached background rm): 609
+assertions (610 with shellcheck on PATH) - syntax (bash -n, bash32
 guard on script and harness, shellcheck -s bash where present); pin
 placeholder guard;
 disk abort + warn tiers (incl. the raised 9 GB / 18 GB boundaries);
@@ -532,7 +603,7 @@ profile write-list, cache rc lines)
 + E2E deleted artifacts -> FAIL -> marker removal heals
 + E2E reproducible failure -> pass 2 -> help
 block + FAIL feed line. Regression: tests/test-magpie-opencode.sh still
-179/0 (incl. the new cleanup-ownership tests: owner exit stops the
+185/0 (incl. the new cleanup-ownership tests: owner exit stops the
 keep-alive and removes the lock; a non-owner exit leaves both alone).
 
 Live pending (course day / reference machines): real GAMS download +
