@@ -174,6 +174,13 @@ case "$1" in
         else
           echo dead >> "$STATE/keepalive_at_gate.txt"
         fi
+        # Cached sudo credential AT the gate instant: no warm sudo may
+        # survive into the sandboxed gate child.
+        if [ -f "$STATE/sudo_stamp" ]; then
+          echo warm >> "$STATE/sudo_at_gate.txt"
+        else
+          echo cool >> "$STATE/sudo_at_gate.txt"
+        fi
         # Proxy for the sandboxed child's stdout: it must reach BOTH
         # the screen and the log (the script tees the gate output).
         echo "GATE-CHILD-OUTPUT-MARKER"
@@ -187,6 +194,11 @@ case "$1" in
           echo alive >> "$STATE/keepalive_at_gate.txt"
         else
           echo dead >> "$STATE/keepalive_at_gate.txt"
+        fi
+        if [ -f "$STATE/sudo_stamp" ]; then
+          echo warm >> "$STATE/sudo_at_gate.txt"
+        else
+          echo cool >> "$STATE/sudo_at_gate.txt"
         fi
         if [ "${STUB_FULLRUN_FAIL:-0}" = "1" ]; then exit 1; fi
         last=""
@@ -286,6 +298,10 @@ if [ "$1" = "-v" ]; then
   n=$(cat "$c" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$c"
   if [ "$n" -le "${STUB_SUDO_V_FAILS:-0}" ]; then exit 1; fi
   touch "$STATE/sudo_stamp"
+  exit 0
+fi
+if [ "$1" = "-k" ]; then
+  rm -f "$STATE/sudo_stamp"
   exit 0
 fi
 exec "$@"
@@ -867,6 +883,7 @@ grep_ok "gate args: renv cache passed" "$STATE/nono.log" "RENV_PATHS_CACHE="
 # The cached sudo credential is dropped with the refresher (no warm
 # sudo may exist while sandboxed children run).
 grep_ok "sudo cooled before the gate" "$STATE/sudo.log" "sudo -k"
+grep_ok "no warm sudo at gate instant" "$STATE/sudo_at_gate.txt" "cool"
 # The gate child's output reaches the screen (fd 4) through the tee.
 grep_ok "gate child output reaches screen" "$STATE/screen.txt" "GATE-CHILD-OUTPUT-MARKER"
 grep_ok "gate child output reaches log" "$FAKE_HOME/magpie/setup-log.txt" "GATE-CHILD-OUTPUT-MARKER"
@@ -879,6 +896,19 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
 MAGPIE_SELF=/bin/true; magpie_take_lock; magpie_sandbox_gate' \
   run_fn STUB_NONO_GATE_EXIT=1 STUB_SUDO_N_OK=1
 ret_is "gate exit code survives the tee" 1
+# Early stop runs before the gate; it must be a harmless no-op when no
+# keep-alive ever started and $HOME/magpie is absent (no file created,
+# exit 0). Custom subshell: run_fn always creates $HOME/magpie.
+new_env
+(
+  base_env
+  export MAGPIE_SOURCED=1 MAGPIE_SELF=""
+  . "$SRC"
+  magpie_stop_keepalive
+) >> "$STATE/screen.txt" 2>&1
+RET=$?
+ret_is "stop is a no-op with no magpie dir" 0
+nofile_ok "stop creates no magpie dir" "$FAKE_HOME/magpie"
 
 # ============================================================
 sec "cache folders + rc lines"
@@ -1986,6 +2016,11 @@ ret_is "prompt run exits 0" 0
 grep_ok "blind prompt happened" "$STATE/screen.txt" "Type it blind"
 grep_ok "keep-alive dead at gate (live run)" "$STATE/keepalive_at_gate.txt" "dead"
 nofile_ok "pidfile gone after run" "$FAKE_HOME/magpie/.keepalive.pid"
+# The prompt warmed a credential: it must be gone before gate + full
+# run (gate unit + day-one E2E already cover the silent shape).
+grep_ok "sudo cooled after prompt run" "$STATE/sudo.log" "sudo -k"
+grep_ok "no warm sudo at gate or full run" "$STATE/sudo_at_gate.txt" "cool"
+grep_no "no warm sudo anywhere at sandbox time" "$STATE/sudo_at_gate.txt" "warm"
 grep_ok "prompt run finished" "$STATE/feed.log" "run finished"
 
 # ============================================================

@@ -122,6 +122,13 @@ case "$1" in
     else
       echo dead >> "$STATE/keepalive_at_launch.txt"
     fi
+    # Cached sudo credential AT the launch instant: no warm sudo may
+    # survive into the sandboxed opencode.
+    if [ -f "$STATE/sudo_stamp" ]; then
+      echo warm >> "$STATE/sudo_at_launch.txt"
+    else
+      echo cool >> "$STATE/sudo_at_launch.txt"
+    fi
     c="$STATE/launch_count"
     n=$(cat "$c" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$c"
     echo "launch#$n PATH=$PATH HU=$HU_API_KEY CWD=$PWD" >> "$STATE/launch.txt"
@@ -151,6 +158,10 @@ if [ "$1" = "-v" ]; then
   n=$(cat "$c" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$c"
   if [ "$n" -le "${STUB_SUDO_V_FAILS:-0}" ]; then exit 1; fi
   touch "$STATE/sudo_stamp"
+  exit 0
+fi
+if [ "$1" = "-k" ]; then
+  rm -f "$STATE/sudo_stamp"
   exit 0
 fi
 exit 0
@@ -437,6 +448,16 @@ FN_BODY='magpie_sudo_warm; magpie_launch' run_fn STUB_SUDO_N_OK=0
 ret_is "launch after prompt exits 0" 0
 grep_ok "launch stopped keep-alive" "$STATE/keepalive_at_launch.txt" "dead"
 nofile_ok "keepalive pidfile gone after launch" "$FAKE_HOME/magpie/.keepalive.pid"
+# Killing the refresher is not enough: the cached credential must be
+# dropped too, so the sandboxed opencode finds no warm sudo.
+grep_ok "launch cooled sudo" "$STATE/sudo.log" "sudo -k"
+grep_ok "no warm sudo at launch instant" "$STATE/sudo_at_launch.txt" "cool"
+# No pidfile (no prompt ever) = stop never touches sudo: the fast path
+# stays sudo-free.
+new_env
+FN_BODY='magpie_stop_keepalive' run_fn
+ret_is "stop without pidfile exits 0" 0
+nofile_ok "stop without pidfile touches no sudo" "$STATE/sudo.log"
 
 # ============================================================
 sec "cleanup ownership"
@@ -585,6 +606,8 @@ ret_is "second run exits 0" 0
 cnt_is "no heads-ups on fast path" "installing" "$STATE/screen.txt" 0
 grep_ok "fast path logged" "$FAKE_HOME/magpie/setup-log.txt" "fast path: essentials found"
 grep_ok "launch called again" "$STATE/launch.txt" "launch#2"
+# Fast path (no pidfile, apt skipped) must never touch sudo at all.
+nofile_ok "fast path touches no sudo" "$STATE/sudo.log"
 grep_no "no code name on screen" "$STATE/screen.txt" "code name"
 run_e2e MAGPIE_FORCE_SETUP=1
 ret_is "FORCE_SETUP reruns setup" 0
