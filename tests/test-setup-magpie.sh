@@ -999,6 +999,18 @@ printf '# export PATH="/usr/local/bin"\n' > "$FAKE_HOME/.bashrc"
 FN_BODY='MAGPIE_RC="$HOME/.bashrc"; magpie_rc_add_path "$MAGPIE_RC" /usr/local/bin' run_fn
 ret_is "commented-out export does not suppress add" 0
 cnt_is "PATH line added despite comment" '^export PATH="/usr/local/bin' "$FAKE_HOME/.bashrc" 1
+# An rc whose last line has no final newline must not swallow the new
+# line (a merged line breaks both entries and reads as "already there").
+new_env
+printf 'export FOO=1' > "$FAKE_HOME/.bashrc"
+FN_BODY='MAGPIE_RC="$HOME/.bashrc"; magpie_rc_add_path "$MAGPIE_RC" /usr/local/bin' run_fn
+cnt_is "PATH line starts its own line" '^export PATH="/usr/local/bin' "$FAKE_HOME/.bashrc" 1
+grep_ok "rc last line stays intact" "$FAKE_HOME/.bashrc" '^export FOO=1$'
+new_env
+printf 'export FOO=1' > "$FAKE_HOME/.bashrc"
+FN_BODY='MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_register_caches' run_fn
+cnt_is "cache line starts its own line" '^export MADRAT_MAINFOLDER=' "$FAKE_HOME/.bashrc" 1
+grep_ok "cache add keeps last line" "$FAKE_HOME/.bashrc" '^export FOO=1$'
 
 # ============================================================
 sec "TERM trap cleanup"
@@ -1314,6 +1326,25 @@ if [ -z "$(ls -A "$ENV/tmp" 2>/dev/null)" ]; then
 else
   no "probe temp dir cleaned"
 fi
+# No scratch dir (mktemp fails): gams must NOT be run where the setup
+# script happens to stand - GAMS writes its files into the work folder.
+new_env
+make_tools
+cat > "$FAKE_BIN/gams" <<'EOS'
+#!/bin/sh
+printf '%s\n' "$PWD" > "$STATE/gams_probe_cwd.txt"
+printf '%s\n' "GAMS 54.6.1 - Licensee: Potsdam-Institut fuer Klimafolgenforschung"
+EOS
+cat > "$FAKE_BIN/mktemp" <<'EOS'
+#!/bin/sh
+exit 1
+EOS
+chmod 755 "$FAKE_BIN/gams" "$FAKE_BIN/mktemp"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
+ret_is "checks still decide without a scratch dir" 1
+nofile_ok "gams never runs outside a scratch dir" "$STATE/gams_probe_cwd.txt"
+grep_ok "no temp folder FAIL line" "$STATE/screen.txt" \
+  "FAIL gams licence check needs a temp folder"
 
 # ============================================================
 sec "check-only child (sandbox side, no nono)"

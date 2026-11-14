@@ -1,7 +1,7 @@
 # setup-magpie.sh - spec (unified day-one course setup)
 
 Status: implemented in setup-magpie.sh (tests: tests/test-setup-magpie.sh,
-609 assertions (610 when shellcheck is present), all green on a Linux
+616 assertions (617 when shellcheck is present), all green on a Linux
 x86_64 dev host). Date: 2026-11-14.
 
 ## 1. Purpose
@@ -87,6 +87,12 @@ self-heal.
   lines (`magpie_register_caches`), and passed explicitly into every
   sandboxed child - the nono profile grants read+write in exactly
   these folders.
+- rc lines stay clean and never duplicate: `magpie_rc_newline` closes a
+  missing final newline before an append, so a new export cannot merge
+  into the file's last line. Dedupe recognition is exact - the three
+  fixed variables use anchored `^export NAME=` greps, PATH entries use
+  `magpie_rc_has_path` (adjacency check: only a real PATH field counts,
+  comments and longer paths do not).
 - Disk guard has two tiers (from the old scripts, env-overridable,
   raised for the full run): below `MAGPIE_DISK_ABORT_GB=9` the help
   block aborts; below `MAGPIE_DISK_WARN_GB=18` a warning goes on
@@ -351,8 +357,10 @@ scheme, `user@`, scp-style `host:path` colon -> `/` - and accepted when
 the key equals the configured URL's, names `magpiemodel/magpie`, or
 ends in the same repo basename (a student's fork; a log line notes
 "origin is ... using the existing clone"). An accepted but different
-origin is kept as-is. An empty origin proceeds to the clone body (it
-adds the configured remote). Any other origin: foreign-origin failure.
+origin is kept as-is. An empty origin (removed remote) is own state:
+no note, no failure - a clone that still resolves HEAD is kept, a
+broken one goes to the clone body, which adds the configured remote.
+Any other origin: foreign-origin failure.
 
 ### 6.9 renv library restore
 
@@ -444,8 +452,10 @@ clean).
 
 Results accumulate in a newline-separated string (no arrays):
 `gams` (found via PATH or the per-OS locations, run in a `mktemp -d`
-scratch dir, removed afterwards; with `MAGPIE_COURSE_LICENSEE` set AND
-the licence embedded, a banner naming that licensee PASSes
+scratch dir, removed afterwards - never in the folder the script
+stands in, because GAMS writes there; no scratch dir = FAIL; with
+`MAGPIE_COURSE_LICENSEE` set AND the licence embedded, a banner naming
+that licensee PASSes
 ("course licence found"); else a banner matching `demo|expired` FAILs
 (demo licence); else, while the name check is on, FAIL "not the course
 licence"; else the weak match `license is valid|licensee` (GAMS 54 +
@@ -542,8 +552,8 @@ HOME, stub binaries only, real git only against a local origin; PATH is
 a curated minimal bin dir so a host tex/pandoc/Rscript/gams can never
 shadow the stubs; pinned block sedded to 9.9.9/fake shas; scenario
 trees cloned from one template via hardlinks; previous scratch moved
-aside with a detached background rm): 609
-assertions (610 with shellcheck on PATH) - syntax (bash -n, bash32
+aside with a detached background rm): 616
+assertions (617 with shellcheck on PATH) - syntax (bash -n, bash32
 guard on script and harness, shellcheck -s bash where present); pin
 placeholder guard;
 disk abort + warn tiers (incl. the raised 9 GB / 18 GB boundaries);
@@ -561,7 +571,8 @@ holding "@" too), a fake filled-in link proves no token/password reaches
 any artifact (start
 with file-hash header, check block, FAIL, run finished); upload names
 unique (handle-date-time-pid-counter, two posts in one second); feed
-v2: sanitizer (home/host/user, `unknown` fallback without a handle),
+v2: sanitizer (home/host/host-base/real-name/user, token
+boundaries, `unknown` fallback without a handle),
 `-s -o /dev/null` proven (stub response/progress noise never reaches
 the log), failing upload never fails the caller, mktemp failure
 silent, failing uploads ignored, `STATUS_URL=""`
@@ -570,26 +581,33 @@ block with 3200 B cap (deep tail cut, screen + help file uncapped),
 CRASH on unexpected exit (3, silent 1; none after a FAIL post, none
 in the check-only child), retry-pass-2 announce; config
 write incl. foreign `.bak`; HU key dedupe; cache dirs created + rc
-lines deduped; licence placeholder/pasted/
-mode-600/never-clobber/darwin-700; checks table (GAMS 54 + licensee
-PASS, unlicensed FAIL, R/pandoc/tex/git lines, renv SKIP/PASS/FAIL,
+lines deduped; rc appends survive a missing final newline; licence placeholder/pasted/
+mode-600/never-clobber/darwin-700; checks table (licensee-name PASS, demo FAIL,
+foreign-licence FAIL, weak-check fallback, unlicensed FAIL, probe temp dir
+cleaned, no-scratch-dir FAIL, R/pandoc/tex/git lines, renv SKIP/PASS/FAIL,
 full run SKIP-first/PASS/FAIL (each single missing artifact
 FAILs)/SKIP-via-env);
 check-only child isolation; pack pull pin + drift + profile build/
-validate/keep-modified (+ cache write-list on both OSes); apt calls
-carry the dpkg lock timeout (base + tools, update + install); TinyTeX
-step (half `.TinyTeX` dir heals via rm -rf + reinstall, complete dir
-skips + registers, no false heads-up); macOS pkg steps incl. checksum
+validate/keep-modified/stale-generated-regenerates-with-`.bak` (+ cache
+write-list on both OSes, PATH-gams extra read entry); apt calls
+carry the dpkg lock timeout (base + tools, update + install); ubuntu floor
+blocks < 24.04 with the wsl hint; dev-lib guard (missing or half-configured
+package reruns the install, too-old apt R blocks the step); TinyTeX
+step (half TinyTeX dir heals via rm -rf + reinstall on BOTH roots incl.
+macOS `Library/TinyTeX`, complete dir skips + registers, no false heads-up); macOS pkg steps incl. checksum
 mismatch
 blocking sudo, gfortran off-PATH register (skip + install branches,
 rc + run PATH); GAMS linux self-extractor; renv step (no renv.lock skip,
 already-populated skip, broken library restored incl. activate.R
 bootstrap, no bootstrap when renv present, persistent failure -> help
 block, 3 attempts); clone guards (foreign dir,
-foreign origin, interrupted heal, `setup-dl-*` leftovers tolerated,
+foreign origin, ssh/`.git`/trailing-slash/fork origin accepted, removed
+origin proceeds, interrupted heal, `setup-dl-*` leftovers tolerated,
 `.setup-fullrun-ok` marker tolerated by the guard);
-full run step (sandbox command shape, caches + PATH passed, marker +
-artifacts written, keep-alive dead, verified marker skips, non-zero
+gate (child output on screen AND in the log
+exactly once, child exit code wins, sudo cooled at that instant), full run
+step (sandbox command shape, caches + PATH passed, marker +
+artifacts written, keep-alive dead + sudo cooled, verified marker skips, non-zero
 exit -> help block (also with complete artifacts), swallowed run error
 caught by missing artifacts, old folder not accepted as new, newest of
 two complete folders wins into the marker, escape hatch, caffeinate

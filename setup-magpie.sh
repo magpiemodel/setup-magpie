@@ -601,6 +601,14 @@ magpie_rc_has_path() {
   ' "$1" 2>/dev/null
 }
 
+# Appending to an rc whose last line has no final newline would merge
+# the two lines and break both - close the open line first.
+magpie_rc_newline() {
+  if [ -s "$1" ] && [ -n "$(tail -c 1 "$1")" ]; then
+    printf '\n' >> "$1"
+  fi
+}
+
 # rc_add_path <rc> <dir>: one PATH line per dir, exported into this run.
 magpie_rc_add_path() {
   rc=$1
@@ -611,6 +619,7 @@ magpie_rc_add_path() {
     return 1
   fi
   # shellcheck disable=SC2016  # $PATH must stay literal in the rc line.
+  magpie_rc_newline "$rc"
   printf 'export PATH="%s:$PATH"\n' "$dir" >> "$rc"
   export PATH="$dir:$PATH"
   return 0
@@ -898,6 +907,7 @@ EOF
 magpie_register_hu_key() {
   touch "$MAGPIE_RC" 2>/dev/null || true
   if ! grep -q '^export HU_API_KEY=' "$MAGPIE_RC" 2>/dev/null; then
+    magpie_rc_newline "$MAGPIE_RC"
     printf 'export HU_API_KEY="required-but-not-used"\n' >> "$MAGPIE_RC"
     magpie_log "HU_API_KEY exported to $MAGPIE_RC"
   fi
@@ -909,10 +919,12 @@ magpie_register_caches() {
   mkdir -p "$MADRAT_MAINFOLDER" "$RENV_PATHS_CACHE" || return 1
   touch "$MAGPIE_RC" 2>/dev/null || true
   if ! grep -q '^export MADRAT_MAINFOLDER=' "$MAGPIE_RC" 2>/dev/null; then
+    magpie_rc_newline "$MAGPIE_RC"
     printf 'export MADRAT_MAINFOLDER="%s"\n' "$MADRAT_MAINFOLDER" >> "$MAGPIE_RC"
     magpie_log "MADRAT_MAINFOLDER exported to $MAGPIE_RC"
   fi
   if ! grep -q '^export RENV_PATHS_CACHE=' "$MAGPIE_RC" 2>/dev/null; then
+    magpie_rc_newline "$MAGPIE_RC"
     printf 'export RENV_PATHS_CACHE="%s"\n' "$RENV_PATHS_CACHE" >> "$MAGPIE_RC"
     magpie_log "RENV_PATHS_CACHE exported to $MAGPIE_RC"
   fi
@@ -1660,14 +1672,14 @@ magpie_run_checks() {
   MAGPIE_CHECK_RESULTS=""
 
   if gbin=$(magpie_find_gams); then
-    # Fresh scratch dir (GAMS writes there) - removed afterwards.
+    # GAMS writes into its work folder: probe only inside a scratch
+    # dir (removed afterwards), never where this script happens to run.
     gtmp=$(mktemp -d 2>/dev/null) || gtmp=""
+    gout=""
     if [ -n "$gtmp" ]; then
       # shellcheck disable=SC2015  # any failure must still yield output, not abort.
       gout=$( cd "$gtmp" && "$gbin" 2>&1 || true )
       rm -rf "$gtmp"
-    else
-      gout=$("$gbin" 2>&1 || true)
     fi
     # Name check only when BOTH the licensee constant and the pasted
     # licence exist; otherwise the weak generic check decides.
@@ -1675,7 +1687,9 @@ magpie_run_checks() {
     if [ -n "$MAGPIE_COURSE_LICENSEE" ] && magpie_licence_embedded; then
       lic_named=1
     fi
-    if [ -n "$lic_named" ] \
+    if [ -z "$gtmp" ]; then
+      magpie_check_line FAIL "gams licence check needs a temp folder - free space in /tmp and rerun this file"
+    elif [ -n "$lic_named" ] \
       && printf '%s\n' "$gout" | grep -qiF "$MAGPIE_COURSE_LICENSEE"; then
       magpie_check_line PASS "gams (course licence found - ask TA to confirm CONOPT once)"
     elif printf '%s\n' "$gout" | grep -qiE "demo|expired"; then
