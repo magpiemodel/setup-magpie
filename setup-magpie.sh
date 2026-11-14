@@ -968,11 +968,16 @@ magpie_ubuntu_floor() {
 
 # Representative subset of the -dev/build package list below: an old
 # install that predates them must not skip the apt step (renv compile
-# of sf/terra would fail later).
+# of sf/terra would fail later). dpkg -s is also true for known-but-
+# broken packages, so require the "install ok installed" status line.
 magpie_apt_have_devlibs() {
   for pkg in build-essential cmake gfortran libudunits2-dev libgdal-dev \
     libcurl4-openssl-dev libgit2-dev libglpk-dev libxml2-dev; do
-    dpkg -s "$pkg" >/dev/null 2>&1 || return 1
+    status=$(dpkg -s "$pkg" 2>/dev/null) || return 1
+    case $status in
+      *"Status: install ok installed"*) ;;
+      *) return 1 ;;
+    esac
   done
   return 0
 }

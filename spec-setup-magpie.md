@@ -212,7 +212,9 @@ one alone. `Acquire::Retries=3`, `magpie_sudo_warm` inside. A failed
 bulk install logs one escalation: `dist-upgrade -y` (stale WSL images
 carry runtime libs older than the -dev candidates), then the same
 install runs again inside the attempt (`magpie_apt_tools_install`
-helper). Skipped when R >= 4.3 AND pandoc are already present. All
+helper). Skipped when R >= 4.3, pandoc AND the build libraries are all
+present (`magpie_apt_have_devlibs`: `dpkg -s` on nine representative
+packages, status `install ok installed` required). All
 three apt calls (also the git/curl one in 6.1) carry
 `-o DPkg::Lock::Timeout=120`: the old feed's biggest Linux failure
 cluster (`FAIL apt install of libraries`) is the dpkg lock held by

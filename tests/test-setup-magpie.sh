@@ -428,15 +428,22 @@ if [ "$seen_install" = 1 ]; then
 fi
 exit 0
 EOS
-  # dpkg -s: everything "installed" by default; STUB_DPKG_MISSING names
-  # one package whose status query fails (drives the -dev libs skip).
+  # dpkg -s: prints an installed status by default; STUB_DPKG_MISSING
+  # names one package whose query fails, STUB_DPKG_HALF a known but
+  # half-configured one (real dpkg -s exits 0 there too).
   cat > "$FAKE_BIN/dpkg" <<'EOS'
 #!/bin/sh
 for a in "$@"; do
   if [ -n "${STUB_DPKG_MISSING:-}" ] && [ "$a" = "$STUB_DPKG_MISSING" ]; then
     exit 1
   fi
+  if [ -n "${STUB_DPKG_HALF:-}" ] && [ "$a" = "$STUB_DPKG_HALF" ]; then
+    echo "Package: $a"
+    echo "Status: install ok half-configured"
+    exit 0
+  fi
 done
+echo "Status: install ok installed"
 exit 0
 EOS
   # installer: macOS .pkg stub; "installs" per-lookup tools by pkg name.
@@ -1031,6 +1038,15 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_st
 ret_is "all build libs present skips" 0
 grep_no "skip when libs present" "$STATE/apt.log" "DPkg::Lock::Timeout=120 install"
 grep_ok "skip logged" "$FAKE_HOME/magpie/setup-log.txt" "build libraries present"
+# A half-configured library still answers dpkg -s (exit 0) - the guard
+# must check the status line, not just the exit code.
+new_env
+make_tools
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_apt_tools' \
+  run_fn STUB_DPKG_HALF=libgdal-dev
+ret_is "half-configured -dev lib reruns apt step" 0
+grep_ok "half-configured reran the install" "$STATE/apt.log" "DPkg::Lock::Timeout=120 install"
+grep_no "half-configured no skip log" "$FAKE_HOME/magpie/setup-log.txt" "build libraries present"
 
 # ============================================================
 sec "apt tools: dist-upgrade escalation"
