@@ -1545,6 +1545,28 @@ git -C "$FAKE_HOME/magpie" remote add origin https://elsewhere.invalid/repo.git
 run_e2e
 ret_is "foreign origin in .git blocks" 1
 grep_ok "foreign dir message" "$STATE/screen.txt" "not a magpie clone"
+# URL shape differences must not read as "not a magpie clone": the
+# ssh form of the official repo, and a fork (same repo name, log note).
+new_env
+make_installed
+git -C "$FAKE_HOME/magpie" remote set-url origin git@github.com:magpiemodel/magpie.git
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_clone_magpie' run_fn
+ret_is "official repo via ssh url accepted" 0
+grep_ok "url note logged" "$FAKE_HOME/magpie/setup-log.txt" "using the existing clone"
+grep_no "no false not-a-clone" "$STATE/screen.txt" "not a magpie clone"
+new_env
+make_installed
+git -C "$FAKE_HOME/magpie" remote set-url origin "file://$STATE/origin"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_clone_magpie' run_fn
+ret_is "url without .git suffix accepted" 0
+new_env
+make_installed
+git -C "$FAKE_HOME/magpie" remote set-url origin git@github.com:student/magpie.git
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_clone_magpie' \
+  run_fn "MAGPIE_MAGPIE_URL=file://$STATE/magpie"
+ret_is "same-name fork accepted with note" 0
+grep_ok "fork url note" "$FAKE_HOME/magpie/setup-log.txt" "origin is"
+grep_no "no false not-a-clone (fork)" "$STATE/screen.txt" "not a magpie clone"
 new_env
 FN_BODY='mkdir -p "$HOME/magpie"; magpie_clone_body && magpie_clone_body' run_fn
 ret_is "clone body idempotent twice" 0

@@ -1451,11 +1451,52 @@ magpie_clone_ok() {
     git -C "$HOME/magpie" rev-parse HEAD >/dev/null 2>&1
 }
 
+# Normalise a git URL for comparison: strip scheme, user@, the
+# scp-style colon and the trailing .git.
+magpie_url_key() {
+  u=$1
+  u=${u%.git}
+  case $u in
+    *://*) u=${u#*://}; u=${u#*@} ;;
+  esac
+  case $u in
+    *@*) u=${u#*@} ;;
+  esac
+  # scp-style host:path (no slash in the host part) -> host/path
+  case $u in
+    *:*)
+      case ${u%%:*} in
+        */*) ;;
+        *) u="${u%%:*}/${u#*:}" ;;
+      esac
+      ;;
+  esac
+  printf '%s\n' "$u"
+}
+
+# True when an existing origin can serve as the magpie source: the
+# configured URL (normalised - ssh vs https and .git differences are
+# cosmetic), the official org/repo, or the same repo name under any
+# owner (a fork the student pushed).
+magpie_clone_url_ok() {
+  want=$(magpie_url_key "$MAGPIE_MAGPIE_URL")
+  have=$(magpie_url_key "$1")
+  [ "$have" = "$want" ] && return 0
+  case $have in
+    magpiemodel/magpie|*/magpiemodel/magpie) return 0 ;;
+  esac
+  [ "${have##*/}" = "${want##*/}" ] && [ -n "${have##*/}" ] && return 0
+  return 1
+}
+
 magpie_clone_magpie() {
   if [ -d "$HOME/magpie/.git" ]; then
-    if [ "$(git -C "$HOME/magpie" remote get-url origin 2>/dev/null)" \
-      != "$MAGPIE_MAGPIE_URL" ]; then
+    cur=$(git -C "$HOME/magpie" remote get-url origin 2>/dev/null)
+    if [ -n "$cur" ] && ! magpie_clone_url_ok "$cur"; then
       magpie_fail "magpie folder exists but is not a magpie clone - move it away or delete it"
+    fi
+    if [ "$cur" != "$MAGPIE_MAGPIE_URL" ]; then
+      magpie_log "magpie: origin is $cur (not the configured URL) - using the existing clone"
     fi
     if magpie_clone_ok; then
       magpie_log "magpie: already cloned"
