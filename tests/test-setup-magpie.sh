@@ -871,6 +871,41 @@ ret_is "prompt starts keepalive" 0
 grep_ok "prompt line" "$STATE/screen.txt" "Type it blind"
 wait_gone "$FAKE_HOME/magpie/.keepalive.pid"
 nofile_ok "owner exit stops keepalive + removes pidfile" "$FAKE_HOME/magpie/.keepalive.pid"
+# SIGKILL of the owner (no EXIT trap can run): the loop must watch the
+# owner's own pid ($$), not $PPID - bash keeps $PPID at the OUTER parent
+# inside a subshell, which would keep refreshing after the owner dies.
+new_env
+cat > "$STATE/keepstart.sh" <<EOS
+#!/bin/bash
+export HOME="$FAKE_HOME"
+export PATH="$FAKE_BIN:$MINBIN"
+export MAGPIE_KEEPALIVE_SECS=0.05
+export MAGPIE_SOURCED=1 MAGPIE_SELF=""
+. "$SRC"
+mkdir -p "\$HOME/magpie"
+magpie_start_keepalive
+wait
+EOS
+chmod 755 "$STATE/keepstart.sh"
+bash "$STATE/keepstart.sh" >/dev/null 2>&1 &
+KAOWNER=$!
+wait_file "$FAKE_HOME/magpie/.keepalive.pid"
+KAPID=$(cat "$FAKE_HOME/magpie/.keepalive.pid" 2>/dev/null || echo "")
+sleep 0.25
+kill -9 "$KAOWNER" 2>/dev/null
+wait "$KAOWNER" 2>/dev/null
+sleep 0.15
+n1=$(cat "$STATE/sudo.log" 2>/dev/null | grep -c "sudo -n" || true)
+n1=${n1:-0}
+sleep 0.4
+n2=$(cat "$STATE/sudo.log" 2>/dev/null | grep -c "sudo -n" || true)
+n2=${n2:-0}
+if [ "$n1" -ge 1 ] && [ "$n1" = "$n2" ]; then
+  ok "SIGKILL owner stops the sudo refresher"
+else
+  no "SIGKILL owner stops the sudo refresher (grew $n1 -> $n2)"
+  [ -n "$KAPID" ] && kill "$KAPID" 2>/dev/null
+fi
 # keep-alive is killed BEFORE the sandbox gate runs:
 new_env
 make_tools

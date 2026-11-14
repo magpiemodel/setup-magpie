@@ -388,10 +388,12 @@ magpie_start_keepalive() {
     return 0
   fi
   # 720 ticks (12 h cap) - long enough that no install step re-prompts;
-  # the loop also ends once this script's process is gone.
+  # the loop also ends once this script's process is gone. Watch $$,
+  # not $PPID: bash keeps $PPID at the OUTER parent inside a subshell.
+  owner=$$
   (
     trap - EXIT INT TERM
-    parent=$PPID
+    parent=$owner
     i=0
     while [ "$i" -lt 720 ] && kill -0 "$parent" 2>/dev/null; do
       sleep "$MAGPIE_KEEPALIVE_SECS"
