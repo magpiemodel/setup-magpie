@@ -982,16 +982,21 @@ magpie_tinytex_body() {
 }
 
 magpie_step_tinytex() {
-  # Skip only when a working tex exists (PATH or complete .TinyTeX):
-  # a dir from a killed run must NOT block the reinstall forever.
-  # Empty output, not exit status: an empty glob loop returns 0.
+  # Skip only when a working tex exists (PATH or complete TinyTeX
+  # folder): a dir from a killed run must NOT block the reinstall
+  # forever. Empty output, not exit status: an empty glob loop
+  # returns 0.
   if [ -n "$(magpie_texbin)" ]; then
     magpie_log "TinyTeX: already installed"
   else
-    if [ -d "$HOME/.TinyTeX" ]; then
-      magpie_log "TinyTeX: incomplete folder found - reinstalling"
-      rm -rf "$HOME/.TinyTeX"
-    fi
+    # No usable tex anywhere: any TinyTeX root that exists is an
+    # incomplete leftover of a killed run - clear both install spots.
+    for root in "$HOME/Library/TinyTeX" "$HOME/.TinyTeX"; do
+      if [ -d "$root" ]; then
+        magpie_log "TinyTeX: incomplete folder found - reinstalling"
+        rm -rf "$root"
+      fi
+    done
     magpie_say_progress "TinyTeX" "a few minutes"
     if ! magpie_retry 3 magpie_tinytex_body; then
       magpie_step_failed "TinyTeX install"
@@ -1001,18 +1006,22 @@ magpie_step_tinytex() {
   magpie_register_tex
 }
 
-# The tex directory: from PATH, else the first TinyTeX bin holding tex.
+# The tex directory: from PATH, else a TinyTeX bin holding tex.
+# tinytex::install_tinytex() uses ~/Library/TinyTeX on macOS and
+# ~/.TinyTeX on Linux - both roots are searched on every OS.
 magpie_texbin() {
   texbin=$(dirname "$(command -v tex 2>/dev/null || echo /nonexistent)")
   if [ -x "$texbin/tex" ]; then
     printf '%s\n' "$texbin"
     return 0
   fi
-  for d in "$HOME"/.TinyTeX/bin/*/; do
-    if [ -x "${d}tex" ]; then
-      printf '%s\n' "${d%/}"
-      return 0
-    fi
+  for root in "$HOME/Library/TinyTeX" "$HOME/.TinyTeX"; do
+    for d in "$root"/bin/*/; do
+      if [ -x "${d}tex" ]; then
+        printf '%s\n' "${d%/}"
+        return 0
+      fi
+    done
   done
 }
 
@@ -1256,6 +1265,7 @@ magpie_build_nono_profile() {
       "/Library/Frameworks/GAMS.framework",
       "/Library/Frameworks/R.framework",
       "/usr/local/gfortran",
+      "$HOME/Library/TinyTeX",
       "$HOME/.TinyTeX",
       "$HOME/Library/Application Support/GAMS",
       "$MADRAT_MAINFOLDER",

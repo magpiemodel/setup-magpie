@@ -204,7 +204,9 @@ case "$*" in
     exit 0
     ;;
   *install_tinytex*)
-    d="$HOME/.TinyTeX/bin/x86_64-unknown-linux-gnu"
+    # Default mimics Linux (~/.TinyTeX); macOS tests point this at
+    # $HOME/Library/TinyTeX (what tinytex::install_tinytex really uses).
+    d="${STUB_TINYTEX_ROOT:-$HOME/.TinyTeX}/bin/x86_64-unknown-linux-gnu"
     mkdir -p "$d"
     printf '#!/bin/sh\necho stub-tex\n' > "$d/tex"
     chmod 755 "$d/tex"
@@ -1109,6 +1111,27 @@ ret_is "complete TinyTeX dir skips install" 0
 grep_no "no R calls" "$STATE/rscript.log" "install_tinytex"
 grep_no "no heads-up" "$STATE/screen.txt" "installing TinyTeX"
 grep_ok "rc texbin line (skip)" "$FAKE_HOME/.bashrc" ".TinyTeX/bin"
+# macOS: tinytex installs to ~/Library/TinyTeX - an incomplete one
+# must heal, a complete one must be found (skip + rc registration).
+new_env
+cp "$STATE/binlib/Rscript" "$FAKE_BIN/Rscript"
+mkdir -p "$FAKE_HOME/Library/TinyTeX/share"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_tinytex' \
+  run_fn "STUB_TINYTEX_ROOT=$FAKE_HOME/Library/TinyTeX"
+ret_is "darwin half Library/TinyTeX heals" 0
+grep_ok "install_tinytex ran (darwin)" "$STATE/rscript.log" "install_tinytex"
+nofile_ok "stale share gone (darwin)" "$FAKE_HOME/Library/TinyTeX/share"
+file_ok "tex in Library/TinyTeX" "$FAKE_HOME/Library/TinyTeX/bin/x86_64-unknown-linux-gnu/tex"
+grep_ok "rc texbin line (darwin)" "$FAKE_HOME/.zshrc" "Library/TinyTeX"
+new_env
+mkdir -p "$FAKE_HOME/Library/TinyTeX/bin/universal-darwin"
+printf '#!/bin/sh\necho tex\n' > "$FAKE_HOME/Library/TinyTeX/bin/universal-darwin/tex"
+chmod 755 "$FAKE_HOME/Library/TinyTeX/bin/universal-darwin/tex"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_tinytex' \
+  run_fn
+ret_is "complete Library/TinyTeX skips install" 0
+grep_no "no R calls (darwin skip)" "$STATE/rscript.log" "install_tinytex"
+grep_ok "rc texbin line (darwin skip)" "$FAKE_HOME/.zshrc" "Library/TinyTeX/bin/universal-darwin"
 
 # ============================================================
 sec "nono profile: pull + magpie-profile build"
@@ -1145,6 +1168,7 @@ ret_is "darwin profile built" 0
 PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
 grep_ok "darwin keeps gams framework read" "$PJSON" "/Library/Frameworks/GAMS.framework"
 grep_ok "darwin keeps gfortran read" "$PJSON" "/usr/local/gfortran"
+grep_ok "darwin reads Library/TinyTeX" "$PJSON" "$FAKE_HOME/Library/TinyTeX"
 grep_ok "darwin write section present" "$PJSON" '"write"'
 grep_ok "darwin write holds madrat" "$PJSON" "$FAKE_HOME/.madrat"
 grep_ok "darwin write holds renv cache" "$PJSON" ".cache/R/renv"
