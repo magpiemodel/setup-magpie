@@ -534,7 +534,7 @@ EOS
       "$SCRIPT" > "$ENV/magpie.sh"
   chmod +x "$ENV/magpie.sh"
   # Replace only the heredoc line, not the marker check in
-  # magpie_licence_available.
+  # magpie_licence_embedded.
   sed '/^__PASTE_CONTENTS_OF_gamslice.txt_HERE__$/s|__PASTE_CONTENTS_OF_gamslice.txt_HERE__|TEST-LICENCE-CONTENT|' \
     "$ENV/magpie.sh" > "$ENV/magpie_lic.sh"
   chmod +x "$ENV/magpie_lic.sh"
@@ -1219,6 +1219,16 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' \
 ret_is "demo banner FAILs (embedded)" 1
 grep_ok "demo licence FAIL line" "$STATE/screen.txt" \
   "FAIL gams runs only with the free demo licence"
+# Plan chain: name check comes first, so the (unreal) mixed banner
+# below PASSes; reordering the chain must trip this pin.
+new_env
+make_tools
+SRC="$ENV/magpie_lic.sh"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' \
+  run_fn STUB_GAMS_BANNER="Licensee: Potsdam-Institut (demo license)"
+ret_is "name check wins over demo" 0
+grep_ok "named PASS despite demo word" "$STATE/screen.txt" \
+  "PASS gams (course licence found"
 new_env
 make_tools
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' \
