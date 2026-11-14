@@ -993,6 +993,12 @@ printf 'export PATH=$PATH:"/usr/local/bin"\n' > "$FAKE_HOME/.bashrc"
 FN_BODY='MAGPIE_RC="$HOME/.bashrc"; magpie_rc_add_path "$MAGPIE_RC" /usr/local/bin' run_fn
 ret_is "foreign installer PATH form recognised" 1
 cnt_is "no second PATH line" 'usr/local/bin' "$FAKE_HOME/.bashrc" 1
+# A commented-out export line is inert - it must not suppress the add.
+new_env
+printf '# export PATH="/usr/local/bin"\n' > "$FAKE_HOME/.bashrc"
+FN_BODY='MAGPIE_RC="$HOME/.bashrc"; magpie_rc_add_path "$MAGPIE_RC" /usr/local/bin' run_fn
+ret_is "commented-out export does not suppress add" 0
+cnt_is "PATH line added despite comment" '^export PATH="/usr/local/bin' "$FAKE_HOME/.bashrc" 1
 
 # ============================================================
 sec "TERM trap cleanup"

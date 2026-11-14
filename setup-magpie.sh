@@ -583,6 +583,7 @@ magpie_download() {
 # ("/usr/local/bin/foo" hiding "/usr/local/bin").
 magpie_rc_has_path() {
   awk -v d="$2" -v q="'" '
+    $0 ~ /^[ \t]*#/ { next }
     !found && /PATH/ {
       s = $0
       while ((p = index(s, d)) > 0) {
