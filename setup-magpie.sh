@@ -76,6 +76,11 @@ __PASTE_CONTENTS_OF_gamslice.txt_HERE__
 COURSE_GAMSLICE
 }
 
+# Substring that must show up in the GAMS banner when the course
+# gamslice.txt is active. The checks demand it (when the licence is
+# embedded), so a demo or foreign licence can never look like a PASS.
+MAGPIE_COURSE_LICENSEE="Potsdam-Institut"
+
 # ============================================================
 # END TEACHER SECTION
 # ============================================================
@@ -1162,20 +1167,28 @@ magpie_licence_dir() {
   magpie_find_gams_dir
 }
 
-# True when the teacher pasted the licence text into this script.
-magpie_licence_available() {
+# True when the teacher pasted the licence text into this script
+# (silent - safe to call from the checks).
+magpie_licence_embedded() {
   marker="__PASTE_CONTENTS_OF_gamslice.txt_HERE__"
-  tmp=$(mktemp)
-  magpie_licence_text > "$tmp"
-  if grep -q "$marker" "$tmp"; then
-    rm -f "$tmp"
-    magpie_say "WARNING: the course licence was not embedded in this script."
-    magpie_say "Tell the TA - they will paste it into the script."
-    magpie_report "setup: WARNING gamslice not embedded"
-    return 1
+  ! magpie_licence_text | grep -q "$marker"
+}
+
+# Warn once per run (setup_path checks early, install_licence later;
+# the duplicate warning would hit the feed twice).
+magpie_licence_available() {
+  if [ -n "${MAGPIE_LIC_MISSING+x}" ]; then
+    return "$MAGPIE_LIC_MISSING"
   fi
-  rm -f "$tmp"
-  return 0
+  if magpie_licence_embedded; then
+    MAGPIE_LIC_MISSING=0
+    return 0
+  fi
+  MAGPIE_LIC_MISSING=1
+  magpie_say "WARNING: the course licence was not embedded in this script."
+  magpie_say "Tell the TA - they will paste it into the script."
+  magpie_report "setup: WARNING gamslice not embedded"
+  return 1
 }
 
 magpie_install_licence() {
@@ -1455,7 +1468,20 @@ magpie_run_checks() {
   if gbin=$(magpie_find_gams); then
     # shellcheck disable=SC2015  # any failure must still yield output, not abort.
     gout=$( cd "$(mktemp -d)" && "$gbin" 2>&1 || true )
-    if printf '%s\n' "$gout" | grep -qiE "license is valid|licensee"; then
+    # Name check only when BOTH the licensee constant and the pasted
+    # licence exist; otherwise the weak generic check decides.
+    lic_named=""
+    if [ -n "$MAGPIE_COURSE_LICENSEE" ] && magpie_licence_embedded; then
+      lic_named=1
+    fi
+    if [ -n "$lic_named" ] \
+      && printf '%s\n' "$gout" | grep -qiF "$MAGPIE_COURSE_LICENSEE"; then
+      magpie_check_line PASS "gams (course licence found - ask TA to confirm CONOPT once)"
+    elif printf '%s\n' "$gout" | grep -qiE "demo|expired"; then
+      magpie_check_line FAIL "gams runs only with the free demo licence - the course licence file is missing - rerun this file"
+    elif [ -n "$lic_named" ]; then
+      magpie_check_line FAIL "gams licence is not the course licence (no $MAGPIE_COURSE_LICENSEE) - tell the TA"
+    elif printf '%s\n' "$gout" | grep -qiE "license is valid|licensee"; then
       magpie_check_line PASS "gams (license found - ask TA to confirm CONOPT once)"
     else
       magpie_check_line FAIL "gams found but its licence file is missing - rerun this file"

@@ -261,7 +261,7 @@ EOS
   # The banner text is env-switchable for the gams check table.
   cat > "$STATE/binlib/gams" <<'EOS'
 #!/bin/sh
-printf '%s\n' "${STUB_GAMS_BANNER:-GAMS 54.6.1 - The installed license is valid.}"
+printf '%s\n' "${STUB_GAMS_BANNER:-GAMS 54.6.1 - Licensee: Potsdam-Institut fuer Klimafolgenforschung - the installed license is valid.}"
 EOS
   chmod 755 "$STATE/binlib"/*
 
@@ -455,7 +455,7 @@ EOS
   cat > "$STATE/archives/linux_x64_64_sfx.exe" <<'EOS'
 #!/bin/sh
 mkdir -p gams54.6.1_linux_x64_64_sfx
-printf '#!/bin/sh\nprintf "%%s\\n" "${STUB_GAMS_BANNER:-GAMS 54.6.1 - The installed license is valid.}"\n' \
+printf '#!/bin/sh\nprintf "%%s\\n" "${STUB_GAMS_BANNER:-GAMS 54.6.1 - Licensee: Potsdam-Institut fuer Klimafolgenforschung - the installed license is valid.}"\n' \
   > gams54.6.1_linux_x64_64_sfx/gams
 chmod 755 gams54.6.1_linux_x64_64_sfx/gams
 exit 0
@@ -1063,6 +1063,43 @@ touch "$FAKE_HOME/magpie/renv.lock"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn STUB_RENV_EXIT=1
 ret_is "renv.lock broken library FAIL" 1
 grep_ok "renv FAIL" "$STATE/screen.txt" "FAIL renv R library incomplete"
+# Licence name check (licence embedded): the banner must show the
+# course licensee; a foreign valid licence or the demo fallback FAIL.
+new_env
+make_tools
+SRC="$ENV/magpie_lic.sh"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
+ret_is "course licensee banner PASSes" 0
+grep_ok "course licence PASS line" "$STATE/screen.txt" "PASS gams (course licence found"
+new_env
+make_tools
+SRC="$ENV/magpie_lic.sh"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' \
+  run_fn STUB_GAMS_BANNER="GAMS 54.6.1 - The installed license is valid."
+ret_is "foreign valid licence FAILs name check" 1
+grep_ok "not-the-course-licence line" "$STATE/screen.txt" \
+  "FAIL gams licence is not the course licence"
+new_env
+make_tools
+SRC="$ENV/magpie_lic.sh"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' \
+  run_fn STUB_GAMS_BANNER="GAMS/Demo GAMS Development Corp - demo license"
+ret_is "demo banner FAILs (embedded)" 1
+grep_ok "demo licence FAIL line" "$STATE/screen.txt" \
+  "FAIL gams runs only with the free demo licence"
+new_env
+make_tools
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' \
+  run_fn STUB_GAMS_BANNER="GAMS/Demo GAMS Development Corp - demo license"
+ret_is "demo banner FAILs (placeholder licence too)" 1
+grep_ok "demo FAIL line (placeholder)" "$STATE/screen.txt" \
+  "FAIL gams runs only with the free demo licence"
+new_env
+make_tools
+SRC="$ENV/magpie_lic.sh"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; MAGPIE_COURSE_LICENSEE=; magpie_run_checks' run_fn
+grep_ok "empty licensee falls back to weak check" "$STATE/screen.txt" \
+  "PASS gams (license found"
 
 # ============================================================
 sec "check-only child (sandbox side, no nono)"
@@ -1787,6 +1824,14 @@ grep_ok "next steps: skipped note" "$STATE/screen.txt" "Full default run: skippe
 grep_ok "still run finished" "$STATE/feed.log" "setup: run finished"
 nofile_ok "no marker written" "$FAKE_HOME/magpie/.setup-fullrun-ok"
 grep_no "no start.R invocation" "$STATE/rscript.log" "runscripts=default.R"
+# Placeholder licence (plain script copy): the warning fires once per
+# run on screen and on the feed (setup_path early check + install_licence
+# share one cached result).
+new_env
+run_e2e MAGPIE_FULL_RUN=0
+ret_is "placeholder run completes" 0
+cnt_is "licence warning once on screen" "not embedded" "$STATE/screen.txt" 1
+cnt_is "licence warning once on feed" "gamslice not embedded" "$STATE/feed.log" 1
 
 # ============================================================
 sec "E2E deleted artifacts -> FAIL -> marker removal heals"
