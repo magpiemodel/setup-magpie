@@ -113,6 +113,9 @@ build_template() {
   MINBIN="$ENV/minbin"
   export TMPDIR="$ENV/tmp"
   mkdir -p "$FAKE_HOME" "$FAKE_BIN" "$MINBIN" "$STATE" "$STATE/archives" "$STATE/binlib" "$TMPDIR"
+  # Default supported release for the Ubuntu floor check (overridable
+  # per scenario via STUB_OS_RELEASE).
+  printf 'ID=ubuntu\nVERSION_ID="24.04"\n' > "$STATE/os-release"
   # Only these core tools exist for the tested script (host tex/pandoc/
   # Rscript/gams on PATH would shadow the stubs and trigger REAL downloads).
   for tool in bash cmp awk basename cat chmod cp cut date dirname env git \
@@ -546,6 +549,10 @@ base_env() {
   export MAGPIE_RETRY_SECS=0 MAGPIE_RETRY_SECS2=0 MAGPIE_PASS_SECS=0
   export MAGPIE_KEEPALIVE_SECS=0.05 MAGPIE_SUDO_RETRY_SECS=0
   export MAGPIE_MAGPIE_URL="file://$STATE/origin.git"
+  # Fixed supported release: the Ubuntu floor check must never read
+  # the host's /etc/os-release. Scenario args may re-export
+  # MAGPIE_OS_RELEASE (they are applied after this default).
+  export MAGPIE_OS_RELEASE="$STATE/os-release"
   unset MAGPIE_SOURCED MAGPIE_SELF MAGPIE_PASS MAGPIE_PACK_FORCE
   unset MAGPIE_CHECK_ONLY STUB_GAMS_BANNER MAGPIE_FULL_RUN
 }
@@ -903,6 +910,30 @@ grep_ok "tools install lock timeout" "$STATE/apt.log" "DPkg::Lock::Timeout=120 i
 # - the list must never request both flavours.
 grep_no "no libcurl gnutls dev in list" "$STATE/apt.log" "libcurl4-gnutls-dev"
 grep_no "healthy path no dist-upgrade" "$STATE/apt.log" "dist-upgrade"
+
+# ============================================================
+sec "apt tools: ubuntu floor, R age"
+# ============================================================
+# Ubuntu before 24.04 ships an R too old for magpie: fail up front.
+new_env
+printf 'ID=ubuntu\nVERSION_ID="22.04"\n' > "$ENV/os22"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; MAGPIE_PASS=2 magpie_step_apt_tools' \
+  run_fn "MAGPIE_OS_RELEASE=$ENV/os22"
+ret_is "ubuntu 22.04 blocked early" 1
+grep_ok "floor message" "$STATE/screen.txt" "Ubuntu 22.04 ships an R older than 4.3"
+grep_no "no apt call" "$STATE/apt.log" "apt-get"
+# Other distros are not blocked by the ubuntu floor.
+new_env
+printf 'ID=debian\nVERSION_ID="13"\n' > "$ENV/osdeb"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_apt_tools' \
+  run_fn "MAGPIE_OS_RELEASE=$ENV/osdeb"
+ret_is "debian unaffected by ubuntu floor" 0
+# An apt r-base that is still too old must fail the step, not print OK.
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; MAGPIE_PASS=2 magpie_step_apt_tools' \
+  run_fn STUB_R_OLD=1
+ret_is "old R after install blocks step" 1
+grep_no "no OK line with old R" "$STATE/screen.txt" "OK: apt course tools installed"
 
 # ============================================================
 sec "apt tools: dist-upgrade escalation"

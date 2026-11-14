@@ -885,10 +885,27 @@ magpie_apt_tools_install() {
     libtiff5-dev libudunits2-dev libxml2-dev libuv1-dev pari-gp qpdf
 }
 
+# Ubuntu ships an R too old for magpie before 24.04 (22.04: 4.1.x) -
+# say so up front instead of failing at the checks much later.
+magpie_ubuntu_floor() {
+  rel="${MAGPIE_OS_RELEASE:-/etc/os-release}"
+  id=$(sed -n 's/^ID=//p' "$rel" 2>/dev/null | tr -d '"')
+  ver=$(sed -n 's/^VERSION_ID=//p' "$rel" 2>/dev/null | tr -d '"')
+  major=${ver%%.*}
+  [ "$id" = "ubuntu" ] || return 0
+  case $major in
+    ""|*[!0-9]*) return 0 ;;
+  esac
+  if [ "$major" -lt 24 ]; then
+    magpie_fail "Ubuntu $ver ships an R older than 4.3 - use Ubuntu 24.04+ (in WSL: wsl --install -d Ubuntu-24.04)"
+  fi
+}
+
 # Linux: base tools + the -dev libraries R packages compile against,
-# one apt call. Skip when R and pandoc are already there. A failed
-# install often means a stale image: runtime libs older than the -dev
-# candidates. One dist-upgrade, then retry the same install.
+# one apt call. Skip when R, pandoc AND the build libraries are all
+# there. A failed install often means a stale image: runtime libs
+# older than the -dev candidates. One dist-upgrade, then retry the
+# same install.
 magpie_apt_tools_body() {
   magpie_sudo_warm || return 1
   sudo apt-get -o DPkg::Lock::Timeout=120 update || return 1
@@ -898,10 +915,13 @@ magpie_apt_tools_body() {
       -o Acquire::Retries=3 || return 1
     magpie_apt_tools_install || return 1
   fi
-  command -v pandoc >/dev/null 2>&1
+  # Pandoc AND a new-enough R: an apt r-base older than 4.3 must not
+  # read as success here (it would only fail at the checks later).
+  command -v pandoc >/dev/null 2>&1 && magpie_have_r
 }
 
 magpie_step_apt_tools() {
+  magpie_ubuntu_floor
   if magpie_have_r && command -v pandoc >/dev/null 2>&1; then
     magpie_log "R + pandoc present - apt tools step skipped"
     return 0
