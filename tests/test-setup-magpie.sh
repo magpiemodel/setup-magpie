@@ -894,6 +894,11 @@ grep_ok "no warm sudo at gate instant" "$STATE/sudo_at_gate.txt" "cool"
 # The gate child's output reaches the screen (fd 4) through the tee.
 grep_ok "gate child output reaches screen" "$STATE/screen.txt" "GATE-CHILD-OUTPUT-MARKER"
 grep_ok "gate child output reaches log" "$FAKE_HOME/magpie/setup-log.txt" "GATE-CHILD-OUTPUT-MARKER"
+# The log holds the child block ONCE: inside the pipeline the child's
+# stdout is the pipe, tee is the only log writer (no inherited-log
+# double write).
+cnt_is "gate child logged once" "GATE-CHILD-OUTPUT-MARKER" \
+  "$FAKE_HOME/magpie/setup-log.txt" 1
 # A failing gate child stays failing through the pipe (exit code of the
 # sandboxed child, not of tee).
 new_env
