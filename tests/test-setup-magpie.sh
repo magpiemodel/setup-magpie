@@ -1267,11 +1267,13 @@ grep_ok "rc texbin line (skip)" "$FAKE_HOME/.bashrc" ".TinyTeX/bin"
 new_env
 cp "$STATE/binlib/Rscript" "$FAKE_BIN/Rscript"
 mkdir -p "$FAKE_HOME/Library/TinyTeX/share"
+mkdir -p "$FAKE_HOME/.TinyTeX/share"
 FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_tinytex' \
   run_fn "STUB_TINYTEX_ROOT=$FAKE_HOME/Library/TinyTeX"
 ret_is "darwin half Library/TinyTeX heals" 0
 grep_ok "install_tinytex ran (darwin)" "$STATE/rscript.log" "install_tinytex"
 nofile_ok "stale share gone (darwin)" "$FAKE_HOME/Library/TinyTeX/share"
+nofile_ok "stale .TinyTeX gone too (darwin)" "$FAKE_HOME/.TinyTeX/share"
 file_ok "tex in Library/TinyTeX" "$FAKE_HOME/Library/TinyTeX/bin/x86_64-unknown-linux-gnu/tex"
 grep_ok "rc texbin line (darwin)" "$FAKE_HOME/.zshrc" "Library/TinyTeX"
 new_env
@@ -1320,6 +1322,7 @@ PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
 grep_ok "darwin keeps gams framework read" "$PJSON" "/Library/Frameworks/GAMS.framework"
 grep_ok "darwin keeps gfortran read" "$PJSON" "/usr/local/gfortran"
 grep_ok "darwin reads Library/TinyTeX" "$PJSON" "$FAKE_HOME/Library/TinyTeX"
+grep_ok "darwin reads .TinyTeX too" "$PJSON" "$FAKE_HOME/.TinyTeX"
 grep_ok "darwin write section present" "$PJSON" '"write"'
 grep_ok "darwin write holds madrat" "$PJSON" "$FAKE_HOME/.madrat"
 grep_ok "darwin write holds renv cache" "$PJSON" ".cache/R/renv"
