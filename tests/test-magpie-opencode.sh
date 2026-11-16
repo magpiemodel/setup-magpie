@@ -412,6 +412,17 @@ ret_is "persistent fail returns 1" 1
 grep_ok "3 attempts logged" "$FAKE_HOME/magpie/setup-log.txt" "attempt 3/3"
 
 # ============================================================
+sec "rc_add_path: append must not merge into the last line"
+# ============================================================
+# An rc whose last line has no final newline must not swallow the new
+# PATH line (a merged line breaks both entries).
+new_env
+printf 'export FOO=1' > "$FAKE_HOME/.bashrc"
+FN_BODY='MAGPIE_RC="$HOME/.bashrc"; magpie_rc_add_path "$MAGPIE_RC" /usr/local/bin' run_fn
+cnt_is "PATH line starts its own line" '^export PATH="/usr/local/bin' "$FAKE_HOME/.bashrc" 1
+grep_ok "rc last line stays intact" "$FAKE_HOME/.bashrc" '^export FOO=1$'
+
+# ============================================================
 sec "sudo loop + keep-alive"
 # ============================================================
 new_env

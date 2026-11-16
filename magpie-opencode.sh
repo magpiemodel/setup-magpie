@@ -325,12 +325,22 @@ magpie_download() {
   return 0
 }
 
+# Appending to an rc whose last line has no final newline would merge
+# the two lines and break both - close the open line first.
+magpie_rc_newline() {
+  if [ -s "$1" ] && [ -n "$(tail -c 1 "$1")" ]; then
+    printf '\n' >> "$1"
+  fi
+}
+
 # rc_add_path <rc> <dir>: one PATH line per dir, exported into this run.
 magpie_rc_add_path() {
   rc=$1
   dir=$2
   touch "$rc" 2>/dev/null || true
   if ! grep -qF "$dir" "$rc" 2>/dev/null; then
+    magpie_rc_newline "$rc"
+    # shellcheck disable=SC2016  # $PATH must stay literal in the rc line.
     printf 'export PATH="%s:$PATH"\n' "$dir" >> "$rc"
     export PATH="$dir:$PATH"
     return 0

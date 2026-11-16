@@ -314,8 +314,10 @@ macOS (Darwin):
 Shared helpers, as in the full scripts:
 
 - `rc_add_path <rc> <dir>`: append one `export PATH` line when the dir is
-  not mentioned in the rc file yet; always `export` for the current run.
-  rc file: `~/.bashrc` (Linux) / `~/.zshrc` (macOS).
+  not mentioned in the rc file yet; a missing final newline is closed
+  first, so the append never merges into the file's last line; always
+  `export` for the current run. rc file: `~/.bashrc` (Linux) / `~/.zshrc`
+  (macOS).
 - `fix_bin_path`: for `opencode` and `nono` - when not on PATH but found
   in `~/.opencode/bin`, `~/.nono/bin`, `~/.local/bin`, `/usr/local/bin`,
   `/opt/homebrew/bin`: register via `rc_add_path`. Found nowhere:
@@ -583,7 +585,9 @@ tar/nono/opencode`), like the existing
   force-re-pulls at the pin; `nono pin` called after every successful
   pull.
 - PATH: dedupe over two runs; both tools visible in the same run
-  (final launch uses a stub `nono` that records its PATH).
+  (final launch uses a stub `nono` that records its PATH); an rc whose
+  last line has no final newline gets the new PATH line on its own
+  line (no merge).
 - smoke test: stub `nono run` exits 1 -> retries, pass 2, help block, and
   the marker is NOT written; exits 0 -> marker written.
 - launch quick-fail: stub `nono run` exits non-zero in <15 s -> exactly

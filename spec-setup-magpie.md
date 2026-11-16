@@ -621,8 +621,10 @@ profile write-list, cache rc lines)
 + E2E deleted artifacts -> FAIL -> marker removal heals
 + E2E reproducible failure -> pass 2 -> help
 block + FAIL feed line. Regression: tests/test-magpie-opencode.sh still
-185/0 (incl. the new cleanup-ownership tests: owner exit stops the
-keep-alive and removes the lock; a non-owner exit leaves both alone).
+187/0 (incl. the cleanup-ownership tests: owner exit stops the
+keep-alive and removes the lock; a non-owner exit leaves both alone;
+and the rc-append newline guard: an append to an rc without final
+newline starts its own line).
 
 Live pending (course day / reference machines): real GAMS download +
 extract, macOS pkg installs incl. Gatekeeper of `sudo installer`
