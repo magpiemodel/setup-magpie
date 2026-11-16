@@ -699,10 +699,16 @@ sec "syntax"
 if bash -n "$SCRIPT" 2>/dev/null; then ok "bash -n"; else no "bash -n"; fi
 bash32_guard "$SCRIPT"
 bash32_guard "$HERE/test-setup-magpie.sh"
+SHELLCHECK=""
 if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck -s bash "$SCRIPT" >/dev/null 2>&1; then ok "shellcheck"; else no "shellcheck"; fi
+  SHELLCHECK=shellcheck
+elif [ -x "$HERE/shellcheck" ]; then
+  SHELLCHECK="$HERE/shellcheck"
+fi
+if [ -n "$SHELLCHECK" ]; then
+  if "$SHELLCHECK" -s bash "$SCRIPT" >/dev/null 2>&1; then ok "shellcheck"; else no "shellcheck"; fi
 else
-  echo "  (shellcheck not installed - skipped)"
+  echo "  (shellcheck not found - skipped)"
 fi
 
 # ============================================================
