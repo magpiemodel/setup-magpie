@@ -564,7 +564,7 @@ magpie_install_nono() {
 magpie_write_opencode_config() {
   file="$HOME/.config/opencode/opencode.json"
   mkdir -p "$HOME/.config/opencode" || return 1
-  tmp=$(mktemp)
+  tmp=$(mktemp) || return 1
   cat > "$tmp" <<'EOF'
 {
   "$schema": "https://opencode.ai/config.json",
