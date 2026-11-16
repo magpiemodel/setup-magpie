@@ -692,6 +692,7 @@ magpie_clone_magpie() {
     fi
     magpie_log "magpie: interrupted clone found - healing"
   fi
+  # shellcheck disable=SC2045  # ls -A: own-file allowlist check includes dotfiles.
   for entry in $(ls -A "$HOME/magpie" 2>/dev/null); do
     case $entry in
       .git|setup-log.txt|setup-help.txt|.setup-finished|.setup.lock| \
@@ -712,6 +713,7 @@ magpie_clone_magpie() {
 # ---------------- sandbox smoke test + marker ----------------
 
 magpie_sandbox_smoke() {
+  # shellcheck disable=SC2016  # $HOME/$HU_API_KEY expand in the child, not here.
   ( cd "$HOME/magpie" && nono run --profile nolabs-ai/opencode --allow-cwd --silent -- \
     sh -c 'command -v opencode >/dev/null && test -r "$HOME/.config/opencode/opencode.json" && test -n "$HU_API_KEY"' )
 }
@@ -850,6 +852,7 @@ magpie_main() {
 magpie_entry() {
   MAGPIE_SELF=""
   if [ -f "$0" ]; then
+    # shellcheck disable=SC1007  # CDPATH= applies to cd only, not an assignment.
     dir=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd)
     if [ -n "$dir" ]; then
       MAGPIE_SELF="$dir/$(basename -- "$0")"

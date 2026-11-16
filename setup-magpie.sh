@@ -618,8 +618,8 @@ magpie_rc_add_path() {
     export PATH="$dir:$PATH"
     return 1
   fi
-  # shellcheck disable=SC2016  # $PATH must stay literal in the rc line.
   magpie_rc_newline "$rc"
+  # shellcheck disable=SC2016  # $PATH must stay literal in the rc line.
   printf 'export PATH="%s:$PATH"\n' "$dir" >> "$rc"
   export PATH="$dir:$PATH"
   return 0
