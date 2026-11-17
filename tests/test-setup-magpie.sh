@@ -191,7 +191,10 @@ case "$1" in
         fi
         # Proxy for the sandboxed child's stdout: it must reach the
         # log ONLY (the script appends the gate output there and
-        # keeps nothing on screen).
+        # keeps nothing on screen). The banner line stands for what
+        # nono itself prints (version, pack, capability dump through
+        # "Applying sandbox...") before the child runs.
+        echo "NONO-BANNER-MARKER Applying sandbox..."
         echo "GATE-CHILD-OUTPUT-MARKER"
         exit "${STUB_NONO_GATE_EXIT:-0}"
         ;;
@@ -970,6 +973,9 @@ grep_ok "no warm sudo at gate instant" "$STATE/sudo_at_gate.txt" "cool"
 # check block already, and nono's own chatter is student-noise too.
 grep_no "gate child output off screen" "$STATE/screen.txt" "GATE-CHILD-OUTPUT-MARKER"
 grep_ok "gate child output reaches log" "$FAKE_HOME/magpie/setup-log.txt" "GATE-CHILD-OUTPUT-MARKER"
+grep_no "nono's own banner off screen" "$STATE/screen.txt" "NONO-BANNER-MARKER"
+grep_ok "nono's own banner reaches log" "$FAKE_HOME/magpie/setup-log.txt" \
+  "NONO-BANNER-MARKER"
 # The log holds the child block ONCE (single append - no tee double
 # write), and the parent owns the one student-facing gate line.
 cnt_is "gate child logged once" "GATE-CHILD-OUTPUT-MARKER" \
@@ -1191,7 +1197,9 @@ grep_no "no user-facing box" "$STATE/screen.txt" "NOTE IT DOWN"
 new_env
 echo "Fox123" > "$FAKE_HOME/.magpie-course-handle"
 FN_BODY='magpie_greet' run_fn
-grep_ok "greet reuses handle" "$STATE/screen.txt" "Reporting status as Fox123"
+grep_ok "greet reuses handle (log)" "$FAKE_HOME/magpie/setup-log.txt" \
+  "reporting status as Fox123"
+grep_no "no greet line on screen" "$STATE/screen.txt" "Fox123"
 grep_no "no box on reuse" "$STATE/screen.txt" "NOTE IT DOWN"
 
 # ============================================================
@@ -1314,7 +1322,8 @@ grep_ok "gams GAMS54 wording PASS" "$STATE/screen.txt" "PASS gams"
 # gams check - rerunning an unfilled script may not break a good
 # machine. (magpie.sh template = placeholder, unembedded.)
 grep_ok "course licence PASS without embedding" "$STATE/screen.txt" \
-  "PASS gams (course licence found"
+  "PASS gams (course licence found)"
+grep_no "no CONOPT note on screen" "$STATE/screen.txt" "CONOPT"
 grep_ok "git PASS" "$STATE/screen.txt" "PASS git"
 grep_ok "R PASS" "$STATE/screen.txt" "PASS R 4.4.2"
 # Version probes run --vanilla (no .Rprofile/renv at startup), so a
@@ -1360,7 +1369,8 @@ make_tools
 SRC="$ENV/magpie_lic.sh"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
 ret_is "course licensee banner PASSes" 0
-grep_ok "course licence PASS line" "$STATE/screen.txt" "PASS gams (course licence found"
+grep_ok "course licence PASS line" "$STATE/screen.txt" \
+  "PASS gams (course licence found)"
 new_env
 make_tools
 SRC="$ENV/magpie_lic.sh"
@@ -1386,7 +1396,7 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' \
   run_fn STUB_GAMS_BANNER="Licensee: Potsdam-Institut (demo license)"
 ret_is "name check wins over demo" 0
 grep_ok "named PASS despite demo word" "$STATE/screen.txt" \
-  "PASS gams (course licence found"
+  "PASS gams (course licence found)"
 new_env
 make_tools
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' \
@@ -1399,7 +1409,8 @@ make_tools
 SRC="$ENV/magpie_lic.sh"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; MAGPIE_COURSE_LICENSEE=; magpie_run_checks' run_fn
 grep_ok "empty licensee falls back to weak check" "$STATE/screen.txt" \
-  "PASS gams (license found"
+  "PASS gams (license found)"
+grep_no "no CONOPT note in the weak PASS" "$STATE/screen.txt" "CONOPT"
 # The gams probe temp folder is removed after the checks.
 new_env
 make_tools
@@ -2401,7 +2412,10 @@ grep_ok "clone OK line" "$S" "OK: magpie downloaded"
 cnt_is "exactly 7 heads-ups" "installing" "$S" 7
 grep_no "apt skipped no heads-up" "$S" "installing git + curl"
 grep_no "no failure verdict" "$S" "SETUP FAILED"
-grep_ok "greet shows handle on first run" "$S" "Reporting status as"
+grep_ok "greet logs the handle on first run" "$FAKE_HOME/magpie/setup-log.txt" \
+  "reporting status as"
+grep_no "no greet line on screen" "$S" "Reporting status as"
+grep_no "no CONOPT note in the green run" "$S" "CONOPT"
 grep_no "no blind sudo prompt" "$S" "Type it blind"
 grep_ok "all checks PASS" "$S" "PASS gams"
 grep_ok "check block names the code name" "$S" "code name: "
@@ -2468,6 +2482,9 @@ grep_ok "sudo cooled before gate" "$STATE/sudo.log" "sudo -k"
 grep_no "gate child output off screen (E2E)" "$S" "GATE-CHILD-OUTPUT-MARKER"
 grep_ok "gate child output in log (E2E)" "$FAKE_HOME/magpie/setup-log.txt" \
   "GATE-CHILD-OUTPUT-MARKER"
+grep_no "nono banner off screen (E2E)" "$S" "NONO-BANNER-MARKER"
+grep_ok "nono banner in log (E2E)" "$FAKE_HOME/magpie/setup-log.txt" \
+  "NONO-BANNER-MARKER"
 grep_ok "sandbox check OK line on screen" "$S" "OK: sandbox check passed"
 grep_no "no sudo -v (all silent)" "$STATE/sudo.log" "sudo -v"
 file_ok "full run marker" "$FAKE_HOME/magpie/.setup-fullrun-ok"

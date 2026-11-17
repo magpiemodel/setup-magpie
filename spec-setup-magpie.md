@@ -39,7 +39,9 @@ failure the screen names the step, the code name and the path of
   from `/dev/urandom` (no `$RANDOM`). First creation is atomic
   (noclobber): two concurrent first runs converge on one name. It is an
   internal per-machine id (feed posts and the username replacement),
-  reported in `magpie_greet`; there is no interactive prompt.
+  logged by `magpie_greet` but never greeted with on screen: the student
+  reads the code name in the `system:` check header and, on a failure,
+  in the verdict line. There is no interactive prompt.
 - All state lives under `~/magpie` with EXACTLY the file names
   `magpie-opencode.sh` expects (`setup-log.txt`, `.setup.lock/`,
   `.keepalive.pid`, `opencode-dl.tgz`,
@@ -197,7 +199,8 @@ restore (6.9) -> checks -> (green: sandbox gate, full default run
 RUNS gets one `[HH:MM:SS] - installing ...` heads-up; installs print
 `OK:` lines. Screen lines stay student-readable: tool internals (rc
 PATH edits, licence file paths, nono profile/pack mechanics, the 9P
-relocation) are log-only, and heads-up/OK labels use what students
+relocation) and the `magpie_greet` handle line are log-only, and
+heads-up/OK labels use what students
 meet in the course (R, pandoc, GAMS, magpie, "R packages", "course
 sandbox settings") - never apt/pkg/renv/clone jargon.
 The keep-alive stops right after the licence step (no later step
@@ -442,9 +445,10 @@ line) - the student never sees a 9P warning.
 The call runs in a subshell whose combined output is appended to
 `"$HOME/magpie/setup-log.txt"` (`>>` + `2>&1`, exit code checked
 directly): neither the child's output nor anything nono itself prints
-reaches the screen - the parent has already printed the check block,
-so a tee would only duplicate it (and the second sandbox greet) for
-the student. On a green gate the parent prints one screen line
+(its version, pack and capability dump through `Applying sandbox...`)
+reaches the screen - the parent has already printed the check block, so
+a tee would only duplicate it and show the child's greet line and
+nono's banner for the student. On a green gate the parent prints one screen line
 "OK: sandbox check passed"; a failing gate goes through the retry +
 pass-2 model, whose failure verdict posts the results + log tail to the
 feed.
@@ -574,8 +578,8 @@ Results accumulate in a newline-separated string (no arrays):
 `gams` (found via PATH or the per-OS locations, run in a `mktemp -d`
 scratch dir, removed afterwards - never in the folder the script
 stands in, because GAMS writes there; no scratch dir = FAIL; with
-`MAGPIE_COURSE_LICENSEE` set, a banner naming that licensee PASSes
-("course licence found") - embedded or NOT: a machine whose course
+`MAGPIE_COURSE_LICENSEE` set, a banner naming that licensee PASSes as
+`gams (course licence found)` - embedded or NOT: a machine whose course
 licence is already installed survives a rerun of the unfilled script;
 without an embedded slice the banner must additionally carry no
 `demo|expired` wording (a demo can never pose as the course licence;
@@ -583,7 +587,7 @@ with an embedded one the name outranks it); else a banner matching
 `demo|expired` FAILs (demo licence); else, with the licence embedded
 and the name missing, FAIL "not the course
 licence"; else the weak match `license is valid|licensee` (GAMS 54 +
-legacy wordings) PASSes; else FAIL - licence file missing),
+legacy wordings) PASSes as `gams (license found)`; else FAIL - licence file missing),
 `git >= 2.23` (integer compare), `Rscript >= 4.3` (probed with
 `Rscript --vanilla`: the pure version test must not depend on the
 project `.Rprofile`/renv - the gate child runs checks from `~/magpie`
@@ -612,7 +616,10 @@ prints to screen under one `system: <OS> <arch> | code name: <handle>`
 line (no copy-block frame - the paste-into-an-AI flow is gone), goes to
 the feed as "check result" (or "sandbox
 check result" in the child), and any FAIL line ends the run (failure
-verdict + exit 1; in the child: exit non-zero for the gate).
+verdict + exit 1; in the child: exit non-zero for the gate). PASS lines
+are plain results, no side notes: the old
+`- ask TA to confirm CONOPT once` suffix is gone, because this block is
+also the feed post and a green run must never read as an open action.
 
 ## 9. Upload protocol (feed folder `https://cloud.pik-potsdam.de/public.php/webdav`)
 
@@ -732,7 +739,7 @@ fresh-process pass 2; sudo loop
 + keep-alive (killed BEFORE the gate - asserted with a live keep-alive
 in a dedicated sudo-prompt E2E, and `setup-dl-*.pkg` checksum mismatch
 asserting no sudo ran before verification); handle create-once/reuse
-(no box - the greet line only);
+(no box, and `magpie_greet` lands in the log, not on screen);
 feed target guard (anchored credential-free `STATUS_URL`); PUT
 uploads recorded with credentials stripped - the stub strips (a password
 holding "@" too), a fake filled-in link proves no token/password reaches
@@ -782,8 +789,8 @@ failure verdict, 3 attempts); clone guards (foreign dir,
 foreign origin, ssh/`.git`/trailing-slash/fork origin accepted, removed
 origin proceeds, interrupted heal, `setup-dl-*` leftovers tolerated,
 `.setup-fullrun-ok` marker tolerated by the guard);
-gate (child output in the log
-exactly once and NOT on screen, parent prints the sandbox OK line,
+gate (child output and nono's own banner in the
+log exactly once and NOT on screen, parent prints the sandbox OK line,
 child exit code wins, sudo cooled at that instant), full run
 step (sandbox command shape, caches + PATH passed, marker +
 artifacts written, keep-alive dead + sudo cooled, verified marker skips, non-zero
@@ -794,7 +801,8 @@ wrap on darwin);
 E2E day-one green run (7 heads-ups, OK lines, rc dedupe, licence
 written, clone checked out, no `.setup-finished`, `setup-dl-*` cleaned,
 full run marker + artifacts + two `n` prompt answers on stdin,
-profile write-list, cache rc lines)
+profile write-list, cache rc lines, greet line in the log and off
+screen, plain `PASS gams (course licence found)` with no to-do note)
 + second run all-skip (full run PASS line, start.R ran once)
 + E2E MAGPIE_FULL_RUN=0 (green, skip notes, no marker)
 + E2E deleted artifacts -> FAIL -> marker removal heals

@@ -225,9 +225,12 @@ magpie_init_handle() {
   MAGPIE_HANDLE=$new_handle
 }
 
+# Log-only: the code name reaches the student on screen in the
+# `system: ... | code name: ...` check header and in the failure
+# verdict, so greeting them with it would only add a line.
 magpie_greet() {
   magpie_init_handle
-  magpie_say "Reporting status as $MAGPIE_HANDLE."
+  magpie_log "reporting status as $MAGPIE_HANDLE"
 }
 
 # The account's real name from the user database ("" if unavailable).
@@ -1910,13 +1913,13 @@ magpie_run_checks() {
     elif [ -n "$lic_banner" ] \
       && { [ -n "$lic_named" ] \
         || ! printf '%s\n' "$gout" | grep -qiE "demo|expired"; }; then
-      magpie_check_line PASS "gams (course licence found - ask TA to confirm CONOPT once)"
+      magpie_check_line PASS "gams (course licence found)"
     elif printf '%s\n' "$gout" | grep -qiE "demo|expired"; then
       magpie_check_line FAIL "gams runs only with the free demo licence - the course licence file is missing - rerun this file"
     elif [ -n "$lic_named" ]; then
       magpie_check_line FAIL "gams licence is not the course licence (no $MAGPIE_COURSE_LICENSEE) - tell the TA"
     elif printf '%s\n' "$gout" | grep -qiE "license is valid|licensee"; then
-      magpie_check_line PASS "gams (license found - ask TA to confirm CONOPT once)"
+      magpie_check_line PASS "gams (license found)"
     else
       magpie_check_line FAIL "gams found but its licence file is missing - rerun this file"
     fi
