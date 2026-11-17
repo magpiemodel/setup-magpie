@@ -471,7 +471,6 @@ magpie_native_self_copy() {
   if cp -f "$MAGPIE_SELF" "$dest" 2>/dev/null; then
     MAGPIE_SELF=$dest
     magpie_log "script run from a Windows drive (9P) - sandboxed steps use $dest"
-    magpie_say "Using a Linux-side copy of this script (~/.magpie-course/self/) for the sandboxed steps."
   fi
 }
 
@@ -686,7 +685,7 @@ magpie_fix_bin_path() {
     /usr/local/bin /opt/homebrew/bin; do
     if [ -x "$dir/$bin" ]; then
       if magpie_rc_add_path "$MAGPIE_RC" "$dir"; then
-        magpie_say "Added $bin to PATH in $MAGPIE_RC (also active in this run)."
+        magpie_log "added $bin to PATH in $MAGPIE_RC (also active in this run)"
       fi
       return 0
     fi
@@ -771,7 +770,7 @@ magpie_step_os_base() {
       magpie_log "git + curl present - apt not needed"
       return 0
     fi
-    magpie_say_progress "apt update (git, curl)" "about 1-2 min"
+    magpie_say_progress "git + curl" "about 1-2 min"
     if ! magpie_retry 3 magpie_apt_body; then
       magpie_step_failed "apt git curl"
     fi
@@ -1093,11 +1092,11 @@ magpie_step_apt_tools() {
     magpie_log "R + pandoc + build libraries present - apt tools step skipped"
     return 0
   fi
-  magpie_say_progress "apt R + pandoc + build libraries" "5-15 min, just wait"
+  magpie_say_progress "R, pandoc + support packages" "5-15 min, just wait"
   if ! magpie_retry 3 magpie_apt_tools_body; then
     magpie_step_failed "apt course tools"
   fi
-  magpie_say "OK: apt course tools installed"
+  magpie_say "OK: R + support packages installed"
 }
 
 # macOS: three pinned .pkg steps, each skip-if-done. No Homebrew.
@@ -1109,7 +1108,7 @@ magpie_step_gfortran() {
   fi
   MAGPIE_PKG_URL=$GFORTRAN_URL
   MAGPIE_PKG_SHA=$GFORTRAN_SHA256
-  magpie_say_progress "gfortran $GFORTRAN_VERSION (pkg)" "about 2-5 min"
+  magpie_say_progress "gfortran $GFORTRAN_VERSION" "about 2-5 min"
   if ! magpie_retry 3 magpie_gfortran_body; then
     magpie_step_failed "gfortran install"
   fi
@@ -1131,7 +1130,7 @@ magpie_step_r() {
     arm64) MAGPIE_PKG_URL=$R_URL_DARWIN_ARM64; MAGPIE_PKG_SHA=$R_SHA256_DARWIN_ARM64 ;;
     *) MAGPIE_PKG_URL=$R_URL_DARWIN_X64; MAGPIE_PKG_SHA=$R_SHA256_DARWIN_X64 ;;
   esac
-  magpie_say_progress "R $R_VERSION (pkg)" "about 2-5 min"
+  magpie_say_progress "R $R_VERSION" "about 2-5 min"
   if ! magpie_retry 3 magpie_r_body; then
     magpie_step_failed "R install"
   fi
@@ -1152,7 +1151,7 @@ magpie_step_pandoc() {
     arm64) MAGPIE_PKG_URL=$PANDOC_URL_DARWIN_ARM64; MAGPIE_PKG_SHA=$PANDOC_SHA256_DARWIN_ARM64 ;;
     *) MAGPIE_PKG_URL=$PANDOC_URL_DARWIN_X64; MAGPIE_PKG_SHA=$PANDOC_SHA256_DARWIN_X64 ;;
   esac
-  magpie_say_progress "pandoc $PANDOC_VERSION (pkg)" "about 1-2 min"
+  magpie_say_progress "pandoc $PANDOC_VERSION" "about 1-2 min"
   if ! magpie_retry 3 magpie_pandoc_body; then
     magpie_step_failed "pandoc install"
   fi
@@ -1454,7 +1453,7 @@ magpie_install_licence() {
   fi
   mv "$tmp" "$target"
   chmod 600 "$target"
-  magpie_say "Course licence written to $target"
+  magpie_log "course licence written to $target"
 }
 
 # ---------------- nono profile ----------------
@@ -1489,13 +1488,12 @@ magpie_pull_nono_profile() {
   if [ -f "$marker" ]; then
     if [ "$(magpie_nono_pack_version)" = "$NONO_PACK_VERSION" ]; then
       magpie_log "nono profile opencode: already pulled"
-      magpie_say "OK: nono profile opencode already pulled"
       return 0
     fi
     magpie_log "nono pack version drift: got $(magpie_nono_pack_version), want $NONO_PACK_VERSION"
     MAGPIE_PACK_FORCE=1
   fi
-  magpie_say_progress "nono profile" "about 1 min"
+  magpie_say_progress "course sandbox settings" "about 1 min"
   if ! magpie_retry 3 magpie_nono_pull; then
     magpie_step_failed "nono profile pull"
   fi
@@ -1503,7 +1501,7 @@ magpie_pull_nono_profile() {
   # exactly as pinned until this script raises the pin. Best effort.
   nono pin nolabs-ai/opencode >/dev/null 2>&1 \
     || magpie_log "nono pack pin failed - updates not blocked, tell the TA"
-  magpie_say "OK: nono profile opencode pulled ($NONO_PACK_VERSION)"
+  magpie_log "nono profile opencode pulled ($NONO_PACK_VERSION)"
   magpie_report "setup: nono profile pulled"
 }
 
@@ -1703,7 +1701,7 @@ magpie_step_magpie_profile() {
   if ! magpie_retry 3 magpie_build_nono_profile; then
     magpie_step_failed "magpie-profile build"
   fi
-  magpie_say "OK: nono profile magpie-profile in place"
+  magpie_log "nono profile magpie-profile in place"
 }
 
 # ---------------- magpie clone ----------------
@@ -1806,7 +1804,7 @@ magpie_clone_magpie() {
   if ! magpie_retry 3 magpie_clone_body; then
     magpie_step_failed "magpie clone"
   fi
-  magpie_say "OK: magpie cloned"
+  magpie_say "OK: magpie downloaded (~/magpie)"
 }
 
 # ---------------- renv library ----------------
@@ -1841,11 +1839,11 @@ magpie_step_renv_restore() {
     magpie_log "renv library: already populated"
     return 0
   fi
-  magpie_say_progress "renv library restore" "about 5-15 min, just wait"
+  magpie_say_progress "R packages" "about 5-15 min, just wait"
   if ! magpie_retry 3 magpie_renv_restore_body; then
     magpie_step_failed "renv restore"
   fi
-  magpie_say "OK: renv library restored"
+  magpie_say "OK: R packages installed"
   magpie_report "setup: renv restored"
 }
 
@@ -2000,19 +1998,22 @@ magpie_sandbox_gate() {
     magpie_fail "sandbox gate: cannot locate this file - run it as a file, not pasted"
   fi
   texbin=$(magpie_texbin)
-  magpie_say "Final check inside the course sandbox (nono, profile magpie-profile)..."
-  # The child's stdout is this shell's stdout (the log), so its fd 4 is
-  # the log too: tee to the real terminal as well, or the result block
-  # never reaches the screen. The child's exit code decides, not tee's.
+  magpie_say "Final check inside the course sandbox..."
+  # The child's stdout+stderr are appended to the log - nothing of the
+  # child (nor of nono itself) reaches the screen: the parent has
+  # already printed the check block, so a tee would duplicate it.
   # --allow-cwd: the course runs from ~/magpie (this subshell's cwd) -
   # without the flag nono interactively prompts "Share cwd read+write?"
   # before applying the sandbox.
   ( cd "$HOME/magpie" && nono run --profile magpie-profile --allow-cwd -- \
     env MAGPIE_CHECK_ONLY=1 "PATH=${texbin:+$texbin:}$PATH" \
     "MADRAT_MAINFOLDER=$MADRAT_MAINFOLDER" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
-    bash "$MAGPIE_SELF" --check-only ) 2>&1 \
-    | tee -a "$HOME/magpie/setup-log.txt" >&4
-  rc=${PIPESTATUS[0]}
+    bash "$MAGPIE_SELF" --check-only ) \
+    >> "$HOME/magpie/setup-log.txt" 2>&1
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    magpie_say "OK: sandbox check passed"
+  fi
   return "$rc"
 }
 

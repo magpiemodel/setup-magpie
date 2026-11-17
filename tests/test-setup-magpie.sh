@@ -189,8 +189,9 @@ case "$1" in
         else
           echo cool >> "$STATE/sudo_at_gate.txt"
         fi
-        # Proxy for the sandboxed child's stdout: it must reach BOTH
-        # the screen and the log (the script tees the gate output).
+        # Proxy for the sandboxed child's stdout: it must reach the
+        # log ONLY (the script appends the gate output there and
+        # keeps nothing on screen).
         echo "GATE-CHILD-OUTPUT-MARKER"
         exit "${STUB_NONO_GATE_EXIT:-0}"
         ;;
@@ -965,14 +966,16 @@ grep_ok "gate args: renv cache passed" "$STATE/nono.log" "RENV_PATHS_CACHE="
 # sudo may exist while sandboxed children run).
 grep_ok "sudo cooled before the gate" "$STATE/sudo.log" "sudo -k"
 grep_ok "no warm sudo at gate instant" "$STATE/sudo_at_gate.txt" "cool"
-# The gate child's output reaches the screen (fd 4) through the tee.
-grep_ok "gate child output reaches screen" "$STATE/screen.txt" "GATE-CHILD-OUTPUT-MARKER"
+# The gate child's output stays OFF the screen: the parent printed the
+# check block already, and nono's own chatter is student-noise too.
+grep_no "gate child output off screen" "$STATE/screen.txt" "GATE-CHILD-OUTPUT-MARKER"
 grep_ok "gate child output reaches log" "$FAKE_HOME/magpie/setup-log.txt" "GATE-CHILD-OUTPUT-MARKER"
-# The log holds the child block ONCE: inside the pipeline the child's
-# stdout is the pipe, tee is the only log writer (no inherited-log
-# double write).
+# The log holds the child block ONCE (single append - no tee double
+# write), and the parent owns the one student-facing gate line.
 cnt_is "gate child logged once" "GATE-CHILD-OUTPUT-MARKER" \
   "$FAKE_HOME/magpie/setup-log.txt" 1
+grep_ok "parent prints the gate OK line" "$STATE/screen.txt" \
+  "OK: sandbox check passed"
 # A failing gate child stays failing through the pipe (exit code of the
 # sandboxed child, not of tee).
 new_env
@@ -981,7 +984,7 @@ put_nono
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
 MAGPIE_SELF=/bin/true; magpie_take_lock; magpie_sandbox_gate' \
   run_fn STUB_NONO_GATE_EXIT=1 STUB_SUDO_N_OK=1
-ret_is "gate exit code survives the tee" 1
+ret_is "gate exit code survives the log append" 1
 # Early stop runs before the gate; it must be a harmless no-op when no
 # keep-alive ever started and $HOME/magpie is absent (no file created,
 # exit 0). Custom subshell: run_fn always creates $HOME/magpie.
@@ -1125,7 +1128,7 @@ new_env
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; MAGPIE_PASS=2 magpie_step_apt_tools' \
   run_fn STUB_R_OLD=1
 ret_is "old R after install blocks step" 1
-grep_no "no OK line with old R" "$STATE/screen.txt" "OK: apt course tools installed"
+grep_no "no OK line with old R" "$STATE/screen.txt" "OK: R + support packages installed"
 # The skip needs R + pandoc AND the -dev libraries: R+pandoc alone with
 # a missing build library must run apt again.
 new_env
@@ -1161,7 +1164,7 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_st
 ret_is "apt tools recover after escalation" 0
 grep_ok "escalation dist-upgrade runs" "$STATE/apt.log" "DPkg::Lock::Timeout=120 dist-upgrade"
 cnt_is "install retried after escalation" " install -y" "$STATE/apt.log" 2
-grep_ok "tools OK after escalation" "$STATE/screen.txt" "OK: apt course tools installed"
+grep_ok "tools OK after escalation" "$STATE/screen.txt" "OK: R + support packages installed"
 # Persistent fail: 3 attempts x (install + dist-upgrade + install),
 # then pass-2 blocked with the help block.
 new_env
@@ -1783,7 +1786,7 @@ grep_ok "self redirected to native copy" "$STATE/self.txt" \
 grep_ok "copy carries the content" "$NATIVE" "MAGPIE-9P-ORIGINAL"
 grep_ok "Windows drive note logged" "$FAKE_HOME/magpie/setup-log.txt" \
   "Windows drive"
-grep_ok "Linux-side note on screen" "$STATE/screen.txt" "Linux-side copy"
+grep_no "Linux-side note off screen" "$STATE/screen.txt" "Linux-side copy"
 # Reruns from the relocated (native) path must not copy again.
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1
 MAGPIE_SELF="'"$FAKE_HOME"'/.magpie-course/self/setup-magpie.sh"
@@ -1961,7 +1964,7 @@ echo "help" > "$FAKE_HOME/magpie/setup-help.txt"
 run_e2e
 ret_is "own files only -> clone proceeds" 0
 file_ok "clone recreated .git" "$FAKE_HOME/magpie/.git"
-grep_ok "clone happened" "$STATE/screen.txt" "OK: magpie cloned"
+grep_ok "clone happened" "$STATE/screen.txt" "OK: magpie downloaded"
 new_env
 make_installed
 rm -rf "$FAKE_HOME/magpie/.git"
@@ -1985,7 +1988,7 @@ run_e2e
 ret_is "markers tolerated by guard, run fails on stale marker" 1
 grep_no "no false foreign-dir abort" "$STATE/screen.txt" "not a magpie clone"
 file_ok "clone recreated .git" "$FAKE_HOME/magpie/.git"
-grep_ok "clone happened" "$STATE/screen.txt" "OK: magpie cloned"
+grep_ok "clone happened" "$STATE/screen.txt" "OK: magpie downloaded"
 grep_ok "stale marker FAIL line" "$STATE/screen.txt" "FAIL full run artifacts missing - rerun this file"
 grep_ok "existing opencode marker kept untouched" "$FAKE_HOME/magpie/.setup-finished" "nono 0.81.0"
 new_env
@@ -2082,8 +2085,8 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_st
 ret_is "broken library gets restored" 0
 grep_ok "activate.R bootstrapped" "$STATE/rscript.log" "renv/activate.R"
 grep_ok "restore called unprompted" "$STATE/rscript.log" "renv::restore(prompt = FALSE, restart = FALSE)"
-grep_ok "restore heads-up" "$STATE/screen.txt" "installing renv library restore, about 5-15 min"
-grep_ok "OK line" "$STATE/screen.txt" "OK: renv library restored"
+grep_ok "restore heads-up" "$STATE/screen.txt" "installing R packages, about 5-15 min"
+grep_ok "OK line" "$STATE/screen.txt" "OK: R packages installed"
 grep_ok "restore fed" "$STATE/feed.log" "setup: renv restored"
 new_env
 make_tools
@@ -2319,15 +2322,24 @@ ret_is "day one exits 0" 0
 S="$STATE/screen.txt"
 grep_ok "opencode OK line" "$S" "OK: opencode 9.9.9 installed"
 grep_ok "nono OK line" "$S" "OK: nono 9.9.9 installed"
-grep_ok "apt tools OK line" "$S" "OK: apt course tools installed"
+grep_ok "tools OK line" "$S" "OK: R + support packages installed"
 grep_ok "TinyTeX OK line" "$S" "OK: TinyTeX installed"
 grep_ok "GAMS OK line" "$S" "OK: GAMS 54.6.1 installed"
-grep_ok "licence written line" "$S" "Course licence written"
-grep_ok "profile pull OK line" "$S" "OK: nono profile opencode pulled"
-grep_ok "magpie-profile OK line" "$S" "OK: nono profile magpie-profile in place"
-grep_ok "clone OK line" "$S" "OK: magpie cloned"
+grep_no "licence path off screen" "$S" "Course licence written"
+grep_ok "licence written logged" "$FAKE_HOME/magpie/setup-log.txt" \
+  "course licence written"
+grep_no "profile pull OK off screen" "$S" "OK: nono profile opencode pulled"
+grep_ok "profile pull logged" "$FAKE_HOME/magpie/setup-log.txt" \
+  "nono profile opencode pulled"
+grep_no "magpie-profile OK off screen" "$S" "magpie-profile in place"
+grep_ok "magpie-profile logged" "$FAKE_HOME/magpie/setup-log.txt" \
+  "magpie-profile in place"
+grep_no "PATH plumbing off screen" "$S" "Added opencode to PATH"
+grep_ok "PATH add logged" "$FAKE_HOME/magpie/setup-log.txt" \
+  "added opencode to PATH"
+grep_ok "clone OK line" "$S" "OK: magpie downloaded"
 cnt_is "exactly 7 heads-ups" "installing" "$S" 7
-grep_no "apt skipped no heads-up" "$S" "apt update"
+grep_no "apt skipped no heads-up" "$S" "installing git + curl"
 grep_no "no help block" "$S" "##"
 grep_ok "greet shows handle on first run" "$S" "Reporting status as"
 grep_no "no blind sudo prompt" "$S" "Type it blind"
@@ -2385,7 +2397,10 @@ grep_ok "pull pinned" "$STATE/nono.log" "pull nolabs-ai/opencode@9.9.9"
 grep_ok "gate ran" "$STATE/nono.log" "--profile magpie-profile"
 grep_ok "keep-alive dead at gate" "$STATE/keepalive_at_gate.txt" "dead"
 grep_ok "sudo cooled before gate" "$STATE/sudo.log" "sudo -k"
-grep_ok "gate child output on screen" "$S" "GATE-CHILD-OUTPUT-MARKER"
+grep_no "gate child output off screen (E2E)" "$S" "GATE-CHILD-OUTPUT-MARKER"
+grep_ok "gate child output in log (E2E)" "$FAKE_HOME/magpie/setup-log.txt" \
+  "GATE-CHILD-OUTPUT-MARKER"
+grep_ok "sandbox check OK line on screen" "$S" "OK: sandbox check passed"
 grep_no "no sudo -v (all silent)" "$STATE/sudo.log" "sudo -v"
 file_ok "full run marker" "$FAKE_HOME/magpie/.setup-fullrun-ok"
 RUNREL=$(sed -n 1p "$FAKE_HOME/magpie/.setup-fullrun-ok" 2>/dev/null)

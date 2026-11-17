@@ -168,8 +168,8 @@ banner while the licence is embedded; empty = weak generic check only.
 
 Same scoped-redirect entry as `magpie-opencode.sh`: the real terminal is
 saved on fd 4, the whole main run goes to `~/magpie/setup-log.txt`,
-screen output only through `magpie_say` and the
-tee'd sandbox-gate child (6.7). The `--check-only` child (env
+screen output only through `magpie_say` (the sandbox-gate child is
+log-only, 6.7). The `--check-only` child (env
 `MAGPIE_CHECK_ONLY=1` or argument) is branched BEFORE the log
 redirect - it writes no log, takes no lock, runs no installs.
 
@@ -189,7 +189,11 @@ pull/pin -> `magpie-profile` build -> magpie clone -> renv library
 restore (6.9) -> checks -> (green: sandbox gate, full default run
 (6.10), next steps, feed "run finished", exit 0). Every slow step that
 RUNS gets one `[HH:MM:SS] - installing ...` heads-up; installs print
-`OK:` lines.
+`OK:` lines. Screen lines stay student-readable: tool internals (rc
+PATH edits, licence file paths, nono profile/pack mechanics, the 9P
+relocation) are log-only, and heads-up/OK labels use what students
+meet in the course (R, pandoc, GAMS, magpie, "R packages", "course
+sandbox settings") - never apt/pkg/renv/clone jargon.
 The keep-alive stops right after the licence step (no later step
 touches sudo) and again before the gate; `sudo -k` drops the cached
 timestamp, so no warm sudo exists while the gate child OR the full run
@@ -423,17 +427,20 @@ username ever enters the profile or the feed. The Downloads original
 stays untouched and is re-copied on every fresh run (edit-and-rerun
 works); a rerun whose script is already native, and any system where
 `stat -f` fails or reports another type (macOS: `apfs`/`hfs`), skip
-the copy silently. The student sees one informational line about the
-Linux-side copy - never a 9P warning.
+the copy silently. The relocation is silent on screen (one log
+line) - the student never sees a 9P warning.
 
-The call runs in a subshell whose combined output goes through
-`tee -a "$HOME/magpie/setup-log.txt" >&4`: the parent's stdout is the
-log, so the tee is what puts the child's check block on the screen -
-and into the log, exactly once. The gate returns `PIPESTATUS[0]`: the
-child's exit code decides, never tee's.
+The call runs in a subshell whose combined output is appended to
+`"$HOME/magpie/setup-log.txt"` (`>>` + `2>&1`, exit code checked
+directly): neither the child's output nor anything nono itself prints
+reaches the screen - the parent has already printed the check block,
+so a tee would only duplicate it (and the second sandbox greet) for
+the student. On a green gate the parent prints one screen line
+"OK: sandbox check passed"; a failing gate goes through the retry +
+pass-2 model, whose help block carries the results + log tail.
 The child: greet + checks only, feed label "sandbox check result",
-exit code = checks result, no lock/sudo/tee/installs -
-recursion-proof. Gate failure goes through the retry + pass-2 model.
+exit code = checks result, no lock/sudo/log-file/installs -
+recursion-proof.
 
 ### 6.8 magpie clone
 
@@ -466,8 +473,9 @@ Otherwise, inside `~/magpie`: bootstrap `renv` via
 never asks anything), then
 `Rscript -e 'renv::restore(prompt = FALSE, restart = FALSE)'`.
 Wrapped in `magpie_retry 3`, failure -> `magpie_step_failed "renv
-restore"`. Real restores feed "setup: renv restored"; progress
-heads-up "about 5-15 min". Fills `$RENV_PATHS_CACHE`, so the sandboxed
+restore"`. Real restores feed "setup: renv restored"; screen wording is
+student-facing ("installing R packages, about 5-15 min" / "OK: R
+packages installed"). Fills `$RENV_PATHS_CACHE`, so the sandboxed
 run-folder renv restores (6.10) only copy from the cache.
 
 ### 6.10 full default run (sandboxed)
@@ -489,7 +497,7 @@ holds all verification artifacts. Otherwise ONE sandboxed attempt
 
 Feed "setup: full run start" before, heads-up "about 40 min, keep the
 laptop plugged in and awake". The run's own output goes to the log only
-(no tee, unlike the gate) - the R noise stays off the screen. The
+(no tee, like the gate) - the R noise stays off the screen. The
 command's stdin gets flow-matched answers: WITH a `renv.lock` two `n`
 lines answer `start.R`'s "Update now?" and `fixDeps` prompts (auto-
 updating would drift from the restored lockfile); WITHOUT one (every
@@ -706,8 +714,9 @@ block, 3 attempts); clone guards (foreign dir,
 foreign origin, ssh/`.git`/trailing-slash/fork origin accepted, removed
 origin proceeds, interrupted heal, `setup-dl-*` leftovers tolerated,
 `.setup-fullrun-ok` marker tolerated by the guard);
-gate (child output on screen AND in the log
-exactly once, child exit code wins, sudo cooled at that instant), full run
+gate (child output in the log
+exactly once and NOT on screen, parent prints the sandbox OK line,
+child exit code wins, sudo cooled at that instant), full run
 step (sandbox command shape, caches + PATH passed, marker +
 artifacts written, keep-alive dead + sudo cooled, verified marker skips, non-zero
 exit -> help block (also with complete artifacts), swallowed run error
