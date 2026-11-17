@@ -76,9 +76,11 @@ __PASTE_CONTENTS_OF_gamslice.txt_HERE__
 COURSE_GAMSLICE
 }
 
-# Substring that must show up in the GAMS banner when the course
-# gamslice.txt is active. The checks demand it (when the licence is
-# embedded), so a demo or foreign licence can never look like a PASS.
+# Substring that must show up in the GAMS banner for the course
+# licence to be believed. Whenever this is set, the checks demand it:
+# with an embedded licence it outranks demo wording, without one the
+# banner needs it (plus no demo/expired wording) to PASS as course -
+# so a demo or foreign licence can never look like a PASS.
 MAGPIE_COURSE_LICENSEE="Potsdam-Institut"
 
 # ============================================================
@@ -110,7 +112,7 @@ MAGPIE_HANDLE_FILE="$HOME/.magpie-course-handle"
 # Bump when the generated magpie-profile content changes: profiles
 # written by an older script version are detected by the marker in
 # meta.description and regenerated (old copy kept as .bak).
-MAGPIE_PROFILE_SCHEMA="2"
+MAGPIE_PROFILE_SCHEMA="6"
 
 # Deterministic madrat mainfolder + renv cache folder. The nono profile
 # allows writes in them and the sandboxed children get them passed in,
@@ -184,8 +186,13 @@ magpie_pick() {
 # per-machine id for feed posts and the username replacement; no prompt.
 magpie_init_handle() {
   if [ -f "$MAGPIE_HANDLE_FILE" ]; then
-    MAGPIE_HANDLE=$(cat "$MAGPIE_HANDLE_FILE")
-    return 0
+    MAGPIE_HANDLE=$(cat "$MAGPIE_HANDLE_FILE" 2>/dev/null || true)
+    if [ -n "$MAGPIE_HANDLE" ]; then
+      return 0
+    fi
+    # Present but unreadable or empty (a sandboxed child with a stale
+    # profile): fall through and run under a fresh name instead of an
+    # empty one.
   fi
   new_handle=$(magpie_pick "$(magpie_rand)" "$(magpie_rand)" \
     Fox Otter Zebra Gecko Panda Koala Walrus Lynx Heron Bison \
@@ -421,6 +428,36 @@ magpie_sudo_warm() {
     sleep "$MAGPIE_SUDO_RETRY_SECS"
   done
   magpie_fail "password was never accepted"
+}
+
+# ---------------- 9P relocation ----------------
+
+# Students run this file from /mnt/c/Users/.../Downloads - a Windows
+# drive WSL mounts via 9P (stat: v9fs). Landlock cannot reliably
+# enforce on 9P, so a sandboxed re-execution of the script from there
+# makes nono warn and can deny reads at random. The original stays
+# untouched; everything that crosses into the sandbox (read_file
+# entry, gate child, pass-2 re-exec) uses a native copy instead.
+magpie_native_self_copy() {
+  if [ -z "$MAGPIE_SELF" ]; then
+    return 0
+  fi
+  # GNU stat -c; macOS stat takes -f %T without -c and fails here ->
+  # no relocation there (and never v9fs anyway).
+  fstype=$(stat -f -c %T "$MAGPIE_SELF" 2>/dev/null) || return 0
+  case $fstype in
+    v9fs|9p) ;;
+    *) return 0 ;;
+  esac
+  dest="$HOME/.magpie-course/self/setup-magpie.sh"
+  if ! mkdir -p "$HOME/.magpie-course/self" 2>/dev/null; then
+    return 0
+  fi
+  if cp -f "$MAGPIE_SELF" "$dest" 2>/dev/null; then
+    MAGPIE_SELF=$dest
+    magpie_log "script run from a Windows drive (9P) - sandboxed steps use $dest"
+    magpie_say "Using a Linux-side copy of this script (~/.magpie-course/self/) for the sandboxed steps."
+  fi
 }
 
 # ---------------- lock + traps ----------------
@@ -934,7 +971,7 @@ magpie_register_caches() {
 
 magpie_have_r() {
   command -v Rscript >/dev/null 2>&1 && \
-    Rscript -e 'quit(status = if (getRversion() >= "4.3") 0 else 1)' 2>/dev/null
+    Rscript --vanilla -e 'quit(status = if (getRversion() >= "4.3") 0 else 1)' 2>/dev/null
 }
 
 magpie_have_gfortran() {
@@ -1313,11 +1350,17 @@ magpie_licence_dir() {
   magpie_gams_sysdir
 }
 
-# True when the teacher pasted the licence text into this script
-# (silent - safe to call from the checks).
+# True when the teacher pasted real licence text into this script
+# (silent - safe to call from the checks). A blank heredoc counts as
+# NOT embedded: deleting the placeholder line without pasting anything
+# must not write an empty licence file.
 magpie_licence_embedded() {
   marker="__PASTE_CONTENTS_OF_gamslice.txt_HERE__"
-  ! magpie_licence_text | grep -q "$marker"
+  body=$(magpie_licence_text) || return 1
+  case $body in
+    *"$marker"*) return 1 ;;
+  esac
+  [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ]
 }
 
 # Warn once per run (setup_path checks early, install_licence later;
@@ -1345,14 +1388,20 @@ magpie_install_licence() {
     return 1
   fi
   target="$dir/gamslice.txt"
-  if [ -f "$target" ]; then
+  # No embedded licence: never touch what is there - the demo slice
+  # that the GAMS installer ships stays as it is.
+  magpie_licence_available || return 1
+  tmp=$(mktemp) || return 1
+  magpie_licence_text > "$tmp"
+  if [ -f "$target" ] && cmp -s "$tmp" "$target"; then
+    rm -f "$tmp"
     magpie_log "course licence: already in place"
     return 0
   fi
-  magpie_licence_available || return 1
   # A missing dir is created below; only an EXISTING folder that
   # refuses writes is a dead end (e.g. a root-owned /opt GAMS).
   if [ -e "$dir" ] && [ ! -w "$dir" ]; then
+    rm -f "$tmp"
     magpie_say "GAMS folder $dir is not writable - the licence needs a rerun of this file."
     magpie_report "setup: WARNING licence dir not writable"
     return 1
@@ -1361,8 +1410,15 @@ magpie_install_licence() {
   if [ "$MAGPIE_OS" = "darwin" ]; then
     chmod 700 "$dir"
   fi
-  tmp=$(mktemp) || return 1
-  magpie_licence_text > "$tmp"
+  if [ -f "$target" ]; then
+    # A DIFFERENT slice sits there - usually the demo licence the GAMS
+    # installer ships. Existence alone must never skip the course
+    # licence (that kept the 2026-11 machine on the demo forever); the
+    # course slice replaces it, the old copy survives as .bak.
+    cp "$target" "$target.bak" 2>/dev/null || true
+    magpie_log "replacing non-course gamslice.txt (old copy kept as $target.bak)"
+    magpie_report "setup: replaced non-course gamslice.txt"
+  fi
   mv "$tmp" "$target"
   chmod 600 "$target"
   magpie_say "Course licence written to $target"
@@ -1422,71 +1478,145 @@ magpie_pull_nono_profile() {
 # GAMS, R, gfortran, TinyTeX and the licence folder; write-list for the
 # madrat mainfolder (cache for any madrat reads) and the renv cache
 # folder (run-folder renv restores through it).
+# Optional read folders go in only when they exist: the validator
+# rejects a policy path missing on disk, and several are optional -
+# ~/.TinyTeX stays missing when apt provided tex, the macOS licence
+# folder when no licence is embedded, the macOS pkg framework/gfortran
+# folders when a tool was installed another way. The two cache folders
+# are created by magpie_register_caches before this step, so they stay
+# literal lines (the write list must not depend on folder luck).
+# Collect the read list: keep a candidate only when it exists and no
+# earlier entry already covers it (exact path, or an earlier entry is
+# its parent - e.g. R.home() covers the base library below it).
+magpie_add_read_dir() {
+  d=$1
+  if [ -z "$d" ] || [ ! -d "$d" ]; then
+    return 0
+  fi
+  # shellcheck disable=SC2154  # MAGPIE_READ_DIRS is built by the caller.
+  oldIFS=$IFS
+  IFS='
+'
+  for e in $MAGPIE_READ_DIRS; do
+    if [ "$d" = "$e" ] || [ "${d#"$e"/}" != "$d" ]; then
+      IFS=$oldIFS
+      return 0
+    fi
+  done
+  IFS=$oldIFS
+  MAGPIE_READ_DIRS="$MAGPIE_READ_DIRS$d
+"
+}
+
 magpie_build_nono_profile() {
   dir="$HOME/.config/nono/profiles"
   f="$dir/magpie-profile.json"
   mkdir -p "$dir" || return 1
-  tmp=$(mktemp)
+  tmp=$(mktemp) || return 1
+  MAGPIE_READ_DIRS=""
   if [ "$MAGPIE_OS" = "darwin" ]; then
-    cat > "$tmp" <<EOF
-{
-  "meta": {
-    "name": "magpie-profile",
-    "description": "MAgPIE course: opencode + GAMS + R + TinyTeX (setup v$MAGPIE_PROFILE_SCHEMA)"
-  },
-  "extends": ["opencode"],
-  "filesystem": {
-    "read": [
-      "/Library/Frameworks/GAMS.framework",
-      "/Library/Frameworks/R.framework",
-      "/usr/local/gfortran",
-      "$HOME/Library/TinyTeX",
-      "$HOME/.TinyTeX",
-      "$HOME/Library/Application Support/GAMS",
-      "$MADRAT_MAINFOLDER",
-      "$RENV_PATHS_CACHE"
-    ],
-    "write": [
-      "$MADRAT_MAINFOLDER",
-      "$RENV_PATHS_CACHE"
-    ]
-  }
-}
-EOF
+    magpie_add_read_dir "/Library/Frameworks/R.framework"
+    magpie_add_read_dir "$MAGPIE_GFORTRAN_DIR"
+    magpie_add_read_dir "$HOME/Library/TinyTeX"
+    magpie_add_read_dir "$HOME/.TinyTeX"
+    magpie_add_read_dir "$HOME/Library/Application Support/GAMS"
   else
     # A GAMS found outside ~/gams (any PATH install) must be readable
     # in the sandbox too.
-    gams_extra=""
     gd=$(magpie_gams_sysdir 2>/dev/null) || gd=""
     case $gd in
-      ""|"$HOME/gams"|"$HOME/gams"/*) ;;
-      *) gams_extra=$(printf '      "%s",\n' "$gd") ;;
+      ""|"$HOME/gams"|"$HOME/gams"/*) gd="" ;;
     esac
-    cat > "$tmp" <<EOF
+    magpie_add_read_dir "$HOME/gams"
+    magpie_add_read_dir "$gd"
+    magpie_add_read_dir "$HOME/.TinyTeX"
+  fi
+  # R must be VISIBLE in the sandbox, not just executable: apt R keeps
+  # Renviron and the base library under its home (/usr/lib/R), the
+  # course stack under a site-library - nono's default groups cover
+  # neither, and R died inside the sandbox with "cannot find system
+  # Renviron". Query home + library paths unsandboxed; skip silently
+  # when no R is present.
+  if command -v Rscript >/dev/null 2>&1; then
+    oldIFS=$IFS
+    IFS='
+'
+    for rd in $(Rscript -e 'cat(R.home()); cat("\n"); cat(.libPaths(), sep = "\n")' \
+      2>/dev/null); do
+      magpie_add_read_dir "$rd"
+    done
+    IFS=$oldIFS
+    # Debian/Ubuntu: the R home's etc/ is a REAL folder holding
+    # SYMLINKED files (Renviron, ldpaths, repositories -> /etc/R).
+    # The grant on the R home does not follow links out of its tree,
+    # so R dies inside the sandbox without its Renviron (no EDITOR ->
+    # utils .onLoad error). R itself resolves the link target folder
+    # (readLink needs no read rights on the target); on macOS and
+    # non-symlink builds it resolves inside the R home and dedupes.
+    rd_etc=$(Rscript -e 'p <- file.path(R.home("etc"), "Renviron"); if (file.exists(p)) cat(dirname(normalizePath(p)))' \
+      2>/dev/null)
+    magpie_add_read_dir "$rd_etc"
+  fi
+  read_extra=""
+  # The GAMS.framework entry stays literal on macOS (not existence-
+  # gated): magpie_install_gams only reports success with that folder
+  # present, and the offline harness cannot fake /Library.
+  if [ "$MAGPIE_OS" = "darwin" ]; then
+    read_extra="      \"/Library/Frameworks/GAMS.framework\",
+"
+  fi
+  oldIFS=$IFS
+  IFS='
+'
+  for d in $MAGPIE_READ_DIRS; do
+    read_extra="$read_extra      \"$d\",
+"
+  done
+  IFS=$oldIFS
+  # The sandboxed gate child re-executes this very file (--check-only)
+  # and reads the course handle file; $HOME itself is not readable in
+  # the sandbox: list both files readable. The script path is the
+  # (relocated, native) MAGPIE_SELF; a moved script regenerates the
+  # profile through the marker check.
+  rf=""
+  for mf in "${MAGPIE_SELF:-}" "$MAGPIE_HANDLE_FILE"; do
+    if [ -n "$mf" ] && [ -f "$mf" ]; then
+      rf="$rf{ \"path\": \"$mf\" }, "
+    fi
+  done
+  read_file_entry=""
+  if [ -n "$rf" ]; then
+    rf=${rf%", "}
+    read_file_entry="    \"read_file\": [ $rf ],
+"
+  fi
+  cat > "$tmp" <<EOF
 {
   "meta": {
     "name": "magpie-profile",
     "description": "MAgPIE course: opencode + GAMS + R + TinyTeX (setup v$MAGPIE_PROFILE_SCHEMA)"
   },
-  "extends": ["opencode"],
+  "extends": ["nolabs-ai/opencode"],
   "filesystem": {
     "read": [
-      "$HOME/gams",
-$gams_extra      "$HOME/.TinyTeX",
-      "$MADRAT_MAINFOLDER",
+$read_extra      "$MADRAT_MAINFOLDER",
       "$RENV_PATHS_CACHE"
     ],
-    "write": [
+$read_file_entry    "write": [
       "$MADRAT_MAINFOLDER",
       "$RENV_PATHS_CACHE"
     ]
   }
 }
 EOF
-  fi
-  if ! nono profile validate "$tmp" >/dev/null 2>&1; then
+  if ! verr=$(nono profile validate "$tmp" 2>&1); then
+    # nono's real complaint belongs in the log and next to the help
+    # block: a bare "failed validation" leaves the student's AI chat
+    # guessing (that is how the 2026-11 course run went blind). Log
+    # all of it, banner included - a cap cut off the real error once.
+    cp "$tmp" "$HOME/magpie/setup-help-profile.json" 2>/dev/null || true
+    magpie_log "generated nono profile failed validation: $verr"
     rm -f "$tmp"
-    magpie_log "generated nono profile failed validation"
     return 1
   fi
   if [ -f "$f" ]; then
@@ -1681,16 +1811,28 @@ magpie_run_checks() {
       gout=$( cd "$gtmp" && "$gbin" 2>&1 || true )
       rm -rf "$gtmp"
     fi
-    # Name check only when BOTH the licensee constant and the pasted
-    # licence exist; otherwise the weak generic check decides.
+    # The course-licence PASS reads the banner whenever the licensee
+    # constant is set - embedded or not: a banner that carries the
+    # course licensee IS the course licence, however it got installed
+    # (rerun with a filled script, TA setup, magpie-opencode.sh).
+    # Without an embedded slice the banner must additionally show no
+    # demo/expired wording, so a demo can never pose as the course
+    # licence. lic_named (constant + pasted licence) keeps the strict
+    # plan where the name outranks demo wording.
     lic_named=""
     if [ -n "$MAGPIE_COURSE_LICENSEE" ] && magpie_licence_embedded; then
       lic_named=1
     fi
+    lic_banner=""
+    if [ -n "$MAGPIE_COURSE_LICENSEE" ] \
+      && printf '%s\n' "$gout" | grep -qiF "$MAGPIE_COURSE_LICENSEE"; then
+      lic_banner=1
+    fi
     if [ -z "$gtmp" ]; then
       magpie_check_line FAIL "gams licence check needs a temp folder - free space in /tmp and rerun this file"
-    elif [ -n "$lic_named" ] \
-      && printf '%s\n' "$gout" | grep -qiF "$MAGPIE_COURSE_LICENSEE"; then
+    elif [ -n "$lic_banner" ] \
+      && { [ -n "$lic_named" ] \
+        || ! printf '%s\n' "$gout" | grep -qiE "demo|expired"; }; then
       magpie_check_line PASS "gams (course licence found - ask TA to confirm CONOPT once)"
     elif printf '%s\n' "$gout" | grep -qiE "demo|expired"; then
       magpie_check_line FAIL "gams runs only with the free demo licence - the course licence file is missing - rerun this file"
@@ -1720,8 +1862,11 @@ magpie_run_checks() {
   fi
 
   if command -v Rscript >/dev/null 2>&1; then
-    if Rscript -e 'quit(status = if (getRversion() >= "4.3") 0 else 1)' 2>/dev/null; then
-      magpie_check_line PASS "R $(Rscript -e 'cat(as.character(getRversion()))' 2>/dev/null)"
+    # --vanilla: a pure version test must not depend on the project
+    # .Rprofile (gate child runs from ~/magpie, where renv's
+    # bootstrap has no business deciding whether R "exists").
+    if Rscript --vanilla -e 'quit(status = if (getRversion() >= "4.3") 0 else 1)' 2>/dev/null; then
+      magpie_check_line PASS "R $(Rscript --vanilla -e 'cat(as.character(getRversion()))' 2>/dev/null)"
     else
       magpie_check_line FAIL "R older than 4.3 - tell the course team"
     fi
@@ -1800,7 +1945,10 @@ magpie_sandbox_gate() {
   # The child's stdout is this shell's stdout (the log), so its fd 4 is
   # the log too: tee to the real terminal as well, or the result block
   # never reaches the screen. The child's exit code decides, not tee's.
-  ( cd "$HOME/magpie" && nono run --profile magpie-profile -- \
+  # --allow-cwd: the course runs from ~/magpie (this subshell's cwd) -
+  # without the flag nono interactively prompts "Share cwd read+write?"
+  # before applying the sandbox.
+  ( cd "$HOME/magpie" && nono run --profile magpie-profile --allow-cwd -- \
     env MAGPIE_CHECK_ONLY=1 "PATH=${texbin:+$texbin:}$PATH" \
     "MADRAT_MAINFOLDER=$MADRAT_MAINFOLDER" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
     bash "$MAGPIE_SELF" --check-only ) 2>&1 \
@@ -1843,15 +1991,17 @@ magpie_full_run_body() {
   # Two "n" lines answer start.R's "Update now?" and fixDeps prompts:
   # the restored lockfile versions stay untouched. Not </dev/null -
   # EOF makes gms::getLine return character(0), which crashes the &&.
+  # --allow-cwd is mandatory here: without it the piped answers would
+  # hit nono's cwd prompt instead of start.R.
   if [ "$MAGPIE_OS" = "darwin" ]; then
     # shellcheck disable=SC2016  # $HOME expands in the sandbox child, not here.
-    printf 'n\nn\n' | ( cd "$HOME/magpie" && caffeinate -is nono run --profile magpie-profile -- \
+    printf 'n\nn\n' | ( cd "$HOME/magpie" && caffeinate -is nono run --profile magpie-profile --allow-cwd -- \
       env "MADRAT_MAINFOLDER=$MADRAT_MAINFOLDER" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
       "PATH=$1" \
       bash -c 'cd "$HOME/magpie" && Rscript start.R runscripts=default.R submit=direct' )
   else
     # shellcheck disable=SC2016  # $HOME expands in the sandbox child, not here.
-    printf 'n\nn\n' | ( cd "$HOME/magpie" && nono run --profile magpie-profile -- \
+    printf 'n\nn\n' | ( cd "$HOME/magpie" && nono run --profile magpie-profile --allow-cwd -- \
       env "MADRAT_MAINFOLDER=$MADRAT_MAINFOLDER" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
       "PATH=$1" \
       bash -c 'cd "$HOME/magpie" && Rscript start.R runscripts=default.R submit=direct' )
@@ -2043,6 +2193,9 @@ magpie_entry() {
     if ! mkdir -p "$HOME/magpie" 2>/dev/null; then
       magpie_fail "cannot create ~/magpie - check disk space and folder rights"
     fi
+    # Windows-drive invocation -> native copy for sandboxed steps
+    # (log line goes to the file; the screen note rides fd 4).
+    magpie_native_self_copy >> "$HOME/magpie/setup-log.txt" 2>&1
     magpie_main ${1+"$@"} >> "$HOME/magpie/setup-log.txt" 2>&1
   fi
 }

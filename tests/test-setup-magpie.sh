@@ -160,6 +160,9 @@ case "$1" in
   profile)
     if [ "${2:-}" = validate ]; then
       echo "validate $*" >> "$STATE/nono.log"
+      if [ -n "${STUB_NONO_VALIDATE_ERR:-}" ]; then
+        echo "$STUB_NONO_VALIDATE_ERR" >&2
+      fi
       exit "${STUB_NONO_VALIDATE_EXIT:-0}"
     fi
     exit 0
@@ -217,6 +220,24 @@ EOS
 echo "Rscript $*" >> "$STATE/rscript.log"
 case "$*" in
   *"cat(as.character(getRversion"*) echo 4.4.2; exit 0 ;;
+  *normalizePath*)
+    # Profile build's Renviron symlink resolution (Debian resolves
+    # /usr/lib/R/etc/Renviron -> /etc/R/Renviron). The folder only
+    # lands in the read list when it exists, so most scenarios
+    # (no such dir) see no extra entry.
+    echo "$HOME/etc-R"
+    exit 0
+    ;;
+  *R.home*)
+    # Profile build's directory query (R.home + .libPaths). The base
+    # library under R-home must dedupe against it; R-site-lib is a
+    # genuine extra. Only listed when the folders exist (the profile
+    # gates them), so most scenarios see nothing.
+    echo "$HOME/R-home"
+    echo "$HOME/R-home/library"
+    echo "$HOME/R-site-lib"
+    exit 0
+    ;;
   *getRversion*)
     if [ "${STUB_R_OLD:-0}" = "1" ]; then exit 1; fi
     exit 0
@@ -545,6 +566,11 @@ EOS
   sed '/^__PASTE_CONTENTS_OF_gamslice.txt_HERE__$/s|__PASTE_CONTENTS_OF_gamslice.txt_HERE__|TEST-LICENCE-CONTENT|' \
     "$ENV/magpie.sh" > "$ENV/magpie_lic.sh"
   chmod +x "$ENV/magpie_lic.sh"
+  # Placeholder line deleted but nothing pasted: a blank heredoc must
+  # count as NOT embedded (magpie_licence_embedded).
+  sed '/^__PASTE_CONTENTS_OF_gamslice.txt_HERE__$/d' \
+    "$ENV/magpie.sh" > "$ENV/magpie_lic_blank.sh"
+  chmod +x "$ENV/magpie_lic_blank.sh"
   # Teacher left the feed URL empty -> uploads must be off entirely.
   sed 's|^STATUS_URL=.*|STATUS_URL=""|' \
     "$ENV/magpie_lic.sh" > "$ENV/magpie_nofeed.sh"
@@ -575,6 +601,7 @@ new_env() {
   cp -al "$TEMPLATE/minbin/." "$MINBIN/"
   cp -l "$TEMPLATE/magpie.sh" "$ENV/magpie.sh"
   cp -l "$TEMPLATE/magpie_lic.sh" "$ENV/magpie_lic.sh"
+  cp -l "$TEMPLATE/magpie_lic_blank.sh" "$ENV/magpie_lic_blank.sh"
   cp -l "$TEMPLATE/magpie_nofeed.sh" "$ENV/magpie_nofeed.sh"
   SRC="$SCRIPT"
   E2E_SCRIPT="$ENV/magpie.sh"
@@ -924,6 +951,7 @@ ret_is "gate ran after sudo prompt" 0
 grep_ok "keep-alive dead at gate instant" "$STATE/keepalive_at_gate.txt" "dead"
 nofile_ok "keepalive pidfile gone" "$FAKE_HOME/magpie/.keepalive.pid"
 grep_ok "gate args: profile" "$STATE/nono.log" "--profile magpie-profile"
+grep_ok "gate args: allow-cwd" "$STATE/nono.log" "--allow-cwd"
 grep_ok "gate args: check-only child" "$STATE/nono.log" "--check-only"
 grep_ok "gate args: env switch" "$STATE/nono.log" "MAGPIE_CHECK_ONLY=1"
 grep_ok "gate args: madrat mainfolder passed" "$STATE/nono.log" "MADRAT_MAINFOLDER="
@@ -1187,7 +1215,7 @@ FN_BODY='MAGPIE_RC="$HOME/.bashrc"; magpie_register_hu_key' run_fn
 cnt_is "hu export written despite comment" '^export HU_API_KEY=' "$FAKE_HOME/.bashrc" 1
 
 # ============================================================
-sec "licence: placeholder / pasted / never-clobber / darwin"
+sec "licence: placeholder / blank heredoc / pasted / replaces-demo / darwin"
 # ============================================================
 new_env
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_licence_available' run_fn
@@ -1200,9 +1228,26 @@ ret_is "no gams folder -> rerun note" 1
 grep_ok "rerun note fed" "$STATE/feed.log" "licence not written, no gams folder"
 new_env
 mkdir -p "$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx"
+T="$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx/gamslice.txt"
+printf 'DEMO-SLICE-HANDS-OFF\n' > "$T"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' run_fn
 ret_is "placeholder blocks the write" 1
-nofile_ok "nothing written" "$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx/gamslice.txt"
+grep_ok "demo slice untouched by placeholder run" "$T" "DEMO-SLICE-HANDS-OFF"
+nofile_ok "no bak from a placeholder run" "$T.bak"
+# Placeholder line deleted without a paste: blank heredoc = not
+# embedded (must not write an empty licence file).
+new_env
+SRC="$ENV/magpie_lic_blank.sh"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_licence_available' run_fn
+ret_is "blank heredoc is not embedded" 1
+grep_ok "blank heredoc warns" "$STATE/screen.txt" "not embedded"
+new_env
+SRC="$ENV/magpie_lic_blank.sh"
+mkdir -p "$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' run_fn
+ret_is "blank heredoc blocks the write" 1
+nofile_ok "no empty licence written" \
+  "$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx/gamslice.txt"
 new_env
 SRC="$ENV/magpie_lic.sh"
 mkdir -p "$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx"
@@ -1213,9 +1258,17 @@ grep_ok "licence content" "$T" "TEST-LICENCE-CONTENT"
 mode_is "licence mode 600" "$T" 600
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' run_fn
 grep_ok "rerun: already in place" "$FAKE_HOME/magpie/setup-log.txt" "already in place"
-echo "OLD" > "$T"
+# The 2026-11 trap: the GAMS installer always ships a demo slice at
+# this path, so existence must never skip the course licence - a
+# DIFFERENT file is replaced and survives as .bak.
+echo "OLD-DEMO-SLICE" > "$T"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' run_fn
-grep_ok "existing file never clobbered" "$T" "OLD"
+ret_is "demo slice replaced by course licence" 0
+grep_ok "course licence in place" "$T" "TEST-LICENCE-CONTENT"
+grep_ok "old slice kept as bak" "$T.bak" "OLD-DEMO-SLICE"
+grep_ok "replacement logged" "$FAKE_HOME/magpie/setup-log.txt" \
+  "replacing non-course gamslice.txt"
+mode_is "replaced licence mode 600" "$T" 600
 new_env
 SRC="$ENV/magpie_lic.sh"
 FN_BODY='MAGPIE_OS=darwin; MAGPIE_HANDLE=T1; magpie_install_licence' run_fn
@@ -1242,8 +1295,18 @@ make_tools
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
 ret_is "all stubs green -> PASS" 0
 grep_ok "gams GAMS54 wording PASS" "$STATE/screen.txt" "PASS gams"
+# Same machine with the plain (gamslice-less) script: the course
+# licence is already installed, so the banner alone must PASS the
+# gams check - rerunning an unfilled script may not break a good
+# machine. (magpie.sh template = placeholder, unembedded.)
+grep_ok "course licence PASS without embedding" "$STATE/screen.txt" \
+  "PASS gams (course licence found"
 grep_ok "git PASS" "$STATE/screen.txt" "PASS git"
 grep_ok "R PASS" "$STATE/screen.txt" "PASS R 4.4.2"
+# Version probes run --vanilla (no .Rprofile/renv at startup), so a
+# broken or not-yet-bootstrapped project cannot fail the R check.
+grep_ok "R version probe uses --vanilla" "$STATE/rscript.log" \
+  "--vanilla -e quit(status"
 grep_ok "pandoc PASS" "$STATE/screen.txt" "PASS pandoc 3.1.0"
 grep_ok "tex PASS" "$STATE/screen.txt" "PASS tex"
 new_env
@@ -1437,14 +1500,57 @@ grep_ok "pull carries the pin" "$STATE/nono.log" "pull nolabs-ai/opencode@9.9.9"
 grep_ok "pack pinned" "$STATE/nono.log" "nono pin nolabs-ai/opencode"
 new_env
 put_nono
-FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
+# Read entries are gated on folder existence (validation rejects
+# missing paths) - give the fake machine the folders to see them.
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+mkdir -p "$HOME/gams" "$HOME/.TinyTeX"
+magpie_step_magpie_profile' run_fn
 ret_is "profile built" 0
 PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
 file_ok "profile file exists" "$PJSON"
-grep_ok "extends opencode" "$PJSON" '"extends": \["opencode"\]'
+grep_ok "extends pack profile" "$PJSON" '"extends": \["nolabs-ai/opencode"\]'
 grep_ok "linux read list holds gams" "$PJSON" "$FAKE_HOME/gams"
 grep_ok "linux read list holds TinyTeX" "$PJSON" "$FAKE_HOME/.TinyTeX"
+grep_no "no read_file without MAGPIE_SELF" "$PJSON" "read_file"
 grep_ok "validate called" "$STATE/nono.log" "profile validate"
+# The gate child re-executes the script inside the sandbox: with
+# MAGPIE_SELF known, that exact file must be listed readable.
+new_env
+put_nono
+mkdir -p "$FAKE_HOME/gams" "$FAKE_HOME/R-home/library" "$FAKE_HOME/R-site-lib" \
+  "$FAKE_HOME/etc-R"
+# Debian layout: the files inside the R home's etc/ are symlinks out
+# of the tree (/usr/lib/R/etc/Renviron -> /etc/R/Renviron) - the
+# target folder needs its own read entry, Landlock does not follow
+# links from the R home grant. R itself resolves it (stubbed here).
+cat > "$FAKE_BIN/Rscript" <<'EOS'
+#!/bin/sh
+case "$*" in
+  *normalizePath*) echo "$HOME/etc-R" ;;
+  *) echo "$HOME/R-home"; echo "$HOME/R-home/library"; echo "$HOME/R-site-lib" ;;
+esac
+EOS
+chmod 755 "$FAKE_BIN/Rscript"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+: > "$HOME/setup-magpie.sh"
+: > "$HOME/.magpie-course-handle"
+MAGPIE_SELF="$HOME/setup-magpie.sh"
+magpie_step_magpie_profile' run_fn
+ret_is "profile with script file builds" 0
+PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+grep_ok "read_file lists the script" "$PJSON" \
+  '"path": "'"$FAKE_HOME"'/setup-magpie.sh"'
+grep_ok "read_file lists the handle file" "$PJSON" \
+  '"path": "'"$FAKE_HOME"'/.magpie-course-handle"'
+grep_ok "write section after read_file intact" "$PJSON" '"write"'
+# The 2026-11 gate death: apt R (Renviron, libraries) was invisible in
+# the sandbox -> "cannot find system Renviron" -> FAIL R. R.home and
+# every .libPaths entry go into the read list; children of R.home
+# (base library) dedupe against it.
+grep_ok "read holds the R home" "$PJSON" '"'"$FAKE_HOME"'/R-home"'
+grep_ok "read holds the site library" "$PJSON" '"'"$FAKE_HOME"'/R-site-lib"'
+grep_ok "read holds the symlinked etc target" "$PJSON" '"'"$FAKE_HOME"'/etc-R"'
+grep_no "base library deduped under R home" "$PJSON" "R-home/library"
 new_env
 put_nono
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
@@ -1454,18 +1560,47 @@ grep_ok "write section present" "$PJSON" '"write"'
 grep_ok "write holds madrat" "$PJSON" "$FAKE_HOME/.madrat"
 grep_ok "write holds renv cache" "$PJSON" ".cache/R/renv"
 grep_ok "read holds madrat too" "$PJSON" "$FAKE_HOME/.madrat"
+# The 2026-11 course failure: apt texlive satisfied the TinyTeX step,
+# so ~/.TinyTeX never existed - the read list must simply omit it and
+# the build must pass, not reference a folder validation rejects.
 new_env
 put_nono
-FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
+mkdir -p "$FAKE_HOME/gams"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
+ret_is "profile builds with missing ~/.TinyTeX" 0
+PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+grep_ok "gams entry present (no-tinytex case)" "$PJSON" "$FAKE_HOME/gams"
+grep_no "tinytex entry omitted when folder absent" "$PJSON" 'TinyTeX"'
+grep_ok "cache read entries stay literal" "$PJSON" "$FAKE_HOME/.madrat"
+new_env
+put_nono
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1
+MAGPIE_GFORTRAN_DIR="$HOME/gfortran"
+mkdir -p "$HOME/gfortran" "$HOME/.TinyTeX" "$HOME/Library/TinyTeX" \
+  "$HOME/Library/Application Support/GAMS"
+magpie_step_magpie_profile' run_fn
 ret_is "darwin profile built" 0
 PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
 grep_ok "darwin keeps gams framework read" "$PJSON" "/Library/Frameworks/GAMS.framework"
-grep_ok "darwin keeps gfortran read" "$PJSON" "/usr/local/gfortran"
+grep_ok "darwin reads gfortran dir" "$PJSON" "$FAKE_HOME/gfortran"
 grep_ok "darwin reads Library/TinyTeX" "$PJSON" "$FAKE_HOME/Library/TinyTeX"
 grep_ok "darwin reads .TinyTeX too" "$PJSON" "$FAKE_HOME/.TinyTeX"
+grep_ok "darwin reads licence folder" "$PJSON" "Application Support/GAMS"
+grep_no "darwin omits R.framework when absent" "$PJSON" "R.framework"
 grep_ok "darwin write section present" "$PJSON" '"write"'
 grep_ok "darwin write holds madrat" "$PJSON" "$FAKE_HOME/.madrat"
 grep_ok "darwin write holds renv cache" "$PJSON" ".cache/R/renv"
+# Bare macOS machine (no TinyTeX/licence/pkg folders yet): only the
+# guaranteed entries may appear in the policy.
+new_env
+put_nono
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
+ret_is "darwin profile without optional dirs" 0
+PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+grep_ok "gams framework entry is literal" "$PJSON" "/Library/Frameworks/GAMS.framework"
+grep_no "no gfortran entry without folder" "$PJSON" "gfortran"
+grep_no "no tinytex entry without folders" "$PJSON" 'TinyTeX"'
+grep_no "no licence entry without folder" "$PJSON" "Application Support"
 new_env
 mkdir -p "$FAKE_HOME/.config/nono/profiles"
 echo "changed by student" > "$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
@@ -1492,7 +1627,7 @@ OFP
 put_nono
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
 ret_is "stale generated profile regenerated" 0
-grep_ok "regenerated content current" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json" "(setup v2)"
+grep_ok "regenerated content current" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json" "(setup v6)"
 grep_ok "stale copy kept as bak" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json.bak" "/stale/old/path"
 grep_ok "regeneration logged" "$FAKE_HOME/magpie/setup-log.txt" "regenerated"
 # Rerun right after regeneration: content is current now, so the cmp
@@ -1525,7 +1660,9 @@ grep_ok "edit kept in bak" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json
 new_env
 put_nono
 cp "$STATE/binlib/gams" "$FAKE_BIN/gams"
-FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+mkdir -p "$HOME/gams"
+magpie_step_magpie_profile' run_fn
 ret_is "profile with PATH-gams builds" 0
 PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
 grep_ok "profile reads the PATH-gams folder" "$PJSON" "$FAKE_BIN"
@@ -1540,10 +1677,17 @@ new_env
 make_tools
 put_nono
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
-magpie_step_magpie_profile' run_fn STUB_NONO_VALIDATE_EXIT=1
+magpie_step_magpie_profile' run_fn STUB_NONO_VALIDATE_EXIT=1 \
+  STUB_NONO_VALIDATE_ERR="path /home/x/.TinyTeX does not exist"
 ret_is "validate failure blocks (2 passes)" 1
 grep_ok "profile step named in help" "$STATE/screen.txt" \
   "FAILED STEP (twice, reproducible): magpie-profile build"
+# The student (and the AI chat in the help block) must see WHY, not
+# just "failed validation" - the real nono message is logged and the
+# rejected profile survives next to the help file.
+grep_ok "validator complaint logged" "$FAKE_HOME/magpie/setup-log.txt" \
+  "failed validation: path /home/x/.TinyTeX does not exist"
+file_ok "rejected candidate kept" "$FAKE_HOME/magpie/setup-help-profile.json"
 new_env
 make_installed
 sed -i 's|"version":"9.9.9"|"version":"8.8.8"|' "$FAKE_HOME/.config/nono/packages/nolabs-ai/opencode/package.json"
@@ -1551,6 +1695,61 @@ put_nono
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_pull_nono_profile' run_fn
 ret_is "drift force re-pulls" 0
 grep_ok "force pull at pin" "$STATE/nono.log" "pull force=1 ref=nolabs-ai/opencode@9.9.9"
+
+# ============================================================
+sec "9P relocation: Windows-drive copies move, native ones stay"
+# ============================================================
+# The stub answers the only stat -f call site (magpie_native_self_copy):
+# anything under /mnt is a WSL Windows mount, the fake home is ext4.
+stat_stub() {
+  cat > "$FAKE_BIN/stat" <<'EOS'
+#!/bin/sh
+case "$*" in
+  *"/mnt/"*) echo v9fs ;;
+  *) echo ext4 ;;
+esac
+exit 0
+EOS
+  chmod 755 "$FAKE_BIN/stat"
+}
+new_env
+stat_stub
+DL="$FAKE_HOME/mnt/c/Users/Max Mustermann/Downloads"
+mkdir -p "$DL"
+printf 'MAGPIE-9P-ORIGINAL\n' > "$DL/setup-magpie.sh"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1
+MAGPIE_SELF="'"$DL"'/setup-magpie.sh"
+magpie_native_self_copy
+printf "%s\n" "$MAGPIE_SELF" > "$STATE/self.txt"' run_fn
+ret_is "9P script relocates (exit 0)" 0
+NATIVE="$FAKE_HOME/.magpie-course/self/setup-magpie.sh"
+grep_ok "self redirected to native copy" "$STATE/self.txt" \
+  "\.magpie-course/self/setup-magpie.sh"
+grep_ok "copy carries the content" "$NATIVE" "MAGPIE-9P-ORIGINAL"
+grep_ok "Windows drive note logged" "$FAKE_HOME/magpie/setup-log.txt" \
+  "Windows drive"
+grep_ok "Linux-side note on screen" "$STATE/screen.txt" "Linux-side copy"
+# Reruns from the relocated (native) path must not copy again.
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1
+MAGPIE_SELF="'"$FAKE_HOME"'/.magpie-course/self/setup-magpie.sh"
+magpie_native_self_copy
+printf "%s\n" "$MAGPIE_SELF" > "$STATE/self.txt"' run_fn
+ret_is "native script stays put (exit 0)" 0
+grep_ok "self unchanged after native run" "$STATE/self.txt" \
+  "^$FAKE_HOME/.magpie-course/self/setup-magpie.sh$"
+cnt_is "no second relocation" "Windows drive" \
+  "$FAKE_HOME/magpie/setup-log.txt" 1
+# No stat at all (ancient systems): silent no-op, MAGPIE_SELF kept.
+new_env
+rm -f "$MINBIN/stat"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1
+PATH="$MINBIN"
+MAGPIE_SELF=/bin/sh
+magpie_native_self_copy
+printf "%s\n" "$MAGPIE_SELF" > "$STATE/self.txt"' run_fn
+ret_is "missing stat tolerated (exit 0)" 0
+grep_ok "self kept without stat" "$STATE/self.txt" "^/bin/sh$"
+nofile_ok "no copy folder made" "$FAKE_HOME/.magpie-course/self"
 
 # ============================================================
 sec "macOS branches (forced MAGPIE_OS=darwin, stub installer)"
@@ -1860,12 +2059,13 @@ put_nono
 mkdir -p "$FAKE_HOME/magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' run_fn
 ret_is "full run completes" 0
-grep_ok "sandbox run via profile" "$STATE/nono.log" "run --profile magpie-profile -- env"
+grep_ok "sandbox run via profile" "$STATE/nono.log" "run --profile magpie-profile --allow-cwd -- env"
 grep_ok "madrat mainfolder passed" "$STATE/nono.log" "MADRAT_MAINFOLDER="
 grep_ok "renv cache passed" "$STATE/nono.log" "RENV_PATHS_CACHE="
 grep_ok "PATH passed" "$STATE/nono.log" "PATH="
 grep_ok "bash -c payload" "$STATE/nono.log" "bash -c"
 grep_ok "default run script selected" "$STATE/nono.log" "runscripts=default.R submit=direct"
+grep_ok "full run sandboxed with allow-cwd" "$STATE/nono.log" "--allow-cwd"
 grep_ok "R script invoked" "$STATE/rscript.log" "start.R runscripts=default.R submit=direct"
 grep_ok "keep-alive dead at full run" "$STATE/keepalive_at_gate.txt" "dead"
 grep_ok "40 min heads-up" "$STATE/screen.txt" "full magpie run, about 40 min"

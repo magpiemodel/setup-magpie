@@ -290,30 +290,64 @@ framework folder `/Library/Frameworks/GAMS.framework/Resources`.
 Licence: `gamslice.txt` goes into `magpie_licence_dir()` - the system
 folder on Linux, `~/Library/Application Support/GAMS` on macOS (dir
 chmod 700; the root-owned pkg folder cannot hold mode 600). File mode
-600, an existing file is never overwritten; a missing GAMS folder
+600. An embedded slice is installed only when it differs from what is
+already there: identical -> "already in place"; different (typically
+the demo slice the GAMS installer ships - existence alone must never
+skip the course licence) -> replaced, previous copy kept as
+`gamslice.txt.bak` + feed line. With NO embedded slice the existing
+file is never touched; a missing GAMS folder
 yields the "rerun" note + feed line. `magpie_licence_embedded()`
-decides SILENTLY whether the teacher pasted the text;
+decides SILENTLY whether the teacher pasted real text (a blank
+heredoc counts as NOT embedded);
 `magpie_licence_available()` warns + feeds ONCE per run (cached in
 `MAGPIE_LIC_MISSING` - the early placeholder check and this step share
 one warning). A missing licence dir is created; an EXISTING dir that
 refuses writes gets a "licence dir not writable" warning + feed line,
-no write attempt. With the licence embedded and
-`MAGPIE_COURSE_LICENSEE` set, the checks demand that licensee in the
-GAMS banner (see 8). GAMS reads the file from there - no license env
+no write attempt. Whenever
+`MAGPIE_COURSE_LICENSEE` is set, the checks demand that licensee in
+the GAMS banner - embedded or not (see 8). GAMS reads the file from
+there - no license env
 var anywhere.
 
 ### 6.7 magpie-profile + sandbox gate
 
 `~/.config/nono/profiles/magpie-profile.json`, extends
-`["opencode"]`; `meta.description` carries the `MAgPIE course` marker
+`["nolabs-ai/opencode"]` (extends resolves the pack-qualified profile
+name - the bare `"opencode"` fails validation on 0.81.0);
+`meta.description` carries the `MAgPIE course` marker
 plus the `MAGPIE_PROFILE_SCHEMA` version (bumped whenever the generated
 content changes - the marker identifies the file as ours, see below).
 Read list: Linux `$HOME/gams` + `$HOME/.TinyTeX`, plus one extra entry
 when `magpie_gams_sysdir()` reports a GAMS folder OUTSIDE `$HOME/gams`
 (any PATH install); macOS
 `/Library/Frameworks/GAMS.framework`, `/Library/Frameworks/
-R.framework`, `/usr/local/gfortran`, `$HOME/Library/TinyTeX`,
-`$HOME/.TinyTeX`, the licence dir. On both OSes the read list also
+R.framework`, `/usr/local/gfortran` (via `MAGPIE_GFORTRAN_DIR`, whose
+default is that literal), `$HOME/Library/TinyTeX`,
+`$HOME/.TinyTeX`, the licence dir. An optional read folder is listed
+only when it EXISTS on disk - validation rejects a policy path that is
+missing (`~/.TinyTeX` stays absent when apt provides texlive, the macOS
+licence dir when no licence is embedded, the pkg framework/gfortran
+folders when a tool came from elsewhere). Only
+`/Library/Frameworks/GAMS.framework` is literal: `magpie_install_gams`
+on macOS succeeds only with that folder present. R must be VISIBLE in
+the sandbox, not only executable: apt R keeps `Renviron` and the base
+library under its home (`/usr/lib/R`), the course stack under a
+site-library - nono's default groups cover neither, and the 2026-11
+gate died with `cannot find system Renviron` -> `FAIL R`. So whenever
+`Rscript` is on PATH, the read list also holds `R.home()` and every
+`.libPaths()` entry (queried unsandboxed while building the profile,
+skipped silently without R; existence-gated like all optional
+folders; entries under an already-listed folder dedupe, e.g. the base
+library under `R.home()`). The R home's `etc/` entries (`Renviron`,
+`ldpaths`, `repositories`) are SYMLINKED files into `/etc/R` on
+Debian/Ubuntu, and a grant does not follow links out of its tree - so
+the profile also lists the physical folder behind
+`$R_HOME/etc/Renviron`, resolved with R itself
+(`dirname(normalizePath(...))`, unsandboxed at build time; without
+`Renviron`'s `EDITOR` R dies inside the sandbox at `utils` `.onLoad`,
+which is what produced the 2026-11 `FAIL R older than 4.3`). On
+non-symlink layouts (macOS framework) it resolves inside the R home
+and dedupes away. On both OSes the read list also
 holds the two data folders,
 and the write list is exactly `$MADRAT_MAINFOLDER` (`$HOME/.madrat`) +
 `$RENV_PATHS_CACHE` (`$HOME/.cache/R/renv`). The full run downloads
@@ -322,7 +356,10 @@ madrat mainfolder is the pinned cache for any madrat read, the renv
 cache fills on renv restores.
 The folders are created by `magpie_register_caches` before any
 sandboxed child runs (write rules need existing paths). `nono profile
-validate` must pass before install. An existing file: identical - kept;
+validate` must pass before install; on failure nono's message goes to
+the setup log and the rejected candidate stays at
+`~/magpie/setup-help-profile.json` (a bare "failed validation" would
+leave the help block blind). An existing file: identical - kept;
 different but carrying the `MAgPIE course` description marker - stale
 output of an older script version: replaced, old copy kept as `.bak`;
 different WITHOUT the marker (hand-made or edited): kept untouched
@@ -330,10 +367,42 @@ different WITHOUT the marker (hand-made or edited): kept untouched
 keep-alive is stopped, the gate reruns the checks inside the sandbox:
 
 ```
-nono run --profile magpie-profile -- env MAGPIE_CHECK_ONLY=1 \
+nono run --profile magpie-profile --allow-cwd -- env MAGPIE_CHECK_ONLY=1 \
   PATH=<texbin>:$PATH MADRAT_MAINFOLDER=... RENV_PATHS_CACHE=... \
   bash <thisfile> --check-only
 ```
+
+`--allow-cwd` silences nono's interactive "Share cwd read+write?" prompt
+(the gate's cwd is `~/magpie`; without the flag students would have to
+answer, and the full run's piped answers would hit that prompt instead
+of start.R). The profile additionally lists, via `read_file`, the two
+files the sandboxed child must read by absolute path while `$HOME`
+itself is unreadable there: the script (`$MAGPIE_SELF` - the child
+re-executes `<thisfile>`, and this is how the 2026-11 run died with
+exit 126 `Permission denied` after saying yes), and the course handle
+file `$MAGPIE_HANDLE_FILE` (without it the check block reports an
+empty code name). Each entry only appears when the file exists;
+`magpie_init_handle` reads it tolerantly (`cat 2>/dev/null || true`,
+fresh handle on empty/unreadable) so a stale profile can never leak a
+`cat:` error into the checks. Moving the script regenerates the
+profile through the marker check.
+
+**9P relocation.** Students run
+`bash /mnt/c/Users/<name>/Downloads/setup-magpie.sh` from `$HOME`; WSL
+mounts Windows drives via 9P (`stat -f -c %T` -> `v9fs`) and Landlock
+cannot enforce there reliably: nono warns for every `/mnt/c` policy
+path and reads may be denied at random. Early in `magpie_entry` (the
+non-check-only branch) `magpie_native_self_copy` checks the
+filesystem type of `$MAGPIE_SELF`: for `v9fs`/`9p` it copies the file
+to `~/.magpie-course/self/setup-magpie.sh` and re-points `MAGPIE_SELF`
+there, so every sandboxed step - the `read_file` entry, the gate
+child, the pass-2 re-exec - uses a native path and no Windows
+username ever enters the profile or the feed. The Downloads original
+stays untouched and is re-copied on every fresh run (edit-and-rerun
+works); a rerun whose script is already native, and any system where
+`stat -f` fails or reports another type (macOS: `apfs`/`hfs`), skip
+the copy silently. The student sees one informational line about the
+Linux-side copy - never a 9P warning.
 
 The call runs in a subshell whose combined output goes through
 `tee -a "$HOME/magpie/setup-log.txt" >&4`: the parent's stdout is the
@@ -389,7 +458,7 @@ holds all verification artifacts. Otherwise ONE sandboxed attempt
 (macOS wrapped in `caffeinate -is`):
 
 ```
-(cd ~/magpie && nono run --profile magpie-profile -- \
+(cd ~/magpie && nono run --profile magpie-profile --allow-cwd -- \
   env MADRAT_MAINFOLDER=... RENV_PATHS_CACHE=... \
       PATH=<gamsdir>:<texbin>:$PATH \
   bash -c 'cd "$HOME/magpie" && \
@@ -454,13 +523,20 @@ Results accumulate in a newline-separated string (no arrays):
 `gams` (found via PATH or the per-OS locations, run in a `mktemp -d`
 scratch dir, removed afterwards - never in the folder the script
 stands in, because GAMS writes there; no scratch dir = FAIL; with
-`MAGPIE_COURSE_LICENSEE` set AND the licence embedded, a banner naming
-that licensee PASSes
-("course licence found"); else a banner matching `demo|expired` FAILs
-(demo licence); else, while the name check is on, FAIL "not the course
+`MAGPIE_COURSE_LICENSEE` set, a banner naming that licensee PASSes
+("course licence found") - embedded or NOT: a machine whose course
+licence is already installed survives a rerun of the unfilled script;
+without an embedded slice the banner must additionally carry no
+`demo|expired` wording (a demo can never pose as the course licence;
+with an embedded one the name outranks it); else a banner matching
+`demo|expired` FAILs (demo licence); else, with the licence embedded
+and the name missing, FAIL "not the course
 licence"; else the weak match `license is valid|licensee` (GAMS 54 +
 legacy wordings) PASSes; else FAIL - licence file missing),
-`git >= 2.23` (integer compare), `Rscript >= 4.3`,
+`git >= 2.23` (integer compare), `Rscript >= 4.3` (probed with
+`Rscript --vanilla`: the pure version test must not depend on the
+project `.Rprofile`/renv - the gate child runs checks from `~/magpie`
+where a not-yet-bootstrapped renv would otherwise fail the probe),
 `pandoc`, `tex`, the `renv` library check (lucode2+gms via a
 `cd ~/magpie` subshell) ONLY when `~/magpie/renv.lock` exists -
 otherwise the line reads SKIP, and the `full run` line:
