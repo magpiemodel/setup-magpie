@@ -4,7 +4,7 @@
 # Installs: git/curl (or Xcode CLT), opencode, nono, HU config, course tools
 # (apt libs | pinned pkgs), TinyTeX, GAMS + licence, nono profile, magpie
 # clone, renv restore. Then checks (unsandboxed + sandbox gate), one full
-# default run inside the sandbox, and the next steps.
+# default run inside the sandbox, and a final SETUP COMPLETE verdict.
 # Bash - baseline macOS stock /bin/bash 3.2, no bash4+ constructs.
 
 # ============================================================
@@ -285,14 +285,21 @@ magpie_sanitize() {
   }'
 }
 
+# Feed reachable? magpie_report silently skips without these, and
+# magpie_fail must know: with no receiver the diagnostics stay on the
+# student's screen instead of vanishing into the log.
+magpie_feed_on() {
+  [ -n "$STATUS_URL" ] && command -v curl >/dev/null 2>&1
+}
+
 # magpie_report "<text>": one upload into the feed folder, text may be
 # multi-line. Header: "<handle> | <OS arch> | v<file hash> | <text>".
-# Bodies stay under ~3.2 KB (the help block cap). Never fails the
+# Bodies stay under ~3.2 KB (the failure-post cap). Never fails the
 # caller. -T sends PUT with a real Content-Length. The name holds date,
 # time, pid and a per-run counter, so a PUT can never replace an earlier
 # post (PUT overwrites on the WebDAV target).
 magpie_report() {
-  if [ -z "$STATUS_URL" ] || ! command -v curl >/dev/null 2>&1; then
+  if ! magpie_feed_on; then
     return 0
   fi
   post_file=$(mktemp 2>/dev/null) || return 0
@@ -317,46 +324,53 @@ magpie_sys_string() {
   fi
 }
 
-# Final verdict: help block to fd 4 + saved file + feed post + exit 1.
-# No fix hints: the student pastes the block into an AI chat and fixes
-# the problem with LLM help. $1 step text, $2 check results ("").
+# Final verdict: one screen verdict + feed post (log tail included) +
+# exit 1. No AI help block and no ~/magpie/setup-help.txt: the student
+# sends the code name, the TA reads the feed and this machine's log.
+# Fix hints stay inside the step text (that is where the WSL/sudo hints
+# already live). $1 step text, $2 check results ("").
 magpie_fail() {
   step=$1
   results=${2:-}
   MAGPIE_FAIL_POSTED=1
-  tmp=$(mktemp 2>/dev/null) || tmp="/tmp/magpie-help.$$"
-  {
-    printf 'I am a beginner setting up MAgPIE. Fix the FAIL line below.\n'
-    printf 'Tell me exactly what to type in the terminal, one command at a time.\n'
-    printf 'System: %s | %s | code name: %s\n' \
-      "$(magpie_sys_string)" "$(uname -m)" "${MAGPIE_HANDLE:-unknown}"
-    if [ -n "$results" ]; then
-      printf 'CHECK RESULTS:\n'
-      printf '%s\n' "$results"
-    else
-      printf 'FAILED STEP (twice, reproducible): %s | %s\n' \
-        "$step" "$(tail -n 1 "$HOME/magpie/setup-log.txt" 2>/dev/null)"
-    fi
-    printf -- '--- last 25 log lines ---\n'
-    tail -n 25 "$HOME/magpie/setup-log.txt" 2>/dev/null
-  } > "$tmp" 2>/dev/null
-  # The whole help block rides along (capped): an agent reading the
-  # feed needs the log tail, not just the step name.
-  magpie_report "$(printf 'setup: FAIL %s\n%s' "$step" \
-    "$(head -c 3200 "$tmp" 2>/dev/null)")"
-  cp "$tmp" "$HOME/magpie/setup-help.txt" 2>/dev/null || true
+  logfile="$HOME/magpie/setup-log.txt"
+  # The log tail rides along (capped): whoever reads the feed needs the
+  # context, not just the step name.
+  detail=$(
+    {
+      printf 'System: %s | %s | code name: %s\n' \
+        "$(magpie_sys_string)" "$(uname -m)" "${MAGPIE_HANDLE:-unknown}"
+      if [ -n "$results" ]; then
+        printf 'CHECK RESULTS:\n'
+        printf '%s\n' "$results"
+      else
+        printf 'FAILED STEP (twice, reproducible): %s | %s\n' \
+          "$step" "$(tail -n 1 "$logfile" 2>/dev/null)"
+      fi
+      printf -- '--- last 25 log lines ---\n'
+      tail -n 25 "$logfile" 2>/dev/null
+    } | head -c 3200
+  )
+  magpie_report "setup: FAIL $step
+$detail"
   magpie_say ""
-  magpie_say "===== NEED HELP? Select EVERYTHING between the ## lines below and"
-  magpie_say "paste it into opencode or any AI chat - or open the file $HOME/magpie/setup-help.txt ====="
-  magpie_say "##"
-  cat "$tmp" >&4 2>/dev/null
-  magpie_say "##"
-  rm -f "$tmp"
+  magpie_say "SETUP FAILED (twice, reproducible): $step"
+  if [ -n "$results" ]; then
+    printf '%s\n' "$results" >&4
+  fi
+  if ! magpie_feed_on; then
+    # Offline (or no curl): no feed for the TA to read, so the log tail
+    # has to reach the screen instead.
+    magpie_say "--- last 25 log lines ---"
+    tail -n 25 "$logfile" >&4 2>/dev/null
+  fi
+  magpie_say "  your code name: ${MAGPIE_HANDLE:-unknown} - tell the TA this"
+  magpie_say "  everything else: $logfile"
   exit 1
 }
 
 # Step still failing after retries: pass 1 -> one retry pass in a fresh
-# process; pass 2 -> help block. Never a third pass.
+# process; pass 2 -> the failure verdict. Never a third pass.
 magpie_step_failed() {
   step=$1
   magpie_log "step failed after retries: $step"
@@ -548,7 +562,7 @@ magpie_take_lock() {
 
 # ---------------- disk + pins ----------------
 
-# Two tiers: below ABORT the help block stops the run; below WARN the
+# Two tiers: below ABORT the failure verdict stops the run; below WARN the
 # feed sees a warning but the run continues.
 magpie_check_disk() {
   free_kb=$(df -Pk "$HOME/magpie" | awk 'NR==2 {print $4}')
@@ -1667,12 +1681,15 @@ $write_extra      "$MADRAT_MAINFOLDER",
 }
 EOF
   if ! verr=$(nono profile validate "$tmp" 2>&1); then
-    # nono's real complaint belongs in the log and next to the help
-    # block: a bare "failed validation" leaves the student's AI chat
-    # guessing (that is how the 2026-11 course run went blind). Log
-    # all of it, banner included - a cap cut off the real error once.
-    cp "$tmp" "$HOME/magpie/setup-help-profile.json" 2>/dev/null || true
+    # nono's real complaint belongs in the log: a bare "failed
+    # validation" leaves whoever reads the feed guessing (that is how
+    # the 2026-11 course run went blind). Log all of it, banner
+    # included - a cap cut off the real error once. The rejected
+    # candidate rides along on ONE line: the failure post carries the
+    # last 25 log lines, and a 60-line JSON dump would push the actual
+    # diagnostics out of that tail.
     magpie_log "generated nono profile failed validation: $verr"
+    magpie_log "rejected candidate: $(tr '\n' ' ' < "$tmp" 2>/dev/null | tr -s ' ')"
     rm -f "$tmp"
     return 1
   fi
@@ -1792,6 +1809,9 @@ magpie_clone_magpie() {
   # shellcheck disable=SC2045  # ls -A: own-file allowlist check includes dotfiles.
   for entry in $(ls -A "$HOME/magpie" 2>/dev/null); do
     case $entry in
+      # setup-help.txt: copies distributed before the AI help block was
+      # removed may have left it there - a stray file must never block
+      # the clone of an otherwise clean folder.
       .git|setup-log.txt|setup-help.txt|.setup-finished|.setup.lock| \
       .keepalive.pid|.setup-fullrun-ok|opencode-dl.tgz|opencode-extract| \
       nono-dl.tar.gz|nono-extract|setup-dl-*) ;;
@@ -1943,28 +1963,36 @@ magpie_run_checks() {
     magpie_check_line FAIL "tex not found - rerun this file"
   fi
 
-  # Only when the clone holds a renv.lock: load the restored library.
+  # R libraries. With a renv.lock the pinned library has to load;
+  # without one (every course machine: start.R snapshots into the RUN
+  # folder, never into the repo root) the libraries only exist once the
+  # full run installed them - so the load test runs from the full-run
+  # marker onwards. Parent only: a Landlock denial on this probe would
+  # block the gate with a message the student cannot act on, and the
+  # sandboxed full run that follows tests the library far better.
+  fullrel=$(magpie_fullrel)
   if [ -f "$HOME/magpie/renv.lock" ]; then
     if magpie_renv_lib_ok; then
       magpie_check_line PASS "renv R library (lucode2, gms load)"
     else
       magpie_check_line FAIL "renv R library incomplete - in ~/magpie run: Rscript -e 'renv::restore()'"
     fi
-  else
-    magpie_check_line SKIP "renv check (no ~/magpie/renv.lock yet)"
+  elif [ -n "$fullrel" ] && [ -z "${MAGPIE_CHECK_ONLY:-}" ]; then
+    if magpie_renv_lib_ok; then
+      magpie_check_line PASS "R libraries (lucode2, gms load)"
+    else
+      magpie_check_line FAIL "R libraries incomplete - in ~/magpie run: Rscript start.R once"
+    fi
   fi
 
-  # Full default run: marker + artifacts only - cheap and read-only,
-  # it also runs inside the sandbox gate child.
+  # Full default run: marker + artifacts only - cheap and read-only, it
+  # also runs inside the sandbox gate child. No marker is "not yet", not
+  # a skipped check: the step at the end of this setup runs it and the
+  # verdict block reports the outcome, so nothing is printed here.
   if [ "${MAGPIE_FULL_RUN:-1}" = "0" ]; then
     magpie_check_line SKIP "full run (skipped via MAGPIE_FULL_RUN=0)"
-  else
-    fullrel=""
-    [ -f "$HOME/magpie/.setup-fullrun-ok" ] \
-      && fullrel=$(cat "$HOME/magpie/.setup-fullrun-ok" 2>/dev/null || echo "")
-    if [ -z "$fullrel" ]; then
-      magpie_check_line SKIP "full run (starts at the end of this setup)"
-    elif magpie_full_run_complete "$HOME/magpie/$fullrel"; then
+  elif [ -n "$fullrel" ]; then
+    if magpie_full_run_complete "$HOME/magpie/$fullrel"; then
       magpie_check_line PASS "full run ($fullrel)"
     else
       magpie_check_line FAIL "full run artifacts missing - rerun this file"
@@ -1972,11 +2000,9 @@ magpie_run_checks() {
   fi
 
   magpie_say ""
-  magpie_say "===== your result - it went to the course feed ====="
   magpie_say "system: $(uname -s) $(uname -m) | code name: $MAGPIE_HANDLE"
   printf '%s\n' "${MAGPIE_CHECK_RESULTS#"
 "}" >&4
-  magpie_say "===== end of copy block ====="
 
   if [ -n "${MAGPIE_CHECK_ONLY:-}" ]; then
     magpie_report "sandbox check result$MAGPIE_CHECK_RESULTS"
@@ -2025,6 +2051,16 @@ magpie_sandbox_gate() {
 magpie_full_run_complete() {
   [ -f "$1/fulldata.gdx" ] && [ -f "$1/full.lst" ] \
     && [ -f "$1/report.rds" ] && [ -f "$1/report.mif" ]
+}
+
+# Marker content (output/<run folder>) or "" - one place, three users:
+# the checks, the verdict block and the log's final line.
+magpie_fullrel() {
+  if [ -f "$HOME/magpie/.setup-fullrun-ok" ]; then
+    cat "$HOME/magpie/.setup-fullrun-ok" 2>/dev/null || echo ""
+  else
+    echo ""
+  fi
 }
 
 # Newest complete run folder under output/ ("" if none). Folder names
@@ -2080,7 +2116,7 @@ magpie_full_run_body() {
 
 # One full default run inside the course sandbox. ONE attempt - start.R
 # swallows run errors, so a NEW complete run folder decides, not the
-# exit code. Any failure goes straight to the help block.
+# exit code. Any failure goes straight to the failure verdict.
 magpie_step_full_run() {
   marker="$HOME/magpie/.setup-fullrun-ok"
   if [ "${MAGPIE_FULL_RUN:-1}" = "0" ]; then
@@ -2088,8 +2124,7 @@ magpie_step_full_run() {
     magpie_report "setup: full run skipped (MAGPIE_FULL_RUN=0)"
     return 0
   fi
-  fullrel=""
-  [ -f "$marker" ] && fullrel=$(cat "$marker" 2>/dev/null || echo "")
+  fullrel=$(magpie_fullrel)
   if [ -n "$fullrel" ] && magpie_full_run_complete "$HOME/magpie/$fullrel"; then
     magpie_log "full run: marker verified ($fullrel)"
     return 0
@@ -2115,28 +2150,41 @@ magpie_step_full_run() {
     magpie_fail "full magpie run (check the run folder under ~/magpie)"
   fi
   printf 'output/%s\n' "$after" > "$marker"
+  magpie_log "full run: wrote marker output/$after"
   magpie_say "OK: full magpie run finished (output/$after)"
   magpie_report "setup: full run finished"
 }
 
-magpie_print_next_steps() {
+# An older copy of this file wrote an "AI help" block next to the log
+# (setup-help.txt, and setup-help-profile.json for a rejected profile).
+# Nothing writes them any more, and a stale FAIL block on a machine that
+# just passed every check is pure confusion - so the green path drops
+# them. Never on a failing path: whoever is mid-troubleshooting may
+# still be reading exactly that file.
+magpie_drop_stale_help() {
+  rm -f "$HOME/magpie/setup-help.txt" "$HOME/magpie/setup-help-profile.json"
+}
+
+# The very last thing on screen. The old NEXT STEPS block is gone - the
+# course page has it, and a run that worked should end in a verdict a
+# student recognises at a glance instead of four instruction lines. =
+# bars, never # bars: nothing else in the output uses them, so the
+# verdict stays the only banner on a successful run.
+magpie_print_verdict() {
+  fullrel=$(magpie_fullrel)
+  runline="$fullrel"
+  if [ -z "$runline" ]; then
+    if [ "${MAGPIE_FULL_RUN:-1}" = "0" ]; then
+      runline="skipped (MAGPIE_FULL_RUN=0)"
+    else
+      runline="see above"
+    fi
+  fi
   magpie_say ""
-  magpie_say "NEXT STEPS (same on the course page):"
-  magpie_say "  cd ~/magpie"
-  fullrel=""
-  [ -f "$HOME/magpie/.setup-fullrun-ok" ] \
-    && fullrel=$(cat "$HOME/magpie/.setup-fullrun-ok" 2>/dev/null || echo "")
-  if [ -n "$fullrel" ]; then
-    magpie_say "  Full default run: done -> $fullrel (report.rds inside)"
-  else
-    magpie_say "  Full default run: skipped (MAGPIE_FULL_RUN=0) - do it with the line below"
-  fi
-  if [ "$MAGPIE_OS" = "darwin" ]; then
-    magpie_say "  Your own scenario: caffeinate -is Rscript start.R   # choose 1, then 1"
-  else
-    magpie_say "  Your own scenario: Rscript start.R                  # choose 1, then 1"
-  fi
-  magpie_say "Laptop: plugged into power, lid open / sleep off, overnight."
+  magpie_say "============================================================"
+  magpie_say " SETUP COMPLETE - MAgPIE is installed, checked and working"
+  magpie_say "   checks: no FAIL   sandbox: ok   default run: $runline"
+  magpie_say "============================================================"
 }
 
 # ---------------- main ----------------
@@ -2181,7 +2229,7 @@ magpie_setup_path() {
   magpie_step_renv_restore
 
   # Reproducible-failure model: any check FAIL ends the run with the
-  # help block - the old "continue after FAIL" is gone.
+  # failure verdict - the old "continue after FAIL" is gone.
   if ! magpie_run_checks; then
     magpie_fail "checks" "$MAGPIE_CHECK_RESULTS"
   fi
@@ -2194,8 +2242,17 @@ magpie_setup_path() {
   fi
 
   magpie_step_full_run
-  magpie_print_next_steps
+  magpie_drop_stale_help
+  magpie_print_verdict
   magpie_report "setup: run finished"
+  # The log's last line is the verdict too: `tail -n 1 setup-log.txt`
+  # has to settle "did it work?" without reading the whole file.
+  fullrel=$(magpie_fullrel)
+  if [ -n "$fullrel" ]; then
+    magpie_log "SETUP COMPLETE - all checks passed, full run $fullrel"
+  else
+    magpie_log "SETUP COMPLETE - all checks passed, full run skipped (MAGPIE_FULL_RUN=0)"
+  fi
   exit 0
 }
 

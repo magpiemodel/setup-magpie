@@ -759,7 +759,7 @@ sec "placeholder pin guard"
 new_env
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; R_SHA256_DARWIN_X64=TBD; magpie_require_pins' run_fn
 ret_is "pins TBD aborts" 1
-grep_ok "help block shown" "$STATE/screen.txt" "script incomplete: pinned versions/checksums missing"
+grep_ok "failure verdict shown" "$STATE/screen.txt" "script incomplete: pinned versions/checksums missing"
 nofile_ok "no lock created" "$FAKE_HOME/magpie/.setup.lock"
 grep_ok "FAIL reported to feed" "$STATE/feed.log" "FAIL script incomplete"
 new_env
@@ -848,7 +848,7 @@ kill "$KPID" 2>/dev/null
 sec "cold fail path (before MAGPIE_OS is set)"
 # ============================================================
 # The entry mkdir failure calls magpie_fail before magpie_main has
-# set MAGPIE_OS - the help block's System line must still be filled.
+# set MAGPIE_OS - the feed detail's System line must still be filled.
 new_env
 EXPECT_SYS=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d '"' -f 2)
 FN_BODY='magpie_sys_string' run_fn
@@ -882,9 +882,9 @@ new_env
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; MAGPIE_PASS=2 magpie_step_failed teststep' \
   run_fn
 ret_is "pass 2 failure blocks" 1
-grep_ok "help block after pass 2" "$STATE/screen.txt" "##"
-grep_ok "failed step named" "$STATE/screen.txt" "FAILED STEP (twice, reproducible): teststep"
-grep_ok "code name in help block" "$STATE/screen.txt" "code name: T1"
+grep_ok "failure verdict after pass 2" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible)"
+grep_ok "failed step named" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): teststep"
+grep_ok "code name in verdict" "$STATE/screen.txt" "code name: T1"
 
 # ============================================================
 sec "sudo loop + keep-alive"
@@ -893,11 +893,11 @@ new_env
 FN_BODY='MAGPIE_HANDLE=T1; magpie_sudo_warm' run_fn STUB_SUDO_N_OK=0 STUB_SUDO_V_FAILS=4
 ret_is "sudo succeeds after 4 bad tries" 0
 cnt_is "retry line 4x" "Password not accepted" "$STATE/screen.txt" 4
-grep_no "no help block" "$STATE/screen.txt" "##"
+grep_no "no failure verdict" "$STATE/screen.txt" "SETUP FAILED"
 new_env
 FN_BODY='MAGPIE_HANDLE=T1; magpie_sudo_warm' run_fn STUB_SUDO_N_OK=0 STUB_SUDO_V_FAILS=99
 ret_is "sudo cap blocks" 1
-grep_ok "help block at cap" "$STATE/screen.txt" "##"
+grep_ok "failure verdict at cap" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible)"
 cnt_is "6 rounds" "Password not accepted" "$STATE/screen.txt" 6
 new_env
 FN_BODY='MAGPIE_HANDLE=T1; magpie_sudo_warm' run_fn STUB_SUDO_N_OK=1
@@ -1115,7 +1115,7 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; MAGPIE_PA
   run_fn "MAGPIE_OS_RELEASE=$ENV/os22"
 ret_is "ubuntu 22.04 blocked early" 1
 grep_ok "floor message" "$STATE/screen.txt" "Ubuntu 22.04 ships an R older than 4.3"
-grep_ok "wsl hint in help block" "$STATE/screen.txt" "wsl --install -d Ubuntu-24.04"
+grep_ok "wsl hint in verdict" "$STATE/screen.txt" "wsl --install -d Ubuntu-24.04"
 grep_no "no apt call" "$STATE/apt.log" "apt-get"
 # Other distros are not blocked by the ubuntu floor.
 new_env
@@ -1166,7 +1166,7 @@ grep_ok "escalation dist-upgrade runs" "$STATE/apt.log" "DPkg::Lock::Timeout=120
 cnt_is "install retried after escalation" " install -y" "$STATE/apt.log" 2
 grep_ok "tools OK after escalation" "$STATE/screen.txt" "OK: R + support packages installed"
 # Persistent fail: 3 attempts x (install + dist-upgrade + install),
-# then pass-2 blocked with the help block.
+# then pass-2 blocked with the failure verdict.
 new_env
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; MAGPIE_PASS=2 magpie_step_apt_tools' \
   run_fn STUB_APT_INSTALL_FAILS=99
@@ -1174,7 +1174,7 @@ ret_is "persistent apt fail blocks" 1
 cnt_is "3 attempts x 2 installs" " install -y" "$STATE/apt.log" 6
 cnt_is "3 escalations" " dist-upgrade" "$STATE/apt.log" 3
 grep_ok "FAIL apt tools fed" "$STATE/feed.log" "FAIL apt course tools"
-grep_no "no hint lines in help block" "$STATE/screen.txt" "run this file again"
+grep_no "no hint lines in verdict" "$STATE/screen.txt" "run this file again"
 
 # ============================================================
 sec "handle (code name)"
@@ -1301,7 +1301,8 @@ grep_ok "gams not installed" "$STATE/screen.txt" "FAIL gams not installed"
 grep_ok "Rscript missing line" "$STATE/screen.txt" "FAIL Rscript not found"
 grep_ok "pandoc missing line" "$STATE/screen.txt" "FAIL pandoc not found"
 grep_ok "tex missing line" "$STATE/screen.txt" "FAIL tex not found"
-grep_ok "renv SKIP line" "$STATE/screen.txt" "SKIP renv check"
+grep_no "no library line without marker" "$STATE/screen.txt" "R libraries"
+grep_no "no full run line without marker" "$STATE/screen.txt" "full run"
 grep_ok "check result fed" "$STATE/feed.log" "check result"
 new_env
 make_tools
@@ -1439,7 +1440,8 @@ new_env
 RET=$?
 ret_is "child fails without tools" 1
 grep_ok "sandbox label fed" "$STATE/feed.log" "sandbox check result"
-grep_ok "result block on screen" "$STATE/screen.txt" "end of copy block"
+grep_ok "result lines on screen" "$STATE/screen.txt" "code name: "
+grep_ok "check lines printed" "$STATE/screen.txt" "FAIL gams"
 nofile_ok "no lock in child" "$FAKE_HOME/magpie/.setup.lock"
 nofile_ok "no log tee in child" "$FAKE_HOME/magpie/setup-log.txt"
 nofile_ok "no opencode install in child" "$FAKE_HOME/.opencode"
@@ -1738,14 +1740,18 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
 magpie_step_magpie_profile' run_fn STUB_NONO_VALIDATE_EXIT=1 \
   STUB_NONO_VALIDATE_ERR="path /home/x/.TinyTeX does not exist"
 ret_is "validate failure blocks (2 passes)" 1
-grep_ok "profile step named in help" "$STATE/screen.txt" \
-  "FAILED STEP (twice, reproducible): magpie-profile build"
-# The student (and the AI chat in the help block) must see WHY, not
-# just "failed validation" - the real nono message is logged and the
-# rejected profile survives next to the help file.
+grep_ok "profile step named in verdict" "$STATE/screen.txt" \
+  "SETUP FAILED (twice, reproducible): magpie-profile build"
+# Whoever reads the feed must see WHY, not just "failed validation" -
+# the real nono message is logged and the rejected candidate follows as
+# ONE line: nothing is written to a side file any more, and a multi-line
+# dump would push the diagnostics out of the 25 log lines that the
+# failure post carries.
 grep_ok "validator complaint logged" "$FAKE_HOME/magpie/setup-log.txt" \
   "failed validation: path /home/x/.TinyTeX does not exist"
-file_ok "rejected candidate kept" "$FAKE_HOME/magpie/setup-help-profile.json"
+grep_ok "rejected candidate logged" "$FAKE_HOME/magpie/setup-log.txt" \
+  "rejected candidate: { \"meta\""
+nofile_ok "no candidate side file" "$FAKE_HOME/magpie/setup-help-profile.json"
 new_env
 make_installed
 sed -i 's|"version":"9.9.9"|"version":"8.8.8"|' "$FAKE_HOME/.config/nono/packages/nolabs-ai/opencode/package.json"
@@ -1900,7 +1906,7 @@ new_env
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_install_gams' \
   run_fn STUB_BAD_GAMS=1
 ret_is "gams corrupt download blocks" 1
-grep_ok "gams step named" "$STATE/screen.txt" "FAILED STEP (twice, reproducible): GAMS install"
+grep_ok "gams step named" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): GAMS install"
 # With several installs the pinned version's folder wins for finding.
 new_env
 mkdir -p "$FAKE_HOME/gams/gams47.6.0_linux_x64_64_sfx" \
@@ -1960,6 +1966,8 @@ new_env
 make_installed
 rm -rf "$FAKE_HOME/magpie/.git"
 echo "log" > "$FAKE_HOME/magpie/setup-log.txt"
+# Legacy leftover: not written any more, but the name must stay in the
+# clone guard's allowlist so an old distributed copy never blocks a clone.
 echo "help" > "$FAKE_HOME/magpie/setup-help.txt"
 run_e2e
 ret_is "own files only -> clone proceeds" 0
@@ -2104,7 +2112,7 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
 MAGPIE_PASS=2 magpie_step_renv_restore' \
   run_fn STUB_RENV_EXIT=1 STUB_RENV_RESTORE_EXIT=1
 ret_is "persistent restore failure blocks" 1
-grep_ok "renv step named" "$STATE/screen.txt" "FAILED STEP (twice, reproducible): renv restore"
+grep_ok "renv step named" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): renv restore"
 cnt_is "3 restore attempts" "renv::restore" "$STATE/rscript.log" 3
 
 # ============================================================
@@ -2175,7 +2183,7 @@ grep_no "no sandbox run" "$STATE/nono.log" "runscripts=default.R"
 grep_no "no R run" "$STATE/rscript.log" "start.R"
 grep_ok "skip logged" "$FAKE_HOME/magpie/setup-log.txt" "full run: marker verified"
 grep_no "no heads-up on skip" "$STATE/screen.txt" "40 min"
-# Non-zero sandbox exit: straight to the help block, no marker.
+# Non-zero sandbox exit: straight to the failure verdict, no marker.
 new_env
 make_tools
 put_nono
@@ -2183,8 +2191,8 @@ mkdir -p "$FAKE_HOME/magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
 MAGPIE_PASS=2 magpie_step_full_run' run_fn STUB_FULLRUN_FAIL=1
 ret_is "non-zero sandbox exit fails" 1
-grep_ok "help block" "$STATE/screen.txt" "##"
-grep_ok "step named" "$STATE/screen.txt" "FAILED STEP (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
+grep_ok "failure verdict" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible)"
+grep_ok "step named" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
 grep_ok "FAIL fed" "$STATE/feed.log" "setup: FAIL full magpie run"
 nofile_ok "no marker on failure" "$FAKE_HOME/magpie/.setup-fullrun-ok"
 # Exit 0 but swallowed run error (no output artifacts): artifacts fail it.
@@ -2195,7 +2203,7 @@ mkdir -p "$FAKE_HOME/magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
 MAGPIE_PASS=2 magpie_step_full_run' run_fn STUB_FULLRUN_NO_OUTPUT=1
 ret_is "missing postprocessing artifacts fail" 1
-grep_ok "artifact failure named" "$STATE/screen.txt" "FAILED STEP (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
+grep_ok "artifact failure named" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
 nofile_ok "no marker without artifacts" "$FAKE_HOME/magpie/.setup-fullrun-ok"
 grep_no "no finished feed line" "$STATE/feed.log" "setup: full run finished"
 # An OLD complete run folder is not accepted as the NEW one (no-op run).
@@ -2220,7 +2228,7 @@ mkdir -p "$FAKE_HOME/magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
 MAGPIE_PASS=2 magpie_step_full_run' run_fn STUB_FULLRUN_RSCRIPT_EXIT=1
 ret_is "non-zero exit with complete artifacts fails" 1
-grep_ok "exit-code failure named" "$STATE/screen.txt" "FAILED STEP (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
+grep_ok "exit-code failure named" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
 nofile_ok "no marker on non-zero exit" "$FAKE_HOME/magpie/.setup-fullrun-ok"
 grep_ok "exit-code FAIL fed" "$STATE/feed.log" "setup: FAIL full magpie run"
 # An old complete folder plus a NEW complete folder: the marker names
@@ -2271,7 +2279,9 @@ sec "full run check line"
 new_env
 make_tools
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
-grep_ok "first run must not FAIL" "$STATE/screen.txt" "SKIP full run (starts at the end of this setup)"
+ret_is "first run is green" 0
+grep_no "no full run line before the marker" "$STATE/screen.txt" "full run"
+grep_no "no library line before the marker" "$STATE/screen.txt" "R libraries"
 new_env
 make_tools
 mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"
@@ -2283,6 +2293,7 @@ printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/magpie/.setup-fullru
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
 ret_is "marker + artifacts PASS" 0
 grep_ok "PASS line" "$STATE/screen.txt" "PASS full run (output/default_2026-01-01_00.00.00)"
+grep_ok "library line with marker" "$STATE/screen.txt" "PASS R libraries (lucode2, gms load)"
 new_env
 make_tools
 mkdir -p "$FAKE_HOME/magpie"
@@ -2313,6 +2324,55 @@ ret_is "escape hatch check SKIPs" 0
 grep_ok "SKIP via env line" "$STATE/screen.txt" "SKIP full run (skipped via MAGPIE_FULL_RUN=0)"
 
 # ============================================================
+sec "R library check line"
+# ============================================================
+# The load probe (lucode2 + gms) replaces the old "renv check" SKIP
+# line: with a marker there is a library to test, before it there is
+# none - and the probe never runs in the gate child, where a Landlock
+# denial would block the setup on a message the student cannot act on.
+put_complete_run() {
+  mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"
+  touch "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/fulldata.gdx \
+    "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/full.lst \
+    "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.rds \
+    "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.mif
+  printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/magpie/.setup-fullrun-ok"
+}
+new_env
+make_tools
+put_complete_run
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn STUB_RENV_EXIT=1
+ret_is "broken library FAILs the checks" 1
+grep_ok "library FAIL line" "$STATE/screen.txt" \
+  "FAIL R libraries incomplete - in ~/magpie run: Rscript start.R once"
+grep_ok "probe ran" "$STATE/rscript.log" "library(lucode2)"
+new_env
+make_tools
+put_complete_run
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' \
+  run_fn STUB_RENV_EXIT=1 MAGPIE_CHECK_ONLY=1
+ret_is "gate child stays green" 0
+grep_no "no library line in the child" "$STATE/screen.txt" "R libraries"
+grep_no "probe never runs in the child" "$STATE/rscript.log" "library(lucode2)"
+
+# ============================================================
+sec "stale AI-help files dropped on the green path"
+# ============================================================
+new_env
+FN_BODY='MAGPIE_OS=linux; mkdir -p "$HOME/magpie"
+echo stale > "$HOME/magpie/setup-help.txt"
+echo stale > "$HOME/magpie/setup-help-profile.json"
+magpie_drop_stale_help' run_fn
+nofile_ok "setup-help.txt dropped" "$FAKE_HOME/magpie/setup-help.txt"
+nofile_ok "profile dump dropped" "$FAKE_HOME/magpie/setup-help-profile.json"
+new_env
+make_tools
+put_complete_run
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; echo stale > "$HOME/magpie/setup-help.txt"
+magpie_fail "some step"' run_fn
+grep_ok "help file survives a failing run" "$FAKE_HOME/magpie/setup-help.txt" "stale"
+
+# ============================================================
 sec "E2E day-one green run"
 # ============================================================
 new_env
@@ -2340,17 +2400,18 @@ grep_ok "PATH add logged" "$FAKE_HOME/magpie/setup-log.txt" \
 grep_ok "clone OK line" "$S" "OK: magpie downloaded"
 cnt_is "exactly 7 heads-ups" "installing" "$S" 7
 grep_no "apt skipped no heads-up" "$S" "installing git + curl"
-grep_no "no help block" "$S" "##"
+grep_no "no failure verdict" "$S" "SETUP FAILED"
 grep_ok "greet shows handle on first run" "$S" "Reporting status as"
 grep_no "no blind sudo prompt" "$S" "Type it blind"
 grep_ok "all checks PASS" "$S" "PASS gams"
-grep_ok "check block printed" "$S" "end of copy block"
+grep_ok "check block names the code name" "$S" "code name: "
 grep_ok "renv PASS (lock in clone, loads)" "$S" "PASS renv R library"
-grep_ok "full run SKIP before step" "$S" "SKIP full run (starts at the end of this setup)"
+grep_no "no full run line before the marker" "$S" "SKIP full run"
 grep_ok "full run heads-up" "$S" "full magpie run, about 40 min"
 grep_ok "full run OK line" "$S" "OK: full magpie run finished"
-grep_ok "next steps: full run done" "$S" "Full default run: done ->"
-grep_ok "next steps: own scenario" "$S" "Rscript start.R"
+grep_ok "verdict block" "$S" "SETUP COMPLETE - MAgPIE is installed, checked and working"
+grep_ok "verdict names the run folder" "$S" "default run: output/default_"
+grep_no "no ## banner on a green run" "$S" "##"
 grep_no "no manual renv line" "$S" "Rscript -e 'renv::restore()'"
 grep_no "old rerun-setup hint gone" "$S" "rerun this setup file"
 # feed protocol
@@ -2379,6 +2440,13 @@ grep_no "no upload progress noise in the log" "$FAKE_HOME/magpie/setup-log.txt" 
 # state on disk
 file_ok "clone checked out" "$FAKE_HOME/magpie/README.md"
 file_ok "log under ~/magpie" "$FAKE_HOME/magpie/setup-log.txt"
+# The log has to END with the verdict: tail -n 1 answers "did it work?"
+if tail -n 1 "$FAKE_HOME/magpie/setup-log.txt" \
+  | grep -q "SETUP COMPLETE - all checks passed, full run output/default_"; then
+  ok "log's last line is the verdict"
+else
+  no "log's last line is the verdict [got: $(tail -n 1 "$FAKE_HOME/magpie/setup-log.txt")]"
+fi
 nofile_ok ".setup-finished never written" "$FAKE_HOME/magpie/.setup-finished"
 nofile_ok "lock released" "$FAKE_HOME/magpie/.setup.lock"
 nofile_ok "no setup-dl leftovers" "$FAKE_HOME/magpie/setup-dl-gams.exe"
@@ -2455,7 +2523,9 @@ ret_is "green with the full run skipped" 0
 grep_ok "screen note" "$STATE/screen.txt" "Full run skipped (MAGPIE_FULL_RUN=0)"
 grep_ok "check SKIP line" "$STATE/screen.txt" "SKIP full run (skipped via MAGPIE_FULL_RUN=0)"
 grep_ok "feed skip note" "$STATE/feed.log" "setup: full run skipped (MAGPIE_FULL_RUN=0)"
-grep_ok "next steps: skipped note" "$STATE/screen.txt" "Full default run: skipped (MAGPIE_FULL_RUN=0)"
+grep_ok "verdict: skipped note" "$STATE/screen.txt" "default run: skipped (MAGPIE_FULL_RUN=0)"
+grep_ok "log verdict: skipped note" "$FAKE_HOME/magpie/setup-log.txt" \
+  "SETUP COMPLETE - all checks passed, full run skipped (MAGPIE_FULL_RUN=0)"
 grep_ok "still run finished" "$STATE/feed.log" "setup: run finished"
 nofile_ok "no marker written" "$FAKE_HOME/magpie/.setup-fullrun-ok"
 grep_no "no start.R invocation" "$STATE/rscript.log" "runscripts=default.R"
@@ -2480,29 +2550,31 @@ rm -rf "$FAKE_HOME/magpie/$RUNREL"
 run_e2e
 ret_is "missing artifacts block the rerun" 1
 grep_ok "full run FAIL line" "$STATE/screen.txt" "FAIL full run artifacts missing - rerun this file"
-grep_ok "help block" "$STATE/screen.txt" "##"
+grep_ok "failure verdict" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible)"
 grep_ok "FAIL fed" "$STATE/feed.log" "setup: FAIL checks"
 # Recovery: delete the marker, the step redoes the run.
 rm -f "$FAKE_HOME/magpie/.setup-fullrun-ok"
 run_e2e
 ret_is "heals after marker removal" 0
-grep_ok "SKIP line again" "$STATE/screen.txt" "SKIP full run (starts at the end of this setup)"
+grep_no "no full run line before the fresh run" "$STATE/screen.txt" "SKIP full run"
+grep_ok "verdict after healing" "$STATE/screen.txt" \
+  "SETUP COMPLETE - MAgPIE is installed, checked and working"
 file_ok "marker rewritten" "$FAKE_HOME/magpie/.setup-fullrun-ok"
 RUNREL=$(sed -n 1p "$FAKE_HOME/magpie/.setup-fullrun-ok")
 file_ok "new run folder complete" "$FAKE_HOME/magpie/$RUNREL/report.mif"
 
 # ============================================================
-sec "E2E reproducible failure -> pass 2 -> help block"
+sec "E2E reproducible failure -> pass 2 -> failure verdict"
 # ============================================================
 new_env
 run_e2e STUB_BAD_ARCHIVE=1
 ret_is "corrupt download blocks" 1
 S="$STATE/screen.txt"
-grep_ok "help block" "$S" "##"
-grep_ok "failed step named" "$S" "FAILED STEP (twice, reproducible): opencode install"
+grep_ok "failure verdict" "$S" "SETUP FAILED (twice, reproducible)"
+grep_ok "failed step named" "$S" "SETUP FAILED (twice, reproducible): opencode install"
 grep_no "no wifi hint text" "$S" "Wi-Fi"
-grep_no "no hint lines in help block" "$S" "run this file again"
-grep_ok "code name in help block" "$S" "code name:"
+grep_no "no hint lines in verdict" "$S" "run this file again"
+grep_ok "code name in verdict" "$S" "code name:"
 cnt_is "retry heads-up once per pass" "retrying automatically" "$S" 1
 cnt_is "failing step logged in both passes" "step failed after retries" "$FAKE_HOME/magpie/setup-log.txt" 2
 grep_ok "FAIL line on the feed" "$STATE/feed.log" "setup: FAIL opencode install"
@@ -2510,7 +2582,7 @@ grep_ok "retry pass 2 announced on feed" "$STATE/feed.log" "setup: retry pass 2 
 grep_no "run not finished" "$STATE/feed.log" "run finished"
 nofile_ok "no lock left behind" "$FAKE_HOME/magpie/.setup.lock"
 ls "$FAKE_HOME/magpie" | grep -q '^setup-dl-' && no "crash leaves no setup-dl-*" || ok "crash leaves no setup-dl-*"
-file_ok "help file saved" "$FAKE_HOME/magpie/setup-help.txt"
+nofile_ok "no help file written" "$FAKE_HOME/magpie/setup-help.txt"
 new_env
 run_e2e STUB_CURL_DL_FAILS=1
 ret_is "transient download failure heals" 0
@@ -2594,12 +2666,27 @@ awk 'BEGIN{
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_fail "cap step"' run_fn
 ret_is "capped fail exits 1" 1
 grep_ok "FAIL header keeps step" "$STATE/feed.log" "vunknown | setup: FAIL cap step"
-grep_ok "beginner prompt in feed" "$STATE/feed.log" "I am a beginner setting up MAgPIE"
+grep_ok "code name in the posted detail" "$STATE/feed.log" "code name: T1"
 grep_ok "FAILED STEP line in feed" "$STATE/feed.log" "FAILED STEP (twice, reproducible): cap step"
 grep_ok "log tail start survives cap" "$STATE/feed.log" "TAILKEEP"
 grep_no "deep tail cut by cap" "$STATE/feed.log" "TAILCUT"
-grep_ok "screen block uncapped" "$STATE/screen.txt" "TAILCUT"
-grep_ok "help file still saved" "$FAKE_HOME/magpie/setup-help.txt" "TAILCUT"
+grep_ok "screen names the step" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): cap step"
+grep_ok "screen points at the log" "$STATE/screen.txt" "everything else: "
+nofile_ok "no help file written" "$FAKE_HOME/magpie/setup-help.txt"
+
+# No feed at all (teacher left STATUS_URL empty, or no curl): nothing can
+# be uploaded, so the log tail must reach the screen instead of only the
+# feed pointer line. STATUS_URL is a source-time constant, so FN_BODY
+# clears it after sourcing.
+new_env
+mkdir -p "$FAKE_HOME/magpie"
+printf '[2026-11-17 00:00:00] the real error line\n' > "$FAKE_HOME/magpie/setup-log.txt"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; STATUS_URL=; magpie_fail "offline step"' run_fn
+ret_is "offline fail exits 1" 1
+grep_ok "log tail on screen without a feed" "$STATE/screen.txt" \
+  "--- last 25 log lines ---"
+grep_ok "the error line itself on screen" "$STATE/screen.txt" "the real error line"
+nofile_ok "no upload attempted without a feed" "$STATE/curl.log"
 
 # Crash reporting from the EXIT trap.
 new_env

@@ -72,7 +72,10 @@ magpie_sys_string() {
   fi
 }
 
-# Final verdict: help block to fd 4 + saved file + exit 1.
+# Final verdict: one screen verdict + exit 1. This script has no feed, so
+# the screen has to carry what the setup script uploads: the step, its
+# hint, the system string and the log's last line (the rest stays in the
+# file). No AI help block, no ~/magpie/setup-help.txt.
 # $1 step text, $2 hint (landlock|clt|wifi|sudo|"").
 magpie_fail() {
   step=$1
@@ -92,33 +95,20 @@ magpie_fail() {
       hint_line="The password you typed was never accepted. Use your own login/administrator password, then run this file again."
       ;;
   esac
-  tmp=$(mktemp 2>/dev/null) || tmp="/tmp/magpie-help.$$"
-  {
-    printf 'I am a beginner setting up MAgPIE. Fix the FAIL line below.\n'
-    printf 'Tell me exactly what to type in the terminal, one command at a time.\n'
-    printf 'System: %s | %s\n' \
-      "$(magpie_sys_string)" "$(uname -m)"
-    printf 'FAILED STEP (twice, reproducible): %s | %s\n' \
-      "$step" "$(tail -n 1 "$HOME/magpie/setup-log.txt" 2>/dev/null)"
-    printf -- '--- last 25 log lines ---\n'
-    tail -n 25 "$HOME/magpie/setup-log.txt" 2>/dev/null
-    if [ -n "$hint_line" ]; then
-      printf '%s\n' "$hint_line"
-    fi
-  } > "$tmp" 2>/dev/null
-  cp "$tmp" "$HOME/magpie/setup-help.txt" 2>/dev/null || true
+  logfile="$HOME/magpie/setup-log.txt"
   magpie_say ""
-  magpie_say "===== NEED HELP? Select EVERYTHING between the ## lines below and"
-  magpie_say "paste it into opencode or any AI chat - or open the file $HOME/magpie/setup-help.txt ====="
-  magpie_say "##"
-  cat "$tmp" >&4 2>/dev/null
-  magpie_say "##"
-  rm -f "$tmp"
+  magpie_say "SETUP FAILED (twice, reproducible): $step"
+  if [ -n "$hint_line" ]; then
+    magpie_say "  $hint_line"
+  fi
+  magpie_say "  system: $(magpie_sys_string) | $(uname -m)"
+  magpie_say "  last log line: $(tail -n 1 "$logfile" 2>/dev/null)"
+  magpie_say "  everything else: $logfile"
   exit 1
 }
 
 # Step still failing after retries: pass 1 -> one retry pass in a fresh
-# process; pass 2 -> help block. Never a third pass.
+# process; pass 2 -> the failure verdict. Never a third pass.
 magpie_step_failed() {
   step=$1
   hint=${2:-}
@@ -695,6 +685,9 @@ magpie_clone_magpie() {
   # shellcheck disable=SC2045  # ls -A: own-file allowlist check includes dotfiles.
   for entry in $(ls -A "$HOME/magpie" 2>/dev/null); do
     case $entry in
+      # setup-help.txt: copies distributed before the AI help block was
+      # removed may have left it there - a stray file must never block
+      # the clone of an otherwise clean folder.
       .git|setup-log.txt|setup-help.txt|.setup-finished|.setup.lock| \
       .keepalive.pid|opencode-dl.tgz|opencode-extract|nono-dl.tar.gz| \
       nono-extract) ;;
@@ -747,6 +740,9 @@ magpie_launch() {
     export PATH="$HOME/.nono/bin:$PATH"
   fi
   cd "$HOME/magpie" || magpie_fail "cannot enter $HOME/magpie"
+  # Both paths end here (fast path and a fresh install): one line that
+  # says the machine is ready, before opencode takes over the terminal.
+  magpie_say "OK: setup complete - starting opencode in $HOME/magpie"
   start=$(date +%s)
   nono run --profile nolabs-ai/opencode --allow-cwd -- opencode >&4 2>&4
   code=$?

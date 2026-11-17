@@ -363,7 +363,7 @@ sec "placeholder pin guard"
 new_env
 FN_BODY='OPENCODE_SHA256_DARWIN_X64=TBD; magpie_require_pins' run_fn
 ret_is "pins TBD aborts" 1
-grep_ok "help block shown" "$STATE/screen.txt" "script incomplete: pinned versions/checksums missing"
+grep_ok "failure verdict shown" "$STATE/screen.txt" "script incomplete: pinned versions/checksums missing"
 nofile_ok "no lock created" "$FAKE_HOME/magpie/.setup.lock"
 
 # ============================================================
@@ -435,11 +435,11 @@ new_env
 FN_BODY='magpie_sudo_warm' run_fn STUB_SUDO_N_OK=0 STUB_SUDO_V_FAILS=4
 ret_is "sudo succeeds after 4 bad tries" 0
 cnt_is "retry line 4x" "Password not accepted" "$STATE/screen.txt" 4
-grep_no "no help block" "$STATE/screen.txt" "##"
+grep_no "no failure verdict" "$STATE/screen.txt" "SETUP FAILED"
 new_env
 FN_BODY='magpie_sudo_warm' run_fn STUB_SUDO_N_OK=0 STUB_SUDO_V_FAILS=99
 ret_is "sudo cap blocks" 1
-grep_ok "help block at cap" "$STATE/screen.txt" "##"
+grep_ok "failure verdict at cap" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible)"
 cnt_is "6 rounds" "Password not accepted" "$STATE/screen.txt" 6
 new_env
 FN_BODY='magpie_sudo_warm' run_fn STUB_SUDO_N_OK=1
@@ -593,10 +593,11 @@ grep_ok "opencode OK line" "$S" "OK: opencode 9.9.9 installed"
 grep_ok "nono OK line" "$S" "OK: nono 9.9.9 installed"
 grep_ok "profile OK line" "$S" "OK: nono profile opencode pulled"
 grep_ok "clone OK line" "$S" "OK: magpie cloned"
+grep_ok "launch verdict line" "$S" "OK: setup complete - starting opencode"
 grep_ok "PATH note opencode" "$S" "Added opencode to PATH"
 cnt_is "exactly 4 heads-ups" "installing" "$S" 4
 grep_no "apt skipped no heads-up" "$S" "apt update"
-grep_no "no help block" "$S" "##"
+grep_no "no failure verdict" "$S" "SETUP FAILED"
 file_ok "marker written" "$FAKE_HOME/magpie/.setup-finished"
 grep_ok "marker has versions" "$FAKE_HOME/magpie/.setup-finished" "nono-stub 9.9.9"
 file_ok "opencode installed exec" "$FAKE_HOME/.opencode/bin/opencode"
@@ -622,6 +623,8 @@ run_e2e
 ret_is "second run exits 0" 0
 cnt_is "no heads-ups on fast path" "installing" "$STATE/screen.txt" 0
 grep_ok "fast path logged" "$FAKE_HOME/magpie/setup-log.txt" "fast path: essentials found"
+# The fast path is otherwise silent until opencode's UI appears.
+grep_ok "fast path says ready" "$STATE/screen.txt" "OK: setup complete - starting opencode"
 grep_ok "launch called again" "$STATE/launch.txt" "launch#2"
 # Fast path (no pidfile, apt skipped) must never touch sudo at all.
 nofile_ok "fast path touches no sudo" "$STATE/sudo.log"
@@ -639,16 +642,18 @@ new_env
 run_e2e STUB_BAD_ARCHIVE=1
 ret_is "corrupt download blocks" 1
 S="$STATE/screen.txt"
-grep_ok "help block" "$S" "##"
-grep_ok "failed step named" "$S" "FAILED STEP (twice, reproducible): opencode install"
+grep_ok "failure verdict" "$S" "SETUP FAILED (twice, reproducible)"
+grep_ok "failed step named" "$S" "SETUP FAILED (twice, reproducible): opencode install"
 grep_ok "wifi hint" "$S" "Wi-Fi"
-grep_no "no code name in help block" "$S" "code name"
+grep_ok "system string in verdict" "$S" "system: "
+grep_ok "verdict points at the log" "$S" "everything else: "
+grep_no "no code name in verdict" "$S" "code name"
 cnt_is "retry heads-up once per pass" "retrying automatically" "$S" 1
 cnt_is "failing step logged in both passes" "step failed after retries" "$FAKE_HOME/magpie/setup-log.txt" 2
 n=$(cat "$STATE/dl_count_cli-$OC_TARGET-9.9.9.tgz" 2>/dev/null || echo 0)
 [ "$n" = 6 ] && ok "6 download attempts (3+3 over 2 passes)" || no "download attempts: $n"
 nofile_ok "no marker on failure" "$FAKE_HOME/magpie/.setup-finished"
-grep_ok "help file saved" "$FAKE_HOME/magpie/setup-help.txt" "FAILED STEP"
+nofile_ok "no help file written" "$FAKE_HOME/magpie/setup-help.txt"
 
 # transient download failure passes silently
 new_env
@@ -691,7 +696,7 @@ new_env
 make_installed
 run_e2e STUB_NONO_LAUNCH_FAILS=99
 ret_is "second quick-fail blocks" 1
-grep_ok "help block after repair" "$STATE/screen.txt" "##"
+grep_ok "failure verdict after repair" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible)"
 cnt_is "exactly two launches total" "launch#" "$STATE/launch.txt" 2
 
 new_env
@@ -709,7 +714,7 @@ make_installed
 rm -f "$FAKE_HOME/magpie/.setup-finished"
 run_e2e MAGPIE_FORCE_SETUP=1 STUB_NONO_SMOKE_EXIT=1
 ret_is "smoke failure blocks" 1
-grep_ok "step named" "$STATE/screen.txt" "FAILED STEP (twice, reproducible): sandbox smoke"
+grep_ok "step named" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): sandbox smoke"
 grep_ok "landlock hint on linux" "$STATE/screen.txt" "wsl --update"
 nofile_ok "marker not written" "$FAKE_HOME/magpie/.setup-finished"
 new_env
@@ -733,6 +738,9 @@ new_env
 make_installed
 rm -rf "$FAKE_HOME/magpie/.git"
 echo "log" > "$FAKE_HOME/magpie/setup-log.txt"
+# Legacy leftover: the file is not written any more, but its name must
+# stay in the clone guard's allowlist so an old distributed copy (where
+# the AI help block saved it) never blocks a clone.
 echo "help" > "$FAKE_HOME/magpie/setup-help.txt"
 run_e2e MAGPIE_FORCE_SETUP=1
 ret_is "own files only -> clone proceeds" 0
@@ -815,13 +823,13 @@ file_ok "marker written after pass 2" "$FAKE_HOME/magpie/.setup-finished"
 new_env
 FN_BODY='MAGPIE_PASS=2 magpie_step_failed teststep' run_fn
 ret_is "pass 2 failure blocks" 1
-grep_ok "help block after pass 2" "$STATE/screen.txt" "##"
+grep_ok "failure verdict after pass 2" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible)"
 
 new_env
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; magpie_install_nono' run_fn STUB_BAD_NONO=1
 ret_is "persistent nono fail blocks after 2 passes" 1
-grep_ok "nono step named in help" "$STATE/screen.txt" \
-  "FAILED STEP (twice, reproducible): nono install"
+grep_ok "nono step named in verdict" "$STATE/screen.txt" \
+  "SETUP FAILED (twice, reproducible): nono install"
 cnt_is "two failing passes only" "step failed after retries" "$FAKE_HOME/magpie/setup-log.txt" 2
 
 # ============================================================

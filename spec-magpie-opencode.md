@@ -21,8 +21,10 @@ pandoc, renv, sandbox self-check gate.
 Works on macOS (Apple Silicon and Intel) and WSL Ubuntu. No Homebrew -
 Homebrew 5 refuses Intel Macs, which broke one student.
 
-Support model: the student pastes the `##` help block into an LLM. No
-course status feed, no code name - nothing is uploaded anywhere.
+Support model: the student reads the failure verdict aloud (or
+screenshots it) to the TA - step, system, last log line and the path of
+`~/magpie/setup-log.txt`, which holds the rest. No course status feed,
+no code name - nothing is uploaded anywhere.
 
 ## 2. Design decisions
 
@@ -44,7 +46,7 @@ course status feed, no code name - nothing is uploaded anywhere.
 - Mistyped password = ask again, in a loop; never an error block.
 - Errors are only reported when reproducible: every failing step first
   gets in-run retries, then a second full pass in a fresh process. Only a
-  failure that repeats in pass 2 prints the `##` help block. Exit on the
+  failure that repeats in pass 2 prints the failure verdict. Exit on the
   first reproducible error.
 - opencode opens as a CHILD process, not an exec: the script survives the
   session, can tell "student closed opencode" from "sandbox never came
@@ -55,7 +57,7 @@ course status feed, no code name - nothing is uploaded anywhere.
 - Users do not read terminal output. The full run goes to a log file.
   Only these ever reach the screen: `[HH:MM:SS]` heads-up lines before
   slow steps, `OK:` lines (tool installed + in PATH), the password-retry
-  and auto-retry lines, and the `##` help block.
+  and auto-retry lines, and the failure verdict.
 - Resilience extras: disk guard (< 4 GB free = abort with cleanup hint),
   setup-path lock so two windows cannot install at once, `INT`/`TERM`
   traps so Ctrl+C always reaps the keep-alive loop of the owner -
@@ -71,7 +73,7 @@ course status feed, no code name - nothing is uploaded anywhere.
   substitution). All paths absolute via `$HOME`; the starting directory
   never matters.
 - No course-support extras: the course status feed and the animal code
-  name are gone. Nothing is uploaded; the `##` help block is the only
+  name are gone. Nothing is uploaded; the failure verdict is the only
   support channel.
 - HU LLM service is preselected by `"model": "hu/llm3"` in the opencode
   config. It cannot be tested off HU network - not part of any check.
@@ -111,10 +113,10 @@ entry; `say()` writes to fd 4.
 
 Order of operations:
 
-1. `mkdir -p ~/magpie`. On failure: the help block on fd 4 only (the
+1. `mkdir -p ~/magpie`. On failure: the failure verdict on fd 4 only (the
    file save is impossible here) - nothing else can work.
 2. Detect OS (`uname`): `Darwin` -> mac branch, `Linux` -> ubuntu branch.
-   Anything else: help block, exit.
+   Anything else: failure verdict, exit.
 3. `export HU_API_KEY="${HU_API_KEY:-required-but-not-used}"` - needed by
    BOTH paths (opencode requires the variable to exist; the value is
    unused, nono does not route HU - the endpoint needs no real credential).
@@ -125,7 +127,7 @@ Order of operations:
    present after a quick-fail, so honoring it here would relaunch the
    broken sandbox and never run the repair (6.11).
 5. Setup path starts: placeholder-pin guard (4). Then disk check: free
-   GB via `df -Pk ~/magpie`, below 4 the help block aborts with the
+   GB via `df -Pk ~/magpie`, below 4 the failure verdict aborts with the
    per-OS hint ("free space in WINDOWS (C: drive)" / "empty the Trash
    and delete big files"). Then take the lock (below) - only after it is
    held: steps. sudo is asked inside the apt/CLT step bodies only, when
@@ -221,7 +223,7 @@ path (escape hatch for the TA).
   nothing shows.
 - `sudo -v` in a loop: sudo itself offers three blind tries. If it gives
   up, print "Password not accepted - try again" (fd 4), `sleep 2`, run
-  `sudo -v` again. Cap 6 rounds; then help block.
+  `sudo -v` again. Cap 6 rounds; then the failure verdict.
 - Keep-alive: started only when a sudo ask happened. Background loop
   `sudo -n true` every 60 s, self-exit after 90 iterations. Writes its
   pid to `~/magpie/.keepalive.pid`; before spawning, a live pid is
@@ -379,7 +381,9 @@ header block (`NONO_PACK_VERSION`) like the binaries:
   guard below fires. If HEAD does not resolve (interrupted fetch left
   `.git` without a checkout), the clone body re-runs and heals.
 - "Foreign content" guard: if `~/magpie` holds entries OTHER than this
-  script's own files (`.git/`, `setup-log.txt`, `setup-help.txt`,
+  script's own files (`.git/`, `setup-log.txt`, `setup-help.txt` (not
+  written any more - allowed to stand so an older distributed copy never
+  blocks a clone),
   `.setup-finished`, `.setup.lock/`, `.keepalive.pid`, and the install
   leftovers `opencode-dl.tgz`, `opencode-extract/`, `nono-dl.tar.gz`,
   `nono-extract/`), error block
@@ -438,7 +442,10 @@ outcome:
    PATH: the setup path already exported them (6.6); the fast path
    exports the two dirs it resolved - without this, a session that
    never sourced its rc file would find the tools in the checks but
-   fail to launch them by name.
+   fail to launch them by name. One screen line right before the
+   launch - `OK: setup complete - starting opencode in ~/magpie` - on
+   BOTH paths: the fast path is otherwise silent until opencode's own
+   UI appears, so a student cannot tell "ready" from "hanging".
 2. Launch with explicit fds: `nono run --profile nolabs-ai/opencode
    --allow-cwd -- opencode >&4 2>&4` (stdin is already the real
    terminal; `main`'s own
@@ -459,9 +466,9 @@ outcome:
    no sudo is asked (6.2) - the repair is force-re-pull + config rewrite
    + smoke test; the smoke test (6.10) re-verifies; then launch again.
    - `MAGPIE_REPAIR=1` never re-repairs: a second quick-fail is proven
-     reproducible -> help block, exit 1. `MAGPIE_PASS=2` means any setup
-     failure inside the repair goes straight to its retries and the help
-     block - the script never runs a third pass.
+     reproducible -> failure verdict, exit 1. `MAGPIE_PASS=2` means any setup
+     failure inside the repair goes straight to its retries and the
+     failure verdict - the script never runs a third pass.
    - Known false trigger: the student quits opencode within 15 s with a
      non-zero exit. Cost: one repair round (profile re-pull + smoke,
      ~1 min), then opencode opens again. Accepted.
@@ -511,27 +518,27 @@ When a step still fails after 7.2:
    appends.
 5. `MAGPIE_PASS=2` is never re-passed: pass 2 is the final verdict. A
    failure there (same step = proven reproducible; different step = it
-   got its own 7.2 retries first) prints the help block and exits 1.
+   got its own 7.2 retries first) prints the failure verdict and exits 1.
    Worst-case budget before a report: ~5 minutes.
 
-### 7.4 Help block (only output on failure)
+### 7.4 Failure verdict (only output on failure)
 
-Printed to fd 4 and saved to `~/magpie/setup-help.txt`, in the `##`
-copy-paste frame used by the full scripts (their code-name field is
-dropped):
+Screen only (fd 4): no file, no feed, no copy-paste frame, no LLM
+prompt (the full scripts dropped that flow, and this script never had a
+feed to carry a block anyway):
 
 ```
-I am a beginner setting up MAgPIE. Fix the FAIL line below.
-Tell me exactly what to type in the terminal, one command at a time.
-System: <PRETTY_NAME or sw_vers> | <arch>
-FAILED STEP (twice, reproducible): <step> | <last error line>
---- last 25 log lines ---
+SETUP FAILED (twice, reproducible): <step>
+  <hint line, when the step passed a hint>
+  system: <PRETTY_NAME or sw_vers> | <arch>
+  last log line: <last line of ~/magpie/setup-log.txt>
+  everything else: ~/magpie/setup-log.txt
 ```
 
 The marker is not written, so the next run starts on the setup path
 again - rerunning remains the universal fix.
 
-The block ends with one hint when it fits the failure:
+The hint is a line of the verdict when it fits the failure:
 
 - Linux + `sandbox smoke` failed: "If the error mentions Landlock:
   close Ubuntu, open Windows PowerShell, run `wsl --update`, wait for
@@ -546,7 +553,7 @@ The block ends with one hint when it fits the failure:
 ### 7.5 sudo failures
 
 Not part of the retry machinery. sudo's own 3 tries, then the "try
-again" line, loop cap 6, then the help block (reason:
+again" line, loop cap 6, then the failure verdict (reason:
 "password was never accepted").
 
 ## 8. Verification plan
@@ -569,14 +576,14 @@ tar/nono/opencode`), like the existing
   mismatch.
 - retry helper: transient failure (2 fails then 0) passes silently;
   persistent failure (3 fails) triggers pass 2; pass 2 failure prints
-  the help block and exits 1; `MAGPIE_PASS` never reaches 3.
+  the failure verdict and exits 1; `MAGPIE_PASS` never reaches 3.
 - keep-alive: loop spawned once; detected through the pidfile on pass 2;
   killed on the OWNER's exit AND before launch (the stub `nono run`
   records whether the pidfile was still alive at the launch instant);
   a non-owner exit ("already running", no lock ever taken) leaves the
   loop and its pidfile untouched.
 - sudo loop: stubbed `sudo -v` failing N times then succeeding - loop
-  must not print the help block for N < cap; help block at cap.
+  must not print the failure verdict for N < cap; failure verdict at cap.
 - sudo timing: day-one setup with git+curl present -> ZERO sudo
   invocations (no upfront ask, no prompt); the apt/CLT bodies keep the
   warm-up loop for the machines that need them.
@@ -588,14 +595,14 @@ tar/nono/opencode`), like the existing
   (final launch uses a stub `nono` that records its PATH); an rc whose
   last line has no final newline gets the new PATH line on its own
   line (no merge).
-- smoke test: stub `nono run` exits 1 -> retries, pass 2, help block, and
+- smoke test: stub `nono run` exits 1 -> retries, pass 2, failure verdict, and
   the marker is NOT written; exits 0 -> marker written.
 - launch quick-fail: stub `nono run` exits non-zero in <15 s -> exactly
   one repair run (`MAGPIE_REPAIR=1 MAGPIE_PASS=2`), then relaunch; the
   repair must actually run the steps - assert `nono pull --force` and
   the config force-write happened, and that the repair proceeds despite
   the lock/keep-alive already being owned (self-pid re-adoption after
-  exec, and in-process); quick-fail inside repair -> help block, no
+  exec, and in-process); quick-fail inside repair -> failure verdict, no
   third attempt. Stub exits 0, or exits non-zero after >=15 s -> quiet
   exit 0, no repair.
 - config: identical skip; foreign file -> `.bak` + write; in repair
@@ -606,7 +613,7 @@ tar/nono/opencode`), like the existing
   half-created branch must succeed (idempotent sub-steps); dir holding
   only the script's own files (incl. install leftovers) -> proceeds;
   dir with one foreign file -> error block.
-- disk: stubbed `df` below 4 GB -> help block, no install attempt;
+- disk: stubbed `df` below 4 GB -> failure verdict, no install attempt;
   above -> untouched.
 - lock: live second instance -> single heads-up line, exit 0,
   no installs; stale lock (dead pid) -> reclaimed silently;
@@ -614,11 +621,12 @@ tar/nono/opencode`), like the existing
   setup continues (must NOT exit with "already running").
 - traps: SIGINT mid-setup (lock held = owner) -> EXIT trap ran ->
   keep-alive pid gone (`kill -0` fails), lock dir removed.
-- pinned block: placeholder value present -> instant help block,
+- pinned block: placeholder value present -> instant failure verdict,
   nothing else runs; all filled -> no message.
 - heads-up lines: printed exactly once per step that RUNS, zero for
   skipped steps (count equals executed steps).
-- magpie dir: log + marker + help files all land under `~/magpie`.
+- magpie dir: log + marker land under `~/magpie` (no help file any
+  more - the verdict names the log instead of writing a copy).
 
 Live tests (must): WSL Ubuntu end to end; Intel Mac + Apple Silicon Mac
 each once (CLT unattended install, Gatekeeper behavior of the curl'd
@@ -636,5 +644,6 @@ binaries, zsh rc). HU provider answer: one machine on HU network.
 2. Run the live tests in 8.
 
 Day-one expectation on screen, for projecting: heads-up lines per real
-step, `OK:` lines (a password prompt only if apt/CLT must run), then
+step, `OK:` lines (a password prompt only if apt/CLT must run), one
+`OK: setup complete - starting opencode in ~/magpie`, then
 opencode opens inside `~/magpie` with the HU model selected.

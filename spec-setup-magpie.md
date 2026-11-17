@@ -1,8 +1,8 @@
 # setup-magpie.sh - spec (unified day-one course setup)
 
 Status: implemented in setup-magpie.sh (tests: tests/test-setup-magpie.sh,
-616 assertions (617 when shellcheck is present), all green on a Linux
-x86_64 dev host). Date: 2026-11-14.
+715 assertions (716 when shellcheck is present), all green on a Linux
+x86_64 dev host). Date: 2026-11-17.
 
 ## 1. Purpose
 
@@ -21,10 +21,11 @@ error model, the same file layout under `~/magpie`. `magpie-opencode.sh`
 stays the daily launcher; the two scripts never clash (see 2).
 
 Support model as in the old course scripts, new transport: students post
-their progress and every help block to a PIK Nextcloud upload-only
-folder (see 9), where the teacher reads them under each machine's animal
-code name; the `##` help block feeds the students' LLM, students
-self-heal.
+their progress and every failure (step text + capped log tail) to a PIK
+Nextcloud upload-only folder (see 9), where the teacher reads them under
+each machine's animal code name. There is no AI help block any more: on
+failure the screen names the step, the code name and the path of
+`setup-log.txt`, and that is what the student sends the TA.
 
 ## 2. Design decisions
 
@@ -40,9 +41,12 @@ self-heal.
   internal per-machine id (feed posts and the username replacement),
   reported in `magpie_greet`; there is no interactive prompt.
 - All state lives under `~/magpie` with EXACTLY the file names
-  `magpie-opencode.sh` expects (`setup-log.txt`, `setup-help.txt`,
-  `.setup.lock/`, `.keepalive.pid`, `opencode-dl.tgz`,
+  `magpie-opencode.sh` expects (`setup-log.txt`, `.setup.lock/`,
+  `.keepalive.pid`, `opencode-dl.tgz`,
   `opencode-extract/`, `nono-dl.tar.gz`, `nono-extract/`).
+  `setup-help.txt` is NOT written any more (the AI help block is gone);
+  the clone guard still allows the name to stand, so a folder left by an
+  older distributed copy never blocks a clone.
   `.setup-finished` is `magpie-opencode.sh`'s finish marker ONLY -
   this script never writes it, so running both scripts side by side
   stays consistent. `.setup-fullrun-ok` (full-run marker, holds the
@@ -71,14 +75,15 @@ self-heal.
 - The run ends with: unsandboxed checks -> all PASS: sandbox gate
   (`nono run --profile magpie-profile -- ... bash <thisfile>
   --check-only`) -> full default run inside the same sandbox (see 6.10)
-  -> next steps -> feed "run finished" -> exit 0.
+  -> the SETUP COMPLETE verdict (screen + log) -> feed "run finished" ->
+  exit 0.
   Any FAIL (step-level, check, or gate): feed the FAIL line(s), print
-  the help block, exit 1.
+  the failure verdict (step, code name, log path), exit 1.
 - The full default run (about 40 min on the students' machines) is part
   of the exit-0 guarantee. Escape hatch: env `MAGPIE_FULL_RUN=0` skips
   it (screen + feed note, checks line SKIP, no marker - setup still
   exits 0). The run gets ONE attempt: no step retries, no second pass;
-  any failure goes straight to the help block, exit 1 - the next
+  any failure goes straight to the failure verdict, exit 1 - the next
   manual rerun redoes it (the marker stays unwritten until verified).
 - Deterministic data folders: `MADRAT_MAINFOLDER=$HOME/.madrat`
   (madrat mainfolder, cache lives under it) and
@@ -103,7 +108,8 @@ self-heal.
   injected by nono).
 - magpie is cloned by this script (`git init` + remote + `ls-remote` +
   fetch + `checkout -B`, the non-empty-directory-safe pattern from
-  `magpie-opencode.sh`), so the "next steps" no longer include cloning.
+  `magpie-opencode.sh`), so students never clone anything by hand (and
+  the run needs no to-do list at the end).
 
 ## 3. Files
 
@@ -187,7 +193,7 @@ cache folders + rc lines -> OS tool steps -> TinyTeX + tex PATH -> GAMS
 install + PATH -> licence -> stop keep-alive + `sudo -k` -> nono pack
 pull/pin -> `magpie-profile` build -> magpie clone -> renv library
 restore (6.9) -> checks -> (green: sandbox gate, full default run
-(6.10), next steps, feed "run finished", exit 0). Every slow step that
+(6.10), the SETUP COMPLETE verdict, feed "run finished", exit 0). Every slow step that
 RUNS gets one `[HH:MM:SS] - installing ...` heads-up; installs print
 `OK:` lines. Screen lines stay student-readable: tool internals (rc
 PATH edits, licence file paths, nono profile/pack mechanics, the 9P
@@ -284,7 +290,7 @@ without a new terminal.
 
 Pinned download per OS/arch (see 4). Linux: self-extractor run inside
 `~/gams` with the sha256 RE-checked right before the exe runs; x86_64
-only (ARM-WRL = clean feed-reported help block, by design). No
+only (ARM-WRL = clean feed-reported failure verdict, by design). No
 gamsinst. macOS: `sudo installer -pkg`. GAMS PATH registered via
 `magpie_rc_add_path`. `magpie_gams_sysdir()` locates the GAMS SYSTEM folder -
 the binary's home and where GAMS reads `gamslice.txt`: Linux prefers
@@ -383,9 +389,12 @@ cache fills on renv restores.
 The folders are created by `magpie_register_caches` before any
 sandboxed child runs (write rules need existing paths). `nono profile
 validate` must pass before install; on failure nono's message goes to
-the setup log and the rejected candidate stays at
-`~/magpie/setup-help-profile.json` (a bare "failed validation" would
-leave the help block blind). An existing file: identical - kept;
+the setup log, followed by the rejected candidate as ONE extra log line
+(`tr '\n' ' '`) - a bare "failed validation" would leave whoever reads
+the feed blind, and the candidate must not be 60 lines: the failure post
+carries the last 25 log lines, and a multi-line dump would push the real
+diagnostics out of that tail. Nothing is written to a side file.
+An existing file: identical - kept;
 different but carrying the `MAgPIE course` description marker - stale
 output of an older script version: replaced, old copy kept as `.bak`;
 different WITHOUT the marker (hand-made or edited): kept untouched
@@ -437,7 +446,8 @@ reaches the screen - the parent has already printed the check block,
 so a tee would only duplicate it (and the second sandbox greet) for
 the student. On a green gate the parent prints one screen line
 "OK: sandbox check passed"; a failing gate goes through the retry +
-pass-2 model, whose help block carries the results + log tail.
+pass-2 model, whose failure verdict posts the results + log tail to the
+feed.
 The child: greet + checks only, feed label "sandbox check result",
 exit code = checks result, no lock/sudo/log-file/installs -
 recursion-proof.
@@ -480,7 +490,7 @@ run-folder renv restores (6.10) only copy from the cache.
 
 ### 6.10 full default run (sandboxed)
 
-Runs after the gate, before the next steps. `MAGPIE_FULL_RUN=0`:
+Runs after the gate, before the verdict. `MAGPIE_FULL_RUN=0`:
 screen + feed note, return 0, no marker. Skip when the marker
 `~/magpie/.setup-fullrun-ok` (contains the run folder path relative to
 `~/magpie`, e.g. `output/default_...`) points at a folder that still
@@ -534,15 +544,22 @@ clean).
   checksum mismatch = delete + retry.
 - Step retry 3x (10 s / 30 s waits), then pass 2 in a fresh process
   (`MAGPIE_PASS=2 exec bash <self>`; lock self-re-adoption, warm sudo
-  timestamp survives). Pass 2 failure = the `##` help block, exit 1.
+  timestamp survives). Pass 2 failure = the failure verdict, exit 1.
   Never a third pass.
-- `magpie_fail` additionally feeds `setup: FAIL <step>` before exiting.
-  The help block = beginner prompt lines + `System: <sys> | <arch> |
+- `magpie_fail` additionally feeds `setup: FAIL <step>` + the detail
+  block (capped at 3200 B) before exiting, so the teacher reads a log
+  tail, not just the step name. The detail = `System: <sys> | <arch> |
   code name: <handle>` + (`FAILED STEP (twice, reproducible): <step>`
   for step failures, the results list for check failures) + last 25 log
-  lines. No fix hints: the student pastes the block into an AI chat and
-  fixes it with LLM help. Saved to `~/magpie/setup-help.txt`, framed
-  between `##` lines.
+  lines. On screen, instead: `SETUP FAILED (twice, reproducible):
+  <step>`, the check results (check failures only), `  your code name:
+  <handle> - tell the TA this`, `  everything else:
+  ~/magpie/setup-log.txt`. No AI prompt, no `##` frame, no
+  `~/magpie/setup-help.txt` - the code name plus the log file are what
+  the student hands the TA. Fix hints stay inside the step text itself
+  (that is where the Ubuntu/WSL hint already lives). Without a feed
+  (`STATUS_URL` empty or no curl - nothing can be uploaded) the last 25
+  log lines go to the screen instead of the feed pointer line.
 - sudo: blind retry loop, cap 6, keep-alive only after a real prompt:
   `sudo -n true` every 60 s, cap 720 ticks (12 h), self-exit once the
   owner process is gone - the loop watches `$$`, captured BEFORE the
@@ -571,19 +588,31 @@ legacy wordings) PASSes; else FAIL - licence file missing),
 `Rscript --vanilla`: the pure version test must not depend on the
 project `.Rprofile`/renv - the gate child runs checks from `~/magpie`
 where a not-yet-bootstrapped renv would otherwise fail the probe),
-`pandoc`, `tex`, the `renv` library check (lucode2+gms via a
-`cd ~/magpie` subshell) ONLY when `~/magpie/renv.lock` exists -
-otherwise the line reads SKIP, and the `full run` line:
-`MAGPIE_FULL_RUN=0` -> SKIP (skipped via MAGPIE_FULL_RUN=0); no
-marker -> SKIP "starts at the end of this setup" (first runs must not
-FAIL here - the step enforces completion); marker present -> run
-folder + artifacts verified: PASS, else FAIL "full run artifacts
-missing - rerun this file" (delete the marker and rerun to have the
-step redo the run). The full run line is cheap and read-only (marker
+`pandoc`, `tex`, the R library check (lucode2+gms via a
+`cd ~/magpie` subshell - the load test is what `start.R` needs): with
+`~/magpie/renv.lock` it always runs (`PASS renv R library` / FAIL
+"renv R library incomplete ... renv::restore()"); WITHOUT a lockfile -
+every course machine, because `start.R` snapshots into the RUN folder,
+never into the repo root - it runs from the full-run marker onwards as
+`R libraries (lucode2, gms load)`, and a failure says "in ~/magpie run:
+Rscript start.R once". Nothing is printed before the marker exists:
+there is no library to test yet, and a SKIP line announcing that is
+noise on every first run. Parent only (`MAGPIE_CHECK_ONLY` unset): a
+Landlock denial on this probe would block the gate with a message the
+student cannot act on, and the sandboxed full run that follows tests
+the library far better. The `full run` line: `MAGPIE_FULL_RUN=0` ->
+SKIP (skipped via MAGPIE_FULL_RUN=0); marker present -> run folder +
+artifacts verified: PASS, else FAIL "full run artifacts missing - rerun
+this file" (delete the marker and rerun to have the step redo the run);
+NO marker -> nothing at all: the step at the end of this setup runs it
+and the verdict block reports the outcome, so "not yet" is not a check
+result. The full run line is cheap and read-only (marker
 + file tests) - it also runs in the sandbox gate child. The block
-prints to screen, goes to the feed as "check result" (or "sandbox
-check result" in the child), and any FAIL line ends the run (help
-block + exit 1; in the child: exit non-zero for the gate).
+prints to screen under one `system: <OS> <arch> | code name: <handle>`
+line (no copy-block frame - the paste-into-an-AI flow is gone), goes to
+the feed as "check result" (or "sandbox
+check result" in the child), and any FAIL line ends the run (failure
+verdict + exit 1; in the child: exit non-zero for the gate).
 
 ## 9. Upload protocol (feed folder `https://cloud.pik-potsdam.de/public.php/webdav`)
 
@@ -630,11 +659,15 @@ profile pulled); "setup: renv restored"; "setup: full run start" /
 (MAGPIE_FULL_RUN=0)"; warnings (licence placeholder, low disk);
 "setup: retry pass 2 after: <step>" when the fresh-process retry
 starts; the check block; "sandbox check result"; "setup: run
-finished". `setup: FAIL <step>` before every abort carries the WHOLE
-help block (system string, check results or failed step, last 25 log
+finished". `setup: FAIL <step>` before every abort carries the detail
+block (system string, check results or failed step, last 25 log
 lines) in the same post, capped at 3200 bytes for the whole
 block (kept from the old transport: no server limit forces it now, and
-small posts stay readable in the folder). The EXIT trap reports unexpected
+small posts stay readable in the folder). `magpie_feed_on` (URL set +
+curl present) is what `magpie_fail` checks to decide whether that post
+happened: with no feed available the last 25 log lines go to the screen
+instead, so an offline student still has something to read.
+The EXIT trap reports unexpected
 deaths as "setup: CRASH exit=<code>" + last 10 log lines (same cap):
 any code but 0/130, or 1 without a prior FAIL post; never in the
 check-only child (the gate reports there). Teacher reads the folder in
@@ -646,13 +679,38 @@ absence is a signal too. Retirement: untick the share link (further
 uploads are refused, the scripts ignore it), delete the folder to purge
 the data - no server state is left anywhere.
 
-## 10. Next steps block
+## 10. Verdict block
 
-The manual `renv::restore()` line is GONE (6.9 does it). The block
-shows `cd ~/magpie`, the completed full run folder (from the marker)
-or the MAGPIE_FULL_RUN=0 skip note, and the own-scenario command
-`Rscript start.R` ("choose 1, then 1"; macOS: `caffeinate -is
-Rscript start.R`). The laptop advice stays (power, lid, overnight).
+The LAST output of a successful run - the old NEXT STEPS block (cd,
+run folder, own-scenario command, laptop advice) is GONE: the course
+page has all of it, and a run that worked should end in something a
+student recognises at a glance rather than four lines of instructions.
+Three `magpie_say` lines between `=` bars (=, never #: nothing else in
+the output uses them, so the verdict is the only banner, and the old
+`##` frame must stay absent):
+
+```
+============================================================
+ SETUP COMPLETE - MAgPIE is installed, checked and working
+   checks: no FAIL   sandbox: ok   default run: <marker content>
+============================================================
+```
+
+`default run:` is the marker content, or `skipped (MAGPIE_FULL_RUN=0)`
+when the escape hatch was used (`see above` as the last resort, it
+cannot happen on the green path). Just before it, the green path drops
+`setup-help.txt` and `setup-help-profile.json` if an older copy of this
+script left them behind: nothing writes them any more, and a stale FAIL
+block next to a machine that just passed everything is pure confusion.
+Never on a failing path - whoever is mid-troubleshooting may still be
+reading exactly that file. The same verdict is then the log's last
+line: `magpie_log "SETUP COMPLETE - all checks passed, full run
+<rel>"`, so `tail -n 1 ~/magpie/setup-log.txt` answers "did it work?"
+without reading the whole file. Both the fresh-run path and the
+marker-verified short-circuit print it - a rerun of a finished install
+must not end in silence. `magpie-opencode.sh` prints one
+`OK: setup complete - starting opencode in ~/magpie` line before the
+launch, on both its fast path and its install path.
 
 ## 11. Verification status
 
@@ -662,8 +720,8 @@ HOME, stub binaries only, real git only against a local origin; PATH is
 a curated minimal bin dir so a host tex/pandoc/Rscript/gams can never
 shadow the stubs; pinned block sedded to 9.9.9/fake shas; scenario
 trees cloned from one template via hardlinks; previous scratch moved
-aside with a detached background rm): 616
-assertions (617 with shellcheck on PATH) - syntax (bash -n, bash32
+aside with a detached background rm): 715
+assertions (716 with shellcheck on PATH) - syntax (bash -n, bash32
 guard on script and harness, shellcheck -s bash where present); pin
 placeholder guard;
 disk abort + warn tiers (incl. the raised 9 GB / 18 GB boundaries);
@@ -687,16 +745,26 @@ boundaries, `unknown` fallback without a handle),
 the log), failing upload never fails the caller, mktemp failure
 silent, failing uploads ignored, `STATUS_URL=""`
 uploads nothing, combined FAIL
-block with 3200 B cap (deep tail cut, screen + help file uncapped),
+detail with 3200 B cap (deep tail cut; the screen gets only the verdict
++ log path, and with `STATUS_URL=""` the log tail goes to the screen
+instead of the feed pointer),
 CRASH on unexpected exit (3, silent 1; none after a FAIL post, none
 in the check-only child), retry-pass-2 announce; config
 write incl. foreign `.bak`; HU key dedupe; cache dirs created + rc
 lines deduped; rc appends survive a missing final newline; licence placeholder/pasted/
 mode-600/never-clobber/darwin-700; checks table (licensee-name PASS, demo FAIL,
 foreign-licence FAIL, weak-check fallback, unlicensed FAIL, probe temp dir
-cleaned, no-scratch-dir FAIL, R/pandoc/tex/git lines, renv SKIP/PASS/FAIL,
-full run SKIP-first/PASS/FAIL (each single missing artifact
+cleaned, no-scratch-dir FAIL, R/pandoc/tex/git lines, R library check
+(no line before the marker, PASS/FAIL with the marker, probe never runs
+in the gate child),
+full run no line before the marker/PASS/FAIL (each single missing artifact
 FAILs)/SKIP-via-env);
+verdict block (`SETUP COMPLETE` banner on screen + the same verdict as
+the log's last line, on BOTH the fresh-run and the marker-verified
+rerun path, `skipped (MAGPIE_FULL_RUN=0)` variant; no `##` and no
+failure line anywhere on a green run; no `setup-help.txt` ever
+written, and stale `setup-help.txt`/`setup-help-profile.json` from older
+copies dropped on the green path only);
 check-only child isolation; pack pull pin + drift + profile build/
 validate/keep-modified/stale-generated-regenerates-with-`.bak` (+ cache
 write-list on both OSes, PATH-gams extra read entry); apt calls
@@ -709,8 +777,8 @@ mismatch
 blocking sudo, gfortran off-PATH register (skip + install branches,
 rc + run PATH); GAMS linux self-extractor; renv step (no renv.lock skip,
 already-populated skip, broken library restored incl. activate.R
-bootstrap, no bootstrap when renv present, persistent failure -> help
-block, 3 attempts); clone guards (foreign dir,
+bootstrap, no bootstrap when renv present, persistent failure -> the
+failure verdict, 3 attempts); clone guards (foreign dir,
 foreign origin, ssh/`.git`/trailing-slash/fork origin accepted, removed
 origin proceeds, interrupted heal, `setup-dl-*` leftovers tolerated,
 `.setup-fullrun-ok` marker tolerated by the guard);
@@ -719,7 +787,7 @@ exactly once and NOT on screen, parent prints the sandbox OK line,
 child exit code wins, sudo cooled at that instant), full run
 step (sandbox command shape, caches + PATH passed, marker +
 artifacts written, keep-alive dead + sudo cooled, verified marker skips, non-zero
-exit -> help block (also with complete artifacts), swallowed run error
+exit -> failure verdict (also with complete artifacts), swallowed run error
 caught by missing artifacts, old folder not accepted as new, newest of
 two complete folders wins into the marker, escape hatch, caffeinate
 wrap on darwin);
@@ -730,9 +798,10 @@ profile write-list, cache rc lines)
 + second run all-skip (full run PASS line, start.R ran once)
 + E2E MAGPIE_FULL_RUN=0 (green, skip notes, no marker)
 + E2E deleted artifacts -> FAIL -> marker removal heals
-+ E2E reproducible failure -> pass 2 -> help
-block + FAIL feed line. Regression: tests/test-magpie-opencode.sh still
-187/0 (incl. the cleanup-ownership tests: owner exit stops the
++ E2E reproducible failure -> pass 2 -> failure
+verdict + FAIL feed line (step named, code name on screen, no
+`setup-help.txt`). Regression: tests/test-magpie-opencode.sh still
+192/0 (incl. the cleanup-ownership tests: owner exit stops the
 keep-alive and removes the lock; a non-owner exit leaves both alone;
 and the rc-append newline guard: an append to an rc without final
 newline starts its own line).
