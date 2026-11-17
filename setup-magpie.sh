@@ -107,12 +107,27 @@ MAGPIE_MAGPIE_URL="${MAGPIE_MAGPIE_URL:-https://github.com/magpiemodel/magpie.gi
 # harness can fake the pkg install dir.
 MAGPIE_GFORTRAN_DIR="${MAGPIE_GFORTRAN_DIR:-/usr/local/gfortran}"
 
+# Compiler trees the sandboxed renv builds need readable+executable:
+# the gcc drivers in /usr/bin are covered by nono's system groups,
+# but they posix_spawn cc1/cc1plus/f951 from /usr/libexec/gcc and
+# collect2 from /usr/lib/gcc, and the preprocessor reads /usr/include
+# - all outside those groups (verified by an actual denied compile).
+# Space-separated, existence-gated; variables so the harness can
+# point them at fake dirs.
+MAGPIE_TOOLCHAIN_DIRS="${MAGPIE_TOOLCHAIN_DIRS-/usr/libexec/gcc /usr/lib/gcc /usr/include}"
+MAGPIE_TOOLCHAIN_DIRS_DARWIN="${MAGPIE_TOOLCHAIN_DIRS_DARWIN-/Library/Developer/CommandLineTools}"
+
+# dpkg's package status DB: readable so start.R's requirements check
+# (dpkg-query) sees the installed system libraries instead of
+# reporting them missing. Harness-overridable like the toolchain.
+MAGPIE_DPKG_DIRS="${MAGPIE_DPKG_DIRS-/var/lib/dpkg}"
+
 MAGPIE_HANDLE_FILE="$HOME/.magpie-course-handle"
 
 # Bump when the generated magpie-profile content changes: profiles
 # written by an older script version are detected by the marker in
 # meta.description and regenerated (old copy kept as .bak).
-MAGPIE_PROFILE_SCHEMA="6"
+MAGPIE_PROFILE_SCHEMA="9"
 
 # Deterministic madrat mainfolder + renv cache folder. The nono profile
 # allows writes in them and the sandboxed children get them passed in,
@@ -952,8 +967,26 @@ magpie_register_hu_key() {
 
 # The nono profile grants write to these two folders, so the folder tree
 # must exist before any sandboxed child runs.
+# tools::R_user_dir() folder trio (R's per-user cache/data/config
+# roots). Packages write into them AT LOAD TIME (gdtools' font cache
+# during ggiraph's lazy load died on exactly this), so the sandboxed
+# children need them readable AND writable; magpie_register_caches
+# creates them before the profile step.
+magpie_r_user_dirs() {
+  if [ "${MAGPIE_OS:-}" = "darwin" ]; then
+    printf '%s\n' "$HOME/Library/Caches/org.R-project.R" \
+      "$HOME/Library/Application Support/org.R-project.R" \
+      "$HOME/Library/Preferences/org.R-project.R"
+  else
+    printf '%s\n' "$HOME/.cache/R" "$HOME/.local/share/R" "$HOME/.config/R"
+  fi
+}
+
 magpie_register_caches() {
   mkdir -p "$MADRAT_MAINFOLDER" "$RENV_PATHS_CACHE" || return 1
+  while IFS= read -r d; do
+    mkdir -p "$d" || return 1
+  done < <(magpie_r_user_dirs)
   touch "$MAGPIE_RC" 2>/dev/null || true
   if ! grep -q '^export MADRAT_MAINFOLDER=' "$MAGPIE_RC" 2>/dev/null; then
     magpie_rc_newline "$MAGPIE_RC"
@@ -1520,6 +1553,9 @@ magpie_build_nono_profile() {
     magpie_add_read_dir "$HOME/Library/TinyTeX"
     magpie_add_read_dir "$HOME/.TinyTeX"
     magpie_add_read_dir "$HOME/Library/Application Support/GAMS"
+    for d in $MAGPIE_TOOLCHAIN_DIRS_DARWIN; do
+      magpie_add_read_dir "$d"
+    done
   else
     # A GAMS found outside ~/gams (any PATH install) must be readable
     # in the sandbox too.
@@ -1530,6 +1566,20 @@ magpie_build_nono_profile() {
     magpie_add_read_dir "$HOME/gams"
     magpie_add_read_dir "$gd"
     magpie_add_read_dir "$HOME/.TinyTeX"
+    # Source package builds (start.R installs ~300 packages, dozens
+    # with C/Fortran code): the /usr/bin gcc driver spawns cc1/cc1plus
+    # and collect2 from trees nono's system groups do not cover, and
+    # every compile reads /usr/include. Without these the renv stack
+    # dies on "cc1: posix_spawn: Permission denied".
+    for d in $MAGPIE_TOOLCHAIN_DIRS; do
+      magpie_add_read_dir "$d"
+    done
+    # start.R's requirements check probes system packages via
+    # dpkg-query; without the status DB it silently reports every
+    # system dependency as missing.
+    for d in $MAGPIE_DPKG_DIRS; do
+      magpie_add_read_dir "$d"
+    done
   fi
   # R must be VISIBLE in the sandbox, not just executable: apt R keeps
   # Renviron and the base library under its home (/usr/lib/R), the
@@ -1557,6 +1607,15 @@ magpie_build_nono_profile() {
       2>/dev/null)
     magpie_add_read_dir "$rd_etc"
   fi
+  # R user dirs (tools::R_user_dir): packages cache into them AT LOAD
+  # TIME - readable AND writable, created by magpie_register_caches
+  # before this step runs.
+  write_extra=""
+  while IFS= read -r d; do
+    magpie_add_read_dir "$d"
+    write_extra="$write_extra      \"$d\",
+"
+  done < <(magpie_r_user_dirs)
   read_extra=""
   # The GAMS.framework entry stays literal on macOS (not existence-
   # gated): magpie_install_gams only reports success with that folder
@@ -1603,7 +1662,7 @@ $read_extra      "$MADRAT_MAINFOLDER",
       "$RENV_PATHS_CACHE"
     ],
 $read_file_entry    "write": [
-      "$MADRAT_MAINFOLDER",
+$write_extra      "$MADRAT_MAINFOLDER",
       "$RENV_PATHS_CACHE"
     ]
   }
@@ -1988,20 +2047,30 @@ magpie_latest_full_run() {
 
 # $1: PATH for the sandboxed child (tex + GAMS dirs included).
 magpie_full_run_body() {
-  # Two "n" lines answer start.R's "Update now?" and fixDeps prompts:
-  # the restored lockfile versions stay untouched. Not </dev/null -
-  # EOF makes gms::getLine return character(0), which crashes the &&.
-  # --allow-cwd is mandatory here: without it the piped answers would
-  # hit nono's cwd prompt instead of start.R.
+  # The answers start.R gets on stdin depend on its flow, which
+  # depends on renv.lock: WITHOUT a lockfile (every first full run)
+  # the prompt is the requirements check "Try to fix automatically?
+  # (Y/n)" - answering n there skips installing the whole dependency
+  # stack (that is how the 2026-11 course runs halted on "no package
+  # called 'lucode2'"). WITH a lockfile the prompts are "Update now?"
+  # and fixDeps - both answered n so the restored versions stay.
+  # Not </dev/null - EOF makes gms::getLine return character(0),
+  # which crashes the &&. --allow-cwd is mandatory here: without it
+  # the piped answers would hit nono's cwd prompt instead of start.R.
+  if [ -f "$HOME/magpie/renv.lock" ]; then
+    MAGPIE_FULL_RUN_ANSWERS=$(printf 'n\nn')
+  else
+    MAGPIE_FULL_RUN_ANSWERS=$(printf 'y')
+  fi
   if [ "$MAGPIE_OS" = "darwin" ]; then
     # shellcheck disable=SC2016  # $HOME expands in the sandbox child, not here.
-    printf 'n\nn\n' | ( cd "$HOME/magpie" && caffeinate -is nono run --profile magpie-profile --allow-cwd -- \
+    printf '%s\n' "$MAGPIE_FULL_RUN_ANSWERS" | ( cd "$HOME/magpie" && caffeinate -is nono run --profile magpie-profile --allow-cwd -- \
       env "MADRAT_MAINFOLDER=$MADRAT_MAINFOLDER" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
       "PATH=$1" \
       bash -c 'cd "$HOME/magpie" && Rscript start.R runscripts=default.R submit=direct' )
   else
     # shellcheck disable=SC2016  # $HOME expands in the sandbox child, not here.
-    printf 'n\nn\n' | ( cd "$HOME/magpie" && nono run --profile magpie-profile --allow-cwd -- \
+    printf '%s\n' "$MAGPIE_FULL_RUN_ANSWERS" | ( cd "$HOME/magpie" && nono run --profile magpie-profile --allow-cwd -- \
       env "MADRAT_MAINFOLDER=$MADRAT_MAINFOLDER" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
       "PATH=$1" \
       bash -c 'cd "$HOME/magpie" && Rscript start.R runscripts=default.R submit=direct' )

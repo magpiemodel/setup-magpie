@@ -347,10 +347,32 @@ the profile also lists the physical folder behind
 `Renviron`'s `EDITOR` R dies inside the sandbox at `utils` `.onLoad`,
 which is what produced the 2026-11 `FAIL R older than 4.3`). On
 non-symlink layouts (macOS framework) it resolves inside the R home
-and dedupes away. On both OSes the read list also
+and dedupes away. Source builds get the compiler trees: the `/usr/bin`
+gcc/g++/gfortran drivers are covered by nono's system groups, but they
+posix_spawn `cc1`/`cc1plus`/`f951` from `/usr/libexec/gcc`, link via
+`collect2` from `/usr/lib/gcc`, and every compile reads `/usr/include`
+- all outside the groups (verified by a denied `posix_spawn` inside a
+plain pack-profile sandbox, which cost 73 of 282 start.R packages).
+The read list therefore also holds `MAGPIE_TOOLCHAIN_DIRS`
+(Linux: those three) / `MAGPIE_TOOLCHAIN_DIRS_DARWIN`
+(`/Library/Developer/CommandLineTools`), existence-gated and
+harness-overridable. `MAGPIE_DPKG_DIRS` (`/var/lib/dpkg`) joins on
+Linux: `start.R`'s requirements check probes system packages with
+`dpkg-query`, and an unreadable status DB reports every system
+library as missing. The `tools::R_user_dir()` trio (Linux
+`~/.cache/R`, `~/.local/share/R`, `~/.config/R`; macOS
+`~/Library/{Caches,Application Support,Preferences}/org.R-project.R`,
+helper `magpie_r_user_dirs`) is READ and WRITABLE: packages cache
+there AT LOAD TIME (`gdtools`' font cache inside `ggiraph`'s lazy
+load is the 2026-11 example). Like the madrat/renv caches these
+folders are created by `magpie_register_caches` before the profile
+step, so the write entries can stay literal; read entries follow the
+usual existence gate. On both OSes the read list also
 holds the two data folders,
-and the write list is exactly `$MADRAT_MAINFOLDER` (`$HOME/.madrat`) +
-`$RENV_PATHS_CACHE` (`$HOME/.cache/R/renv`). The full run downloads
+and the write list holds `$MADRAT_MAINFOLDER` (`$HOME/.madrat`) +
+`$RENV_PATHS_CACHE` (`$HOME/.cache/R/renv`) + the `magpie_r_user_dirs`
+trio (literal - `magpie_register_caches` has created them by then).
+The full run downloads
 input data into the run folder (`gms::download_distribute`); the
 madrat mainfolder is the pinned cache for any madrat read, the renv
 cache fills on renv restores.
@@ -468,11 +490,15 @@ holds all verification artifacts. Otherwise ONE sandboxed attempt
 Feed "setup: full run start" before, heads-up "about 40 min, keep the
 laptop plugged in and awake". The run's own output goes to the log only
 (no tee, unlike the gate) - the R noise stays off the screen. The
-command's stdin gets two `n` lines:
-they answer `start.R`'s possible "Update now?" and `fixDeps` prompts
-with "no" - auto-updating would drift from the restored lockfile, and
-an EOF stdin would crash `gms::getLine` (empty `readLines` ->
-`logical(0)` in `&&`). ONE attempt - no retry, no pass 2.
+command's stdin gets flow-matched answers: WITH a `renv.lock` two `n`
+lines answer `start.R`'s "Update now?" and `fixDeps` prompts (auto-
+updating would drift from the restored lockfile); WITHOUT one (every
+first full run) the prompt is the requirements check "Try to fix
+automatically? (Y/n)" and the answer is `y` - answering no there
+skips the entire dependency stack (the 2026-11 course runs halted on
+"no package called 'lucode2'"). An EOF stdin would crash
+`gms::getLine` (empty `readLines` -> `logical(0)` in `&&`), so the
+answers are always piped. ONE attempt - no retry, no pass 2.
 `start.R` runs the selected script through `sys.source` + `try` (a
 failing run is only a warning, exit code stays 0), so SUCCESS IS
 DECIDED BY ARTIFACTS: a NEW `~/magpie/output/default_<timestamp>`

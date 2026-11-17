@@ -4,6 +4,11 @@
 set -u
 umask 077
 
+# Hermetic git: the tests create their own repos; the host's global or
+# system gitconfig must never participate (git dies outright on an
+# unreadable ~/.gitconfig, e.g. under a sandbox).
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+
 HERE=$(cd "$(dirname "$0")" && pwd)
 SCRIPT="$HERE/../setup-magpie.sh"
 RUNROOT="$HERE/../.tmp/testrun-setup"
@@ -999,6 +1004,11 @@ FN_BODY='MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_register_caches; ma
 ret_is "caches registered" 0
 file_ok "madrat dir created" "$FAKE_HOME/.madrat"
 file_ok "renv cache dir created" "$FAKE_HOME/.cache/R/renv"
+# R user dirs (tools::R_user_dir): created so the sandboxed profile
+# entries point at existing folders (gdtools font cache class).
+file_ok "R data dir created" "$FAKE_HOME/.local/share/R"
+file_ok "R cache dir created" "$FAKE_HOME/.cache/R"
+file_ok "R config dir created" "$FAKE_HOME/.config/R"
 cnt_is "MADRAT rc line deduped" "MADRAT_MAINFOLDER" "$FAKE_HOME/.bashrc" 1
 cnt_is "RENV rc line deduped" "RENV_PATHS_CACHE" "$FAKE_HOME/.bashrc" 1
 # A comment merely mentioning the variable must NOT suppress the export
@@ -1551,15 +1561,55 @@ grep_ok "read holds the R home" "$PJSON" '"'"$FAKE_HOME"'/R-home"'
 grep_ok "read holds the site library" "$PJSON" '"'"$FAKE_HOME"'/R-site-lib"'
 grep_ok "read holds the symlinked etc target" "$PJSON" '"'"$FAKE_HOME"'/etc-R"'
 grep_no "base library deduped under R home" "$PJSON" "R-home/library"
+# Toolchain trees for source builds (start.R compiles dozens of C/
+# Fortran packages; the /usr/bin gcc drivers posix_spawn cc1/collect2
+# from trees outside nono's system groups). The constants are readable
+# by the harness, so the entry list does not depend on the host's
+# compiler layout.
 new_env
 put_nono
-FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
+mkdir -p "$FAKE_HOME/fakecc1" "$FAKE_HOME/fakecollect" "$FAKE_HOME/fakeinc" \
+  "$FAKE_HOME/fakedpkg"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_TOOLCHAIN_DIRS="$HOME/fakecc1 $HOME/fakecollect $HOME/fakeinc"
+MAGPIE_DPKG_DIRS="$HOME/fakedpkg"
+magpie_step_magpie_profile' run_fn
+ret_is "profile with toolchain dirs builds" 0
+PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+grep_ok "read holds the cc1 tree" "$PJSON" "$FAKE_HOME/fakecc1"
+grep_ok "read holds the collect2 tree" "$PJSON" "$FAKE_HOME/fakecollect"
+grep_ok "read holds the include tree" "$PJSON" "$FAKE_HOME/fakeinc"
+grep_ok "read holds the dpkg status folder" "$PJSON" "$FAKE_HOME/fakedpkg"
+new_env
+put_nono
+mkdir -p "$FAKE_HOME/fakecc1"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_TOOLCHAIN_DIRS="$HOME/fakecc1 $HOME/missing-tree"
+magpie_step_magpie_profile' run_fn
+ret_is "missing toolchain dir skipped" 0
+PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+grep_ok "present toolchain dir listed" "$PJSON" "$FAKE_HOME/fakecc1"
+grep_no "absent toolchain dir omitted" "$PJSON" "missing-tree"
+new_env
+put_nono
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+magpie_register_caches; magpie_step_magpie_profile' run_fn
 ret_is "linux profile has cache write paths" 0
 PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
 grep_ok "write section present" "$PJSON" '"write"'
 grep_ok "write holds madrat" "$PJSON" "$FAKE_HOME/.madrat"
 grep_ok "write holds renv cache" "$PJSON" ".cache/R/renv"
 grep_ok "read holds madrat too" "$PJSON" "$FAKE_HOME/.madrat"
+# R user dirs: literal write entries (registered before the build),
+# gated read entries (the folders exist after registration).
+grep_ok "write holds the R cache dir" "$PJSON" \
+  '"'"$FAKE_HOME"'/.cache/R"'
+grep_ok "write holds the R data dir" "$PJSON" \
+  '"'"$FAKE_HOME"'/.local/share/R"'
+grep_ok "write holds the R config dir" "$PJSON" \
+  '"'"$FAKE_HOME"'/.config/R"'
+grep_ok "read holds the R data dir" "$PJSON" \
+  '"'"$FAKE_HOME"'/.local/share/R"'
 # The 2026-11 course failure: apt texlive satisfied the TinyTeX step,
 # so ~/.TinyTeX never existed - the read list must simply omit it and
 # the build must pass, not reference a folder validation rejects.
@@ -1576,12 +1626,17 @@ new_env
 put_nono
 FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1
 MAGPIE_GFORTRAN_DIR="$HOME/gfortran"
+MAGPIE_TOOLCHAIN_DIRS_DARWIN="$HOME/fakeclt"
 mkdir -p "$HOME/gfortran" "$HOME/.TinyTeX" "$HOME/Library/TinyTeX" \
-  "$HOME/Library/Application Support/GAMS"
-magpie_step_magpie_profile' run_fn
+  "$HOME/Library/Application Support/GAMS" "$HOME/fakeclt"
+magpie_register_caches; magpie_step_magpie_profile' run_fn
 ret_is "darwin profile built" 0
 PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
 grep_ok "darwin keeps gams framework read" "$PJSON" "/Library/Frameworks/GAMS.framework"
+grep_ok "darwin reads clang toolchain dir" "$PJSON" "$FAKE_HOME/fakeclt"
+grep_ok "darwin write holds R user dirs" "$PJSON" "org.R-project.R"
+grep_ok "darwin reads the R data dir" "$PJSON" \
+  '"'"$FAKE_HOME"'/Library/Application Support/org.R-project.R"'
 grep_ok "darwin reads gfortran dir" "$PJSON" "$FAKE_HOME/gfortran"
 grep_ok "darwin reads Library/TinyTeX" "$PJSON" "$FAKE_HOME/Library/TinyTeX"
 grep_ok "darwin reads .TinyTeX too" "$PJSON" "$FAKE_HOME/.TinyTeX"
@@ -1600,7 +1655,7 @@ PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
 grep_ok "gams framework entry is literal" "$PJSON" "/Library/Frameworks/GAMS.framework"
 grep_no "no gfortran entry without folder" "$PJSON" "gfortran"
 grep_no "no tinytex entry without folders" "$PJSON" 'TinyTeX"'
-grep_no "no licence entry without folder" "$PJSON" "Application Support"
+grep_no "no licence entry without folder" "$PJSON" "Application Support/GAMS"
 new_env
 mkdir -p "$FAKE_HOME/.config/nono/profiles"
 echo "changed by student" > "$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
@@ -1627,7 +1682,7 @@ OFP
 put_nono
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
 ret_is "stale generated profile regenerated" 0
-grep_ok "regenerated content current" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json" "(setup v6)"
+grep_ok "regenerated content current" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json" "(setup v9)"
 grep_ok "stale copy kept as bak" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json.bak" "/stale/old/path"
 grep_ok "regeneration logged" "$FAKE_HOME/magpie/setup-log.txt" "regenerated"
 # Rerun right after regeneration: content is current now, so the cmp
@@ -2078,8 +2133,9 @@ grep_ok "marker names run folder" "$FAKE_HOME/magpie/.setup-fullrun-ok" \
 RUNDIR=$(sed -n 1p "$FAKE_HOME/magpie/.setup-fullrun-ok")
 file_ok "fulldata.gdx present" "$FAKE_HOME/magpie/$RUNDIR/fulldata.gdx"
 file_ok "report.rds present" "$FAKE_HOME/magpie/$RUNDIR/report.rds"
-# start.R update prompts are answered with two "n" lines on stdin, so
-# the run never asks and never auto-updates (locked versions stay).
+# Without renv.lock start.R asks "Try to fix automatically? (Y/n)"
+# for its requirements - the piped answer must be y, or the whole
+# dependency stack stays uninstalled (2026-11 course failure).
 new_env
 make_tools
 put_nono
@@ -2087,6 +2143,18 @@ mkdir -p "$FAKE_HOME/magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' \
   run_fn STUB_FULLRUN_CAPTURE=1
 ret_is "prompt-fed run completes" 0
+cnt_is "y answer reaches Rscript" "^y$" "$STATE/fullrun_stdin" 1
+cnt_is "no n answer without lockfile" "^n$" "$STATE/fullrun_stdin" 0
+# With renv.lock the prompts are "Update now?" + fixDeps: two n lines
+# keep the restored versions untouched.
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie"
+: > "$FAKE_HOME/magpie/renv.lock"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' \
+  run_fn STUB_FULLRUN_CAPTURE=1
+ret_is "lockfile run completes" 0
 cnt_is "two n answers reach Rscript" "^n$" "$STATE/fullrun_stdin" 2
 # Verified marker: rerun skips without touching the sandbox.
 new_env
@@ -2186,6 +2254,7 @@ new_env
 make_tools
 put_nono
 mkdir -p "$FAKE_HOME/magpie"
+: > "$FAKE_HOME/magpie/renv.lock"
 FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' \
   run_fn STUB_FULLRUN_CAPTURE=1
 ret_is "darwin full run through caffeinate" 0
