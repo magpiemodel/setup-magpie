@@ -2188,9 +2188,11 @@ magpie_run_checks() {
     fi
   fi
 
-  # Full default run: marker + artifacts only - cheap and read-only, it
-  # also runs inside the sandbox gate child. No marker is "not yet", not
-  # a skipped check: the step at the end of this setup runs it and the
+  # Full default run: marker + artifacts only - cheap and read-only.
+  # The gate child never sees a marker (the work dir stays OUTSIDE the
+  # profile - spec 6.7), so this line prints in the parent only and the
+  # child's marker check stays silent. No marker is "not yet", not a
+  # skipped check: the step at the end of this setup runs it and the
   # verdict block reports the outcome, so nothing is printed here.
   if [ "${MAGPIE_FULL_RUN:-1}" = "0" ]; then
     magpie_check_line SKIP "full run (skipped via MAGPIE_FULL_RUN=0)"

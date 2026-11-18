@@ -8,5 +8,8 @@
 /.setup.lock/
 /.keepalive.pid
 /self/
+/.setup-fullrun-ok
+/.setup-finished
+/.magpie-course-handle
 /.tmp/
 tests/shellcheck

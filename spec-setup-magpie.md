@@ -1,7 +1,7 @@
 # setup-magpie.sh - spec (unified day-one course setup)
 
 Status: implemented in setup-magpie.sh (tests: tests/test-setup-magpie.sh,
-848 assertions (847 when shellcheck is absent), all green on a Linux
+858 assertions (857 when shellcheck is absent), all green on a Linux
 x86_64 dev host). Date: 2026-11-18.
 
 ## 1. Purpose
@@ -724,7 +724,9 @@ this file" (delete the marker and rerun to have the step redo the run);
 NO marker -> nothing at all: the step at the end of this setup runs it
 and the verdict block reports the outcome, so "not yet" is not a check
 result. The full run line is cheap and read-only (marker
-+ file tests) - it also runs in the sandbox gate child. The block
++ file tests); inside the gate child the work dir is invisible (6.7: the
+profile deliberately stays outside it), so the marker reads absent there
+and the line stays silent - it can never fail the gate. The block
 prints to screen under one `system: <OS> <arch> | code name: <handle>`
 line (no copy-block frame - the paste-into-an-AI flow is gone), goes to
 the feed as "check result" (or "sandbox
@@ -849,14 +851,20 @@ HOME, stub binaries only, real git only against a local origin; PATH is
 a curated minimal bin dir so a host tex/pandoc/Rscript/gams can never
 shadow the stubs; pinned block sedded to 9.9.9/fake shas; scenario
 trees cloned from one template via hardlinks; previous scratch moved
-aside with a detached background rm): 848
-assertions (847 without shellcheck) - syntax (bash -n, bash32
+aside with a detached background rm): 858
+assertions (857 without shellcheck) - syntax (bash -n, bash32
 guard on script and harness - it flags bash4+ syntax AND the 2's hard
 rules: double bracket, dollar-RANDOM, process substitution - shellcheck
 -s bash where present; a per-idiom fixture self-test pins the guard
 pattern ITSELF, so narrowing it goes red); pin
 placeholder guard;
-disk abort + warn tiers (incl. the raised 9 GB / 18 GB boundaries);
+disk abort + warn tiers (incl. the raised 9 GB / 18 GB boundaries; the
+`df` probe target pinned on the SOURCE text - the stub answers
+path-blind, so only the pin catches a probe regressing to a folder the
+entry no longer creates);
+a low-disk E2E on a WRITABLE HOME aborts before the clone and proves
+the entry creates only the work dir - `~/magpie` comes with the clone
+step alone;
 root guard; entry guard (an
 unwritable HOME: the failure verdict is the only output on screen, and
 neither the work dir nor `~/magpie` is created); legacy sweep (old log
@@ -867,7 +875,9 @@ lands the new name in the work dir, `~/.magpie-course` removed, every
 junk name dropped, and a FULL old-layout machine - state in `~/magpie`,
 handle at the old path, junk everywhere - migrates through a green E2E
 run that keeps the code name and verifies the MOVED full-run marker
-against the moved artifacts instead of rerunning); lock live/stale (a second window
+against the run artifacts still sitting in the clone (the marker path
+is clone-relative - nothing under `output/` moves) instead of
+rerunning); lock live/stale (a second window
 exits quietly and leaves the FIRST run's keep-alive + `setup-dl-*`
 untouched; the stale reclaim is asserted from OUTSIDE the exit code -
 an early `exit 0` inside the lock function (dead pid believed alive)
@@ -927,7 +937,10 @@ rerun path, `skipped (MAGPIE_FULL_RUN=0)` variant; no `##` and no
 failure line anywhere on a green run; no `setup-help.txt` ever
 written - the stale dumps older copies left behind are deleted by the
 entry sweep, green path or not);
-check-only child isolation; pack pull pin + drift + wrong-version-after-
+check-only child isolation (the child creates not even the work dir;
+with a full-run marker present but the whole work dir unreadable - the
+real sandbox view - the child stays green and prints no full-run line);
+pack pull pin + drift + wrong-version-after-
 pull (a registry handing back a stale pack despite the pinned ref fails
 the step, never a silent pass) + profile build/
 validate/keep-modified/stale-generated-regenerates-with-`.bak` (+ cache
@@ -947,10 +960,18 @@ macOS `Library/TinyTeX`, complete dir skips + registers, no false
 heads-up; body refreshes tinytex FIRST - `install.packages` call before
 the gate call, its chatter reaches the log (never silenced), a pre-0.46
 gate version fails the body, drives the retries to the cap and the
-pass-2 verdict, and installs no tex folder); macOS pkg steps incl. checksum
+pass-2 verdict, and installs no tex folder - the gate floor is pinned
+on the SOURCE text (`packageVersion < 0.46`: the Rscript stub mirrors
+the contract, it cannot execute the snippet, so a silently lowered
+gate must go red here); macOS pkg steps incl. checksum
 mismatch
 blocking sudo, gfortran off-PATH register (skip + install branches,
-rc + run PATH); GAMS linux self-extractor; renv step (no renv.lock skip,
+rc + run PATH), the FC-probe loop regression (stubbed R: FC resolves =
+skip + the FC bin dir registered, FC unresolved = retry + fail with
+ONE diagnostic line listing BOTH bin dirs; the snippet's mechanisms -
+first-token scan, `file.access` executability gate, bare-name
+`Sys.which` - pinned on the SOURCE text for the same reason);
+GAMS linux self-extractor; renv step (no renv.lock skip,
 already-populated skip, broken library restored incl. activate.R
 bootstrap, no bootstrap when renv present, persistent failure -> the
 failure verdict, 3 attempts); clone guards (foreign dir,
@@ -989,11 +1010,13 @@ and as the log's last line, start.R ran once)
 + E2E reproducible failure -> pass 2 -> failure
 verdict + FAIL feed line (step named, code name on screen, no
 `setup-help.txt`). Regression: tests/test-magpie-opencode.sh still
-224/0 (pins among them: 4 guard-pattern fixture
+233/0 (pins among them: 4 guard-pattern fixture
 self-tests, the cross-file guard-list identity, the verdict quoting
-the log's last line, the entry guard on an unwritable HOME (4), the
+the log's last line, the entry guard on an unwritable HOME (4) plus
+the low-disk E2E on a writable HOME (2) and its df probe pin (1), the
 download policy pinned on the source text (3), the non-stacking
-keep-alive restart (2), and the post-pull pack version check (3); 223 without
+keep-alive restart (2), the sweep conflict semantics of the launcher's
+own copy (6), and the post-pull pack version check (3); 232 without
 shellcheck; incl. the cleanup-ownership tests: owner exit stops the
 keep-alive and removes the lock; a non-owner exit leaves both alone;
 the rc-append newline guard: an append to an rc without final

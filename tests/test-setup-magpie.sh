@@ -858,6 +858,20 @@ new_env
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_check_disk' run_fn STUB_DF_AVAIL_KB=16000000
 ret_is "15 GB free warns under new tier" 0
 grep_ok "warning at 15 GB" "$STATE/screen.txt" "WARNING: only 15 GB"
+new_env
+# Full entry on a writable HOME that aborts at the disk check: the
+# entry legitimately owns the work dir, but ~/magpie belongs to the
+# clone step ALONE (spec 5/6.8) - an abort before the clone must not
+# have created it (the 555-HOME entry guard pins only the other case).
+run_e2e STUB_DF_AVAIL_KB=1000000
+ret_is "low disk aborts the whole run" 1
+nofile_ok "abort before the clone never creates ~/magpie" "$FAKE_HOME/magpie"
+# The probe TARGET is pinned on the source text: the df stub answers
+# path-blind, so a probe regressing to a folder the entry no longer
+# creates (old ~/magpie position) would read as "0 GB free" for every
+# fresh student while all behavioural tests stayed green.
+grep_ok "disk probe targets the work dir" "$SCRIPT" \
+  'df -Pk "$MAGPIE_SETUP_DIR"'
 
 # ============================================================
 sec "root guard"
@@ -1589,6 +1603,9 @@ grep_ok "result lines on screen" "$STATE/screen.txt" "code name: "
 grep_ok "check lines printed" "$STATE/screen.txt" "FAIL gams"
 nofile_ok "no lock in child" "$FAKE_HOME/setup-magpie/.setup.lock"
 nofile_ok "no log tee in child" "$FAKE_HOME/setup-magpie/setup-log.txt"
+# Spec 5/6.7: the child creates (and sweeps) NOTHING - not even the
+# work dir, which is deliberately invisible to the sandbox anyway.
+nofile_ok "child creates no work dir" "$FAKE_HOME/setup-magpie"
 nofile_ok "no opencode install in child" "$FAKE_HOME/.opencode"
 grep_no "no archive download in child" "$STATE/curl.log" "registry.npmjs.org"
 new_env
@@ -1600,6 +1617,25 @@ make_tools
 RET=$?
 ret_is "child exits 0 when checks pass" 0
 grep_ok "PASS lines in child screen" "$STATE/screen.txt" "PASS gams"
+new_env
+make_tools
+mkdir -p "$FAKE_HOME/setup-magpie"
+printf 'output/default_2026-01-01_00.00.00\n' \
+  > "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
+# Simulated sandbox: the work dir completely unreadable is what the
+# gate child really sees (the profile deliberately stays outside it,
+# spec 6.7) even though a full-run marker exists. The child must stay
+# green AND stay silent about the full run: an invisible marker reads
+# as "no marker", which is never a check result, let alone a FAIL.
+chmod 000 "$FAKE_HOME/setup-magpie"
+(
+  base_env
+  MAGPIE_CHECK_ONLY=1 bash "$ENV/magpie.sh" --check-only > "$STATE/screen.txt" 2>&1
+)
+RET=$?
+chmod 700 "$FAKE_HOME/setup-magpie"
+ret_is "child green with unreadable full-run marker" 0
+grep_no "child marker check stays silent" "$STATE/screen.txt" "full run"
 
 # ============================================================
 sec "TinyTeX step: skip only with real tex, half dir heals"
@@ -1681,6 +1717,12 @@ grep_ok "step failure verdict" "$STATE/screen.txt" \
 cnt_is "stale gate retried to the cap" "install.packages" "$STATE/rscript.log" 3
 grep_ok "retried install chatter reaches the log" \
   "$FAKE_HOME/setup-magpie/setup-log.txt" "STUB-INSTALL-PACKAGES-MARKER"
+# The Rscript stub mirrors the gate's CONTRACT, it cannot execute the
+# R snippet itself - so the gate's floor constant is pinned on the
+# source text (same idiom as the curl policy pins): a silently lowered
+# gate re-arms the dead-downloader bug on real machines, red here.
+grep_ok "gate floor 0.46 pinned on the source" "$SCRIPT" \
+  'packageVersion("tinytex") < "0.46"'
 
 # ============================================================
 sec "nono profile: pull + magpie-profile build"
@@ -2126,6 +2168,15 @@ nofile_ok "no pkg download (fc present)" "$STATE/curl.log"
 grep_ok "present verdict logged" "$FAKE_HOME/setup-magpie/setup-log.txt" "gfortran: present"
 grep_ok "rc gains the FC bin dir" "$FAKE_HOME/.zshrc" "$FAKE_HOME/opt-gf/bin"
 grep_ok "gfortran registered log" "$FAKE_HOME/setup-magpie/setup-log.txt" "gfortran registered"
+# The Rscript stub IS R here - it mirrors the snippet's contract but
+# cannot execute it. The snippet's three mechanisms are the design
+# contract itself, so pin them on the source text (curl-policy idiom):
+# first-token extraction (flag-suffixed FC), the executability gate
+# (the 2026-11 loop was a folder that merely EXISTS counting as
+# present) and bare-name resolution through Sys.which.
+grep_ok "FC first-token extraction pinned" "$SCRIPT" 'p <- w\[1\]'
+grep_ok "FC executable gate pinned" "$SCRIPT" 'file.access(p, 1) == 0'
+grep_ok "FC bare-name resolution pinned" "$SCRIPT" 'Sys.which(p)'
 # Installer success alone must never read as present: R is there, its FC
 # is not, so the step keeps the retry model and fails - after having
 # downloaded exactly the one pinned pkg.
@@ -2797,9 +2848,10 @@ file_ok "fresh handle lands in the work dir" \
 new_env
 # Full old-layout machine, end to end: state in ~/magpie, code name at
 # the old path, 9P copy folder present. The new script migrates the
-# valuable pieces, verifies the moved full-run marker against the moved
-# artifacts (no 40-minute rerun), installs green - and the student
-# keeps the code name they wrote down.
+# valuable pieces, verifies the moved full-run marker against the run
+# artifacts still in the clone (marker content is clone-relative,
+# nothing under output/ moves - no 40-minute rerun), installs green -
+# and the student keeps the code name they wrote down.
 E2E_SCRIPT="$ENV/magpie_lic.sh"
 mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00" \
   "$FAKE_HOME/magpie/opencode-extract" "$FAKE_HOME/magpie/nono-extract" \

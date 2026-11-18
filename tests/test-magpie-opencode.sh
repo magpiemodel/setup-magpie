@@ -399,6 +399,20 @@ nofile_ok "no install attempt" "$FAKE_HOME/.opencode"
 new_env
 FN_BODY='magpie_check_disk' run_fn STUB_DF_AVAIL_KB=200000000
 ret_is "enough disk passes" 0
+new_env
+# Full entry on a writable HOME that aborts at the disk check: the
+# entry legitimately owns the work dir, but ~/magpie belongs to the
+# clone step ALONE (spec 2/5.1) - an abort before the clone must not
+# have created it (the 555-HOME entry guard pins only the other case).
+run_e2e STUB_DF_AVAIL_KB=1000000
+ret_is "low disk aborts the whole run" 1
+nofile_ok "abort before the clone never creates ~/magpie" "$FAKE_HOME/magpie"
+# The probe TARGET is pinned on the source text (same idiom as the
+# setup suite): the df stub answers path-blind, so a probe regressing
+# to the old ~/magpie position would abort every fresh student's run
+# with a bogus "low disk" while all behavioural tests stayed green.
+grep_ok "disk probe targets the work dir" "$SCRIPT" \
+  'df -Pk "$MAGPIE_SETUP_DIR"'
 
 # ============================================================
 sec "root guard"
@@ -864,6 +878,27 @@ nofile_ok "dl leftover swept" "$FAKE_HOME/magpie/setup-dl-crashed.pkg"
 nofile_ok "keepalive pid swept" "$FAKE_HOME/magpie/.keepalive.pid"
 nofile_ok "stale lock swept" "$FAKE_HOME/magpie/.setup.lock"
 nofile_ok "extract dir swept" "$FAKE_HOME/magpie/opencode-extract"
+
+new_env
+# Conflict semantics are pinned per script, not per spec: this copy of
+# magpie_sweep_legacy must behave EXACTLY like setup-magpie.sh's -
+# work-dir state always wins, the old log is APPENDED, a shadowed old
+# marker is dropped. Without this unit, drifting only this script's
+# version (overwriting a current log) would keep the suite green.
+FN_BODY='echo OLDLOG > "$HOME/magpie/setup-log.txt"
+echo NEWLOG > "$HOME/setup-magpie/setup-log.txt"
+echo OLDH > "$HOME/magpie/.setup-finished"
+echo NEWH > "$HOME/setup-magpie/.setup-finished"
+echo OLDH > "$HOME/magpie/.setup-fullrun-ok"
+echo NEWH > "$HOME/setup-magpie/.setup-fullrun-ok"
+magpie_sweep_legacy' run_fn
+ret_is "conflict sweep succeeds" 0
+grep_ok "old log appended below the new one" \
+  "$FAKE_HOME/setup-magpie/setup-log.txt" "OLDLOG"
+grep_ok "new log content kept" "$FAKE_HOME/setup-magpie/setup-log.txt" "NEWLOG"
+nofile_ok "old log consumed" "$FAKE_HOME/magpie/setup-log.txt"
+grep_ok "work dir marker wins" "$FAKE_HOME/setup-magpie/.setup-finished" "NEWH"
+nofile_ok "shadowed old marker dropped" "$FAKE_HOME/magpie/.setup-finished"
 
 new_env
 make_installed

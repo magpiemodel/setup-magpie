@@ -604,7 +604,10 @@ tar/nono/opencode`), like the existing
 - entry guard: unwritable `$HOME` (cannot create `~/setup-magpie`, and
   neither dir is created) -> the
   failure verdict is the only output on screen (fd 4; the log file is
-  impossible here) and no log dir is left behind.
+  impossible here) and no log dir is left behind; a low-disk abort on
+  a WRITABLE HOME proves the entry creates only the work dir -
+  `~/magpie` comes with the clone step alone; the `df` probe target is
+  pinned on the source text (the stub answers path-blind).
 - fast path: table of marker-present/absent x each check present/broken;
   broken install with marker falls into setup path;
   `MAGPIE_FORCE_SETUP`/`MAGPIE_REPAIR` both respected (repair must NOT
@@ -681,7 +684,10 @@ tar/nono/opencode`), like the existing
   machine (state seeded in `~/magpie`, markers only at the old
   positions) migrates at entry - the moved finish marker drives the
   fast path, the old log content survives, junk is gone from
-  `~/magpie`. No help file any
+  `~/magpie`; the conflict semantics of THIS copy of `magpie_sweep_legacy`
+  are pinned as a unit (append on log conflict, work-dir copy wins on
+  marker conflict) - the two scripts' identical-semantics claim must
+  hold per script, not per spec. No help file any
   more - the verdict names the log instead of writing a copy, and it
   quotes the log's last line on screen: `last log line: ...`.
 
