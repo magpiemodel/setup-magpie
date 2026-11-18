@@ -56,14 +56,16 @@ On Linux, silence it by unpacking the static GitHub-release binary to
   = one hash across filled copies; the canonical value comes from
   `bash setup-magpie.sh --script-hash` (early exit, no side effects). Never
   hash the raw file for the feed again.
-- **A user's explicit "do not" outranks harness state.** Mode/status changes
-  (e.g. a system note saying Plan mode ended, or an agent switch) are
-  ambiguous signals, never consent: an explicit instruction like "do not
-  implement, just write the plan" stands until a LATER USER MESSAGE
-  releases it. Never pre-authorize future work via a keystroke ritual
-  ("switch agents and I'll implement") — that turns any later switch into
-  false consent. When a restriction lifts but no fresh user instruction
-  exists, stop and ask.
+- **Harness restrictions are floors; a user's "do not" is a ceiling. Neither
+  lifts the other; they only tighten.**
+  - Floor: in plan mode, no edits, no state-changing commands, no delegating
+    them to a subagent — **even if the user asks to implement now**. Answer
+    with the agent switch, not the work.
+  - Ceiling: a mode/agent switch or a "Plan mode ended" note makes writes
+    *possible*, never *authorized*. "Do not implement" stands until a LATER
+    USER MESSAGE releases it.
+  - No keystroke rituals ("switch agents and I'll implement") — they turn any
+    later switch into false consent. Nothing released it → stop and ask.
 - Commit style: short, lowercase, one-line what-fixed (see `git log`).
 
 ## Harness idioms (setup-magpie suite)
