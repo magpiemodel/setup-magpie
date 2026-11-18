@@ -354,6 +354,15 @@ Byte-identical block as in the full scripts
 `env: ["HU_API_KEY"]`, openai-compatible package,
 `chat_template_kwargs.enable_thinking`) and top-level
 `"model": "hu/llm3"` - that is the preselection.
+Guard first, repair included: an existing file containing the literal
+string `vLLM PIK HPC` - the provider name of a teacher/dev local vLLM
+endpoint - is never touched: no write, no `.bak`, one log line, the
+step counts as satisfied (the guard short-circuits before the
+identical-skip, backup and force-write below). It exists because on
+2026-11-18 such a force-write silently destroyed exactly that config
+on the course maintainer's machine; students by design have no
+pre-existing opencode config, and the course config never contains the
+marker, so the guard cannot shadow a course-owned file.
 Identical file: skip. Different existing file: copy to `.bak`, then
 write. In repair mode (`MAGPIE_REPAIR=1`) the file is ALWAYS rewritten
 (foreign content backed up to `.bak` first): a student or their LLM can
@@ -656,7 +665,9 @@ tar/nono/opencode`), like the existing
   third attempt. Stub exits 0, or exits non-zero after >=15 s -> quiet
   exit 0, no repair.
 - config: identical skip; foreign file -> `.bak` + write; in repair
-  mode -> `.bak` + rewrite even when identical.
+  mode -> `.bak` + rewrite even when identical; `vLLM PIK HPC` marker
+  in an existing file -> untouched, no `.bak`, repair included; the
+  course config itself carries no marker.
 - clone: skip on resolvable HEAD; heal of `.git` without commits;
   foreign `origin` URL -> error block; git-init path with stubbed
   ls-remote/fetch; re-entry with pre-existing `origin` remote and

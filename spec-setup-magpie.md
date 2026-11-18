@@ -1,7 +1,7 @@
 # setup-magpie.sh - spec (unified day-one course setup)
 
 Status: implemented in setup-magpie.sh (tests: tests/test-setup-magpie.sh,
-858 assertions (857 when shellcheck is absent), all green on a Linux
+866 assertions (865 when shellcheck is absent), all green on a Linux
 x86_64 dev host). Date: 2026-11-18.
 
 ## 1. Purpose
@@ -256,7 +256,12 @@ git curl (sudo warm inside). macOS: system curl verified; Xcode CLT via
 
 Identical to `magpie-opencode.sh` 6.3/6.4/6.7/6.8 (pinned archives,
 checksum, extract, `~/.opencode/bin`, `~/.nono/bin`, PATH registration,
-HU LLM3 config with `.bak` protection, pack pull at
+HU LLM3 config with `.bak` protection and the `vLLM PIK HPC` keep guard
+(an existing config containing that provider marker - a teacher/dev
+local vLLM endpoint, force-destroyed on the maintainer's machine on
+2026-11-18 - is left untouched: no write, no `.bak`, repair included;
+students by design have no pre-existing config and the course config
+never carries the marker), pack pull at
 `nolabs-ai/opencode@$NONO_PACK_VERSION` + drift force-re-pull + `nono
 pin`). Feed lines "setup: opencode installed" / "setup: nono installed"
 / "setup: nono profile pulled" at the old milestones.
@@ -851,8 +856,8 @@ HOME, stub binaries only, real git only against a local origin; PATH is
 a curated minimal bin dir so a host tex/pandoc/Rscript/gams can never
 shadow the stubs; pinned block sedded to 9.9.9/fake shas; scenario
 trees cloned from one template via hardlinks; previous scratch moved
-aside with a detached background rm): 858
-assertions (857 without shellcheck) - syntax (bash -n, bash32
+aside with a detached background rm): 866
+assertions (865 without shellcheck) - syntax (bash -n, bash32
 guard on script and harness - it flags bash4+ syntax AND the 2's hard
 rules: double bracket, dollar-RANDOM, process substitution - shellcheck
 -s bash where present; a per-idiom fixture self-test pins the guard
@@ -919,7 +924,9 @@ instead of the feed pointer - pinned both ways: with a live feed the
 tail must stay off the screen),
 CRASH on unexpected exit (3, silent 1; none after a FAIL post, none
 in the check-only child), retry-pass-2 announce; config
-write incl. foreign `.bak`; HU key dedupe; cache dirs created + rc
+write incl. foreign `.bak` and the vLLM keep guard (marker kept
+byte-identical, no `.bak`, repair included, course config carries
+no marker); HU key dedupe; cache dirs created + rc
 lines deduped; rc appends survive a missing final newline; licence placeholder/
 blank-heredoc/pasted/mode-600/demo-slice-replacement
 (with `.bak` + feed line)/darwin-700; checks table (licensee-name PASS, demo FAIL,

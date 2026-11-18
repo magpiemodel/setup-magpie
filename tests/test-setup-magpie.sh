@@ -1342,6 +1342,7 @@ CFG="$FAKE_HOME/.config/opencode/opencode.json"
 FN_BODY='magpie_write_opencode_config' run_fn
 ret_is "writes fresh config" 0
 grep_ok "model preselected" "$CFG" '"model": "hu/llm3"'
+grep_no "course config carries no vLLM marker" "$CFG" "vLLM PIK HPC"
 FN_BODY='magpie_write_opencode_config' run_fn
 grep_ok "identical skip logged" "$FAKE_HOME/setup-magpie/setup-log.txt" "already in place"
 nofile_ok "no bak on skip" "$CFG.bak"
@@ -1352,6 +1353,29 @@ CFG="$FAKE_HOME/.config/opencode/opencode.json"
 FN_BODY='magpie_write_opencode_config' run_fn
 file_ok "foreign config backed up" "$CFG.bak"
 grep_ok "foreign replaced" "$CFG" '"model": "hu/llm3"'
+# vLLM PIK HPC guard: a dev/teacher config for the local vLLM endpoint
+# is preserved untouched, no .bak, repair included (spec 6.2).
+new_env
+CFG="$FAKE_HOME/.config/opencode/opencode.json"
+REF="$STATE/vllm-ref.json"
+mkdir -p "$FAKE_HOME/.config/opencode"
+printf '{\n  "provider": { "name": "vLLM PIK HPC" }\n}\n' > "$CFG"
+cp "$CFG" "$REF"
+FN_BODY='magpie_write_opencode_config' run_fn
+ret_is "vLLM config run exits 0" 0
+if cmp -s "$CFG" "$REF"; then ok "vLLM config byte-unchanged"; else no "vLLM config byte-unchanged"; fi
+nofile_ok "no bak on vLLM guard" "$CFG.bak"
+grep_ok "vLLM guard logged" "$FAKE_HOME/setup-magpie/setup-log.txt" "vLLM PIK HPC config found"
+new_env
+CFG="$FAKE_HOME/.config/opencode/opencode.json"
+REF="$STATE/vllm-ref.json"
+mkdir -p "$FAKE_HOME/.config/opencode"
+printf '{\n  "provider": { "name": "vLLM PIK HPC" }\n}\n' > "$CFG"
+cp "$CFG" "$REF"
+FN_BODY='magpie_write_opencode_config' run_fn MAGPIE_REPAIR=1
+ret_is "vLLM config run exits 0 under repair" 0
+if cmp -s "$CFG" "$REF"; then ok "repair never overrides vLLM guard"; else no "repair never overrides vLLM guard"; fi
+nofile_ok "no bak on vLLM guard under repair" "$CFG.bak"
 
 # ============================================================
 sec "HU key rc line"

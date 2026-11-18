@@ -1061,6 +1061,18 @@ magpie_write_opencode_config() {
   }
 }
 EOF
+  # Teacher/dev machines run a local vLLM endpoint (provider name
+  # "vLLM PIK HPC") out of this very file: a config carrying that
+  # marker is never overwritten, repair included (it short-circuits
+  # the cmp/backup/mv block below). Students have no pre-existing
+  # config by design, and the course config written here never
+  # contains the string, so the guard can never shadow a
+  # course-owned file.
+  if [ -f "$file" ] && grep -qF "vLLM PIK HPC" "$file"; then
+    magpie_log "vLLM PIK HPC config found - leaving $file untouched"
+    rm -f "$tmp"
+    return 0
+  fi
   if [ -f "$file" ] && cmp -s "$tmp" "$file"; then
     magpie_log "opencode config already in place"
     rm -f "$tmp"
