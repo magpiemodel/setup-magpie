@@ -1310,9 +1310,18 @@ magpie_step_course_tools() {
 # ---------------- TinyTeX + tex PATH ----------------
 
 magpie_tinytex_body() {
-  Rscript -e 'install.packages("tinytex", repos = "https://cloud.r-project.org")' \
-    >/dev/null 2>&1 && \
-    Rscript -e 'tinytex::install_tinytex()'
+  # 2026-11 course machines carried a tinytex so old it still fetched
+  # yihui.org/tinytex/TinyTeX-1.tgz - a 404 since the prebuilt releases
+  # moved to GitHub. Refresh tinytex in its default library FIRST (the
+  # user library is first in .libPaths() and shadows any ancient
+  # framework copy), and never silence the installer: the swallowed
+  # output is what hid the failed update from the feed. The version gate
+  # has to live in its own Rscript call - Rscript exits 0 even when
+  # install.packages fails - and a pre-0.46 tinytex would run the dead
+  # downloader and abort the body anyway.
+  Rscript -e 'install.packages("tinytex", repos = "https://cloud.r-project.org")'
+  Rscript -e 'if (packageVersion("tinytex") < "0.46") quit(status = 1)
+    tinytex::install_tinytex()'
 }
 
 magpie_step_tinytex() {

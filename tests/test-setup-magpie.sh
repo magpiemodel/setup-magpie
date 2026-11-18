@@ -268,15 +268,32 @@ case "$*" in
     exit 0
     ;;
   *install_tinytex*)
-    # Default mimics Linux (~/.TinyTeX); macOS tests point this at
-    # $HOME/Library/TinyTeX (what tinytex::install_tinytex really uses).
-    d="${STUB_TINYTEX_ROOT:-$HOME/.TinyTeX}/bin/x86_64-unknown-linux-gnu"
-    mkdir -p "$d"
-    printf '#!/bin/sh\necho stub-tex\n' > "$d/tex"
-    chmod 755 "$d/tex"
+    # The body's second call: version gate + install. Below 0.46 the
+    # real tinytex still fetches the dead yihui.org prebuilt URL, so
+    # the body quits(status = 1) BEFORE install_tinytex() - mirror
+    # that: no tex folder appears. The default passes, so the older
+    # scenarios keep seeing a plain successful install.
+    v="${STUB_TINYTEX_VERSION:-0.56}"
+    maj=${v%%.*}; min=${v#*.}; min=${min%%.*}
+    if [ "$maj" -gt 0 ] || { [ "$maj" -eq 0 ] && [ "$min" -ge 46 ]; }; then
+      # Default mimics Linux (~/.TinyTeX); macOS tests point this at
+      # $HOME/Library/TinyTeX (what tinytex::install_tinytex really uses).
+      d="${STUB_TINYTEX_ROOT:-$HOME/.TinyTeX}/bin/x86_64-unknown-linux-gnu"
+      mkdir -p "$d"
+      printf '#!/bin/sh\necho stub-tex\n' > "$d/tex"
+      chmod 755 "$d/tex"
+      exit 0
+    fi
+    echo "Error: tinytex $v predates the GitHub-aware downloader" >&2
+    exit 1
+    ;;
+  *"install.packages"*)
+    # The body's first call: the CRAN refresh. The marker rides on
+    # stdout exactly like real install chatter - scenarios grep it out
+    # of the run log to prove the body silences nothing.
+    echo "STUB-INSTALL-PACKAGES-MARKER"
     exit 0
     ;;
-  *"install.packages"*) exit 0 ;;
   *requireNamespace*renv*) exit "${STUB_RENV_PKG_EXIT:-0}" ;;
   *"renv/activate.R"*) exit "${STUB_RENV_ACTIVATE_EXIT:-0}" ;;
   *"renv::restore"*)
@@ -1626,6 +1643,39 @@ FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_st
 ret_is "complete Library/TinyTeX skips install" 0
 grep_no "no R calls (darwin skip)" "$STATE/rscript.log" "install_tinytex"
 grep_ok "rc texbin line (darwin skip)" "$FAKE_HOME/.zshrc" "Library/TinyTeX/bin/universal-darwin"
+# The 2026-11 course failure: a machine carried a tinytex so old it
+# fetched the dead yihui.org/TinyTeX-1.tgz. The body must refresh the
+# package first (unsilenced!) and refuse to run a pre-0.46 installer.
+new_env
+cp "$STATE/binlib/Rscript" "$FAKE_BIN/Rscript"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_tinytex_body' \
+  run_fn
+ret_is "gate pass: refresh then install succeeds" 0
+head -n 1 "$STATE/rscript.log" > "$STATE/call1"
+tail -n 1 "$STATE/rscript.log" > "$STATE/call2"
+grep_ok "install.packages runs before the gate" "$STATE/call1" "install.packages"
+grep_ok "gate + install_tinytex run second" "$STATE/call2" "install_tinytex"
+grep_ok "install chatter reaches the log (no silencing)" \
+  "$FAKE_HOME/magpie/setup-log.txt" "STUB-INSTALL-PACKAGES-MARKER"
+file_ok "tex installed (gate pass)" "$FAKE_HOME/.TinyTeX/bin/x86_64-unknown-linux-gnu/tex"
+new_env
+cp "$STATE/binlib/Rscript" "$FAKE_BIN/Rscript"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_tinytex_body' \
+  run_fn STUB_TINYTEX_VERSION=0.36
+ret_is "gate 0.36 fails the body (drives retries)" 1
+nofile_ok "no tex below the 0.46 floor" "$FAKE_HOME/.TinyTeX"
+# Same stale tinytex through the step: retries hit the cap, the pass-2
+# failure verdict text is the one every other step uses.
+new_env
+cp "$STATE/binlib/Rscript" "$FAKE_BIN/Rscript"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; MAGPIE_PASS=2 magpie_step_tinytex' \
+  run_fn STUB_TINYTEX_VERSION=0.36
+ret_is "gate failure fails the step at the cap" 1
+grep_ok "step failure verdict" "$STATE/screen.txt" \
+  "SETUP FAILED (twice, reproducible): TinyTeX install"
+cnt_is "stale gate retried to the cap" "install.packages" "$STATE/rscript.log" 3
+grep_ok "retried install chatter reaches the log" \
+  "$FAKE_HOME/magpie/setup-log.txt" "STUB-INSTALL-PACKAGES-MARKER"
 
 # ============================================================
 sec "nono profile: pull + magpie-profile build"

@@ -1,7 +1,7 @@
 # setup-magpie.sh - spec (unified day-one course setup)
 
 Status: implemented in setup-magpie.sh (tests: tests/test-setup-magpie.sh,
-795 assertions (796 when shellcheck is present), all green on a Linux
+806 assertions (807 when shellcheck is present), all green on a Linux
 x86_64 dev host). Date: 2026-11-18.
 
 ## 1. Purpose
@@ -329,6 +329,24 @@ heal loop `rm -rf`s BOTH roots (`$HOME/Library/TinyTeX` and
 registered dir goes through `magpie_rc_add_path` (adjacency-checked rc
 line + export into this run) so the checks and the gate see tex
 without a new terminal.
+
+`magpie_tinytex_body()` REFRESHES tinytex before installing anything:
+one `Rscript` call runs `install.packages("tinytex", repos = CRAN)`
+with no `lib=` - the refresh lands in the user/default library, which
+is first in `.libPaths()` and shadows any ancient framework copy - and
+a SECOND `Rscript` call gates on `packageVersion("tinytex") >= "0.46"`
+(`quit(status = 1)` below; it also fires when the refresh failed and
+tinytex is simply missing) before running `tinytex::install_tinytex()`.
+Rationale (2026-11, feed `Pangolin317`): her machine carried a tinytex
+so old it still fetched `yihui.org/tinytex/TinyTeX-1.tgz` - a 404 since
+the prebuilt releases moved to GitHub; 0.46 is the version floor whose
+`install_prebuilt` uses the GitHub-aware downloader. The gate needs its
+own call because `Rscript` exits 0 even when `install.packages` fails.
+The body's output is NEVER silenced (no `>/dev/null 2>&1` anywhere -
+the swallowed `install.packages` diagnostics are exactly what hid the
+failed update from the feed): everything flows into the run log, and a
+gate failure returns non-zero so `magpie_retry 3` and the pass-2 model
+drive the retries like for every other step body.
 
 ### 6.6 GAMS + licence
 
@@ -796,8 +814,8 @@ HOME, stub binaries only, real git only against a local origin; PATH is
 a curated minimal bin dir so a host tex/pandoc/Rscript/gams can never
 shadow the stubs; pinned block sedded to 9.9.9/fake shas; scenario
 trees cloned from one template via hardlinks; previous scratch moved
-aside with a detached background rm): 795
-assertions (796 with shellcheck present) - syntax (bash -n, bash32
+aside with a detached background rm): 806
+assertions (807 with shellcheck present) - syntax (bash -n, bash32
 guard on script and harness - it flags bash4+ syntax AND the 2's hard
 rules: double bracket, dollar-RANDOM, process substitution - shellcheck
 -s bash where present; a per-idiom fixture self-test pins the guard
@@ -882,7 +900,11 @@ carry the dpkg lock timeout (base + tools, update + install); ubuntu floor
 blocks < 24.04 with the wsl hint; dev-lib guard (missing or half-configured
 package reruns the install, too-old apt R blocks the step); TinyTeX
 step (half TinyTeX dir heals via rm -rf + reinstall on BOTH roots incl.
-macOS `Library/TinyTeX`, complete dir skips + registers, no false heads-up); macOS pkg steps incl. checksum
+macOS `Library/TinyTeX`, complete dir skips + registers, no false
+heads-up; body refreshes tinytex FIRST - `install.packages` call before
+the gate call, its chatter reaches the log (never silenced), a pre-0.46
+gate version fails the body, drives the retries to the cap and the
+pass-2 verdict, and installs no tex folder); macOS pkg steps incl. checksum
 mismatch
 blocking sudo, gfortran off-PATH register (skip + install branches,
 rc + run PATH); GAMS linux self-extractor; renv step (no renv.lock skip,
