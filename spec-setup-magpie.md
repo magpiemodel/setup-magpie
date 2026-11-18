@@ -175,7 +175,9 @@ feed, nothing is written) - and `MAGPIE_COURSE_LICENSEE`
 (`Potsdam-Institut`): the substring the checks demand in the GAMS
 banner whenever it is set - embedded or not (see 6.6 and 8; without an
 embedded slice the banner must additionally carry no demo/expired
-wording); empty = weak generic check only.
+wording); empty = weak generic check only. Both fill-ins are
+hash-neutral: the feed's version hash masks them (see 9), so a build
+keeps exactly one hash across filled copies.
 
 ## 5. Script skeleton and order of operations
 
@@ -185,6 +187,8 @@ screen output only through `magpie_say` (the sandbox-gate child is
 log-only, 6.7). The `--check-only` child (env
 `MAGPIE_CHECK_ONLY=1` or argument) is branched BEFORE the log
 redirect - it writes no log, takes no lock, runs no installs.
+`--script-hash` exits even earlier: it prints the build's feed hash
+(9) and leaves - no log, handle, lock, feed or relocation.
 
 Order: OS detect (`MAGPIE_OS`, `MAGPIE_RC` = `~/.zshrc` / `~/.bashrc`) ->
 `HU_API_KEY` export -> check-only branch (greet + checks + exit) ->
@@ -663,9 +667,18 @@ multi-line) is written to a `mktemp` file and sent with `curl -m 5 -T
 `<handle>-<YYYYMMDD>-<HHMMSS>-<pid>-<n>.log`. The counter matters: PUT
 overwrites on the target, so two posts in one second must not share a
 name. Never fails the caller. `v<hash>` = first 12 sha256 hex of this
-file, computed at entry (uname-based shasum/sha256sum, "unknown" if the
-tools are missing): an agent maps hash -> build, an unknown hash =
-truncated/edited download. Every body passes `magpie_sanitize`
+file with the two teacher fill-ins MASKED (`magpie_setup_version`):
+the `STATUS_URL=` line becomes a constant and the `COURSE_GAMSLICE`
+heredoc body is dropped, markers kept - so every filled copy of one
+build shares one hash, which the teacher records per build via
+`bash setup-magpie.sh --script-hash` (early-exit flag: prints the hash,
+no log/handle/lock/feed/relocation), and an agent maps hash -> build
+across all distributed copies. Computed at entry (awk + uname-based
+shasum/sha256sum, "unknown" if the tools are missing). Unknown hash =
+truncated or edited download: anything outside the fill-ins changes the
+hash, and a licence truncated inside the heredoc loses its closing
+marker - the mask then swallows the file tail, so truncation there is
+detected too. Every body passes `magpie_sanitize`
 (one PII choke point inside `magpie_report`): $HOME -> `~`, hostname
 -> `HOST`, the hostname minus its `.local` suffix -> `HOST`, the
 account's real name (`magpie_realname`, when at least 3 characters) ->
@@ -780,8 +793,12 @@ guard); feed target guard (anchored credential-free `STATUS_URL`); PUT
 uploads recorded with credentials stripped - the stub strips (a password
 holding "@" too), a fake filled-in link proves no token/password reaches
 any artifact (start
-with file-hash header, check block, FAIL, run finished); upload names
-unique (handle-date-time-pid-counter, two posts in one second); feed
+with masked-hash header, check block, FAIL, run finished); upload names
+unique (handle-date-time-pid-counter, two posts in one second);
+version-hash fill-in invariance (`--script-hash`: one hash for the
+plain, licence-pasted, blank-heredoc and nofeed copies plus the repo
+file, differs from the raw file hash, an edit outside the fill-ins
+changes the hash, the flag itself touches no state); feed
 v2: sanitizer (home/host/host-base/real-name/user, token
 boundaries, `unknown` fallback without a handle),
 `-s -o /dev/null` proven (stub response/progress noise never reaches
@@ -892,9 +909,12 @@ child (the full-run prompt answers rely on it).
    ONE file only (the two old scripts are gone).
 2. Insert the share token and password right after `https://` in
    `STATUS_URL` (see 9) - NEVER commit or upload the filled-in file.
-3. Upload `setup-magpie.sh` to Moodle (licence + credentials inside =
+3. Run `bash setup-magpie.sh --script-hash` on the filled file and
+   record the printed hash with the build: the fill-ins are masked out
+   (see 9), so every distributed copy reports this one hash.
+4. Upload `setup-magpie.sh` to Moodle (licence + credentials inside =
    course-only).
-4. Run the live tests in 11; extend the profile read/write-list if a
+5. Run the live tests in 11; extend the profile read/write-list if a
    denial appears.
-5. Read the feed folder in the Nextcloud web UI during the session;
+6. Read the feed folder in the Nextcloud web UI during the session;
    afterwards untick the share link and delete the folder (see 9).

@@ -46,6 +46,19 @@ On Linux, silence it by unpacking the static GitHub-release binary to
   `__PASTE_CONTENTS_OF_gamslice.txt_HERE__` placeholder. Teachers paste the
   real slice into their distributed copy; never commit a filled script
   (public repo, licence would leak).
+- **Feed version hash masks the teacher fill-ins** (`STATUS_URL=` line and
+  the `COURSE_GAMSLICE` heredoc body, in `magpie_setup_version`): one build
+  = one hash across filled copies; the canonical value comes from
+  `bash setup-magpie.sh --script-hash` (early exit, no side effects). Never
+  hash the raw file for the feed again.
+- **A user's explicit "do not" outranks harness state.** Mode/status changes
+  (e.g. a system note saying Plan mode ended, or an agent switch) are
+  ambiguous signals, never consent: an explicit instruction like "do not
+  implement, just write the plan" stands until a LATER USER MESSAGE
+  releases it. Never pre-authorize future work via a keystroke ritual
+  ("switch agents and I'll implement") — that turns any later switch into
+  false consent. When a restriction lifts but no fresh user instruction
+  exists, stop and ask.
 - Commit style: short, lowercase, one-line what-fixed (see `git log`).
 
 ## Harness idioms (setup-magpie suite)

@@ -683,6 +683,15 @@ run_e2e() {
   RET=$?
 }
 
+# Print --script-hash output: the masked build hash, via the script's
+# own early-exit flag (no log, no feed, no state).
+script_hash() {
+  (
+    base_env
+    bash "$1" --script-hash
+  )
+}
+
 # Source the script and run FN_BODY (unit-level). fd 4 -> screen.txt.
 run_fn() {
   (
@@ -2600,7 +2609,9 @@ grep_no "no manual renv line" "$S" "Rscript -e 'renv::restore()'"
 grep_no "old rerun-setup hint gone" "$S" "rerun this setup file"
 # feed protocol
 grep_ok "feed start" "$STATE/feed.log" "setup: start"
-WANTV=$(sha256sum "$E2E_SCRIPT" | cut -c1-12)
+# masked hash (--script-hash): fill-ins excluded, so the header carries
+# the build's one hash - same as the repo copy and every filled variant.
+WANTV=$(script_hash "$E2E_SCRIPT")
 grep_ok "feed carries script hash" "$STATE/feed.log" " | v$WANTV | setup: start"
 grep_no "no fake home in feed" "$STATE/feed.log" "$FAKE_HOME"
 grep_ok "feed check result block" "$STATE/feed.log" "check result"
@@ -2691,6 +2702,66 @@ if tail -n 1 "$FAKE_HOME/magpie/setup-log.txt" \
 else
   no "log's last line is the verdict (rerun) [got: $(tail -n 1 "$FAKE_HOME/magpie/setup-log.txt")]"
 fi
+
+# ============================================================
+sec "version hash masks the teacher fill-ins"
+# ============================================================
+# The feed's v<hash> identifies a BUILD: identical across the plain,
+# licence-pasted, blank-heredoc and nofeed copies, different from the
+# raw file hash - so the teacher records ONE hash per build and the
+# agent matches every student copy against it.
+new_env
+HV=$(script_hash "$ENV/magpie.sh")
+HV_LIC=$(script_hash "$ENV/magpie_lic.sh")
+HV_BLANK=$(script_hash "$ENV/magpie_lic_blank.sh")
+HV_NOFEED=$(script_hash "$ENV/magpie_nofeed.sh")
+if [ "$HV" = "$HV_LIC" ] && [ "$HV" = "$HV_BLANK" ] \
+  && [ "$HV" = "$HV_NOFEED" ]; then
+  ok "one hash across plain/pasted/blank/nofeed copies"
+else
+  no "one hash across plain/pasted/blank/nofeed copies \
+[$HV/$HV_LIC/$HV_BLANK/$HV_NOFEED]"
+fi
+# Production invariant on the repo file itself: filling in licence +
+# credentials the way a teacher does must not move its hash. (The
+# per-env templates carry replaced pins, so they hash differently by
+# design - compare a fill-in pair, not templates against the repo.)
+sed -e 's|^STATUS_URL=.*|STATUS_URL="https://tok:pw@cloud.example/webdav"|' \
+  -e '/^__PASTE_CONTENTS_OF_gamslice.txt_HERE__$/s|__PASTE_CONTENTS_OF_gamslice.txt_HERE__|TEACHER-PASTED-LICENCE|' \
+  "$SCRIPT" > "$ENV/magpie_repo_filled.sh"
+chmod +x "$ENV/magpie_repo_filled.sh"
+HV_REPO=$(script_hash "$SCRIPT")
+HV_RFILL=$(script_hash "$ENV/magpie_repo_filled.sh")
+if [ -n "$HV_REPO" ] && [ "$HV_REPO" = "$HV_RFILL" ]; then
+  ok "repo file hashes the same as its filled-in copy"
+else
+  no "repo file hashes the same as its filled-in copy [$HV_REPO/$HV_RFILL]"
+fi
+if printf '%s\n' "$HV" | grep -Eq '^[0-9a-f]{12}$'; then
+  ok "masked hash is 12 hex"
+else
+  no "masked hash is 12 hex [$HV]"
+fi
+RAWV=$(sha256sum "$ENV/magpie_lic.sh" | cut -d ' ' -f 1 | cut -c1-12)
+if [ "$HV_LIC" != "$RAWV" ]; then
+  ok "masked hash differs from raw file hash"
+else
+  no "masked hash differs from raw file hash"
+fi
+# Edits OUTSIDE the fill-ins must still change the hash (unknown hash
+# on the feed = edited download), so masking must not be over-broad.
+sed 's|^MAGPIE_COURSE_LICENSEE=.*|MAGPIE_COURSE_LICENSEE="Edited-Away"|' \
+  "$ENV/magpie.sh" > "$ENV/magpie_edited.sh"
+chmod +x "$ENV/magpie_edited.sh"
+HV_EDIT=$(script_hash "$ENV/magpie_edited.sh")
+if [ "$HV_EDIT" != "$HV" ]; then
+  ok "edit outside the fill-ins changes the hash"
+else
+  no "edit outside the fill-ins changes the hash"
+fi
+# The flag is a pure read: entry exits before log, handle, lock or feed.
+nofile_ok "--script-hash creates no ~/magpie" "$FAKE_HOME/magpie"
+nofile_ok "--script-hash posts nothing to the feed" "$STATE/feed.log"
 
 # ============================================================
 sec "E2E sudo prompt: keep-alive stopped before the gate"

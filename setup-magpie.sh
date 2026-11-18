@@ -169,13 +169,31 @@ magpie_rand() {
 }
 
 # First 12 hex of the file's sha256 ("" if the tools are missing).
+# The two teacher fill-ins are MASKED before hashing, so every filled
+# copy of one build shares one hash: the STATUS_URL line (WebDAV
+# credentials) becomes a constant, the COURSE_GAMSLICE heredoc body
+# (pasted licence) is dropped with only its markers kept. A truncated
+# licence loses the closing marker and still hashes differently; edits
+# or truncation anywhere else do too. awk is already required by
+# magpie_sanitize, so the sandbox profile gains nothing new.
 # uname, not $MAGPIE_OS: runs before the OS is set.
 magpie_setup_version() {
-  if [ "$(uname)" = "Darwin" ]; then
-    shasum -a 256 "$1" 2>/dev/null
-  else
-    sha256sum "$1" 2>/dev/null
-  fi | cut -d ' ' -f 1 | cut -c1-12
+  if [ ! -f "$1" ] || [ ! -r "$1" ]; then
+    return 0
+  fi
+  command -v awk >/dev/null 2>&1 || return 0
+  awk '
+    /^STATUS_URL=/ { print "STATUS_URL=\"<FEED>\""; next }
+    /^[ \t]*cat <<.COURSE_GAMSLICE.$/ { print; fill = 1; next }
+    fill { if (/^COURSE_GAMSLICE$/) { fill = 0; print } next }
+    { print }
+  ' "$1" | {
+    if [ "$(uname)" = "Darwin" ]; then
+      shasum -a 256 2>/dev/null
+    else
+      sha256sum 2>/dev/null
+    fi
+  } | cut -d ' ' -f 1 | cut -c1-12
 }
 
 # magpie_pick <r1> <r2> <animal>...: Animal+3digits from two randoms.
@@ -2326,10 +2344,21 @@ magpie_main() {
 
 # Resolve this file's absolute path, for the fresh-process pass 2.
 magpie_entry() {
-  # Feed fingerprint of this exact file: the agent maps hash -> build.
-  # Unknown hash = truncated or edited download.
+  # Feed fingerprint of this build (teacher fill-ins masked - see
+  # magpie_setup_version): the agent maps hash -> build across every
+  # distributed copy. Unknown hash = truncated or edited download.
   MAGPIE_SETUP_VERSION=$(magpie_setup_version "$0")
   MAGPIE_SETUP_VERSION=${MAGPIE_SETUP_VERSION:-unknown}
+  if [ "${1:-}" = "--script-hash" ]; then
+    # Print this build's feed hash and leave: no log, no handle, no
+    # lock, no feed, no relocation. Teachers record it per build; an
+    # agent reads it off any student copy, filled or not.
+    if [ "$MAGPIE_SETUP_VERSION" = unknown ]; then
+      exit 1
+    fi
+    printf '%s\n' "$MAGPIE_SETUP_VERSION"
+    exit 0
+  fi
   MAGPIE_SELF=""
   if [ -f "$0" ]; then
     # shellcheck disable=SC1007  # CDPATH= applies to cd only, not an assignment.
