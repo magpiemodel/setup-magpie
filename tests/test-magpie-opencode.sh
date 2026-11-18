@@ -30,9 +30,11 @@ cnt_is()  {
 file_ok() { if [ -e "$2" ]; then ok "$1"; else no "$1"; fi; }
 nofile_ok() { if [ ! -e "$2" ]; then ok "$1"; else no "$1"; fi; }
 
-# Bash 3.2 gate: flags bash4+ constructs. Bracketed first letters keep
-# this pattern text from matching itself.
-BASH32_PAT='[d]eclare -A|[l]ocal -A|[m]apfile|[r]eadarray|[&]>>|[|]&|[d]eclare -n|[l]ocal -n|\$\{[A-Za-z_][A-Za-z0-9_]*(,,|\^\^|@)'
+# Bash 3.2 gate: flags bash4+ constructs plus the banned double
+# bracket, dollar-RANDOM and the angle-paren process substitution
+# (bash-3.2-valid but banned by design, spec 2). Bracketed first
+# letters keep this pattern text from matching itself.
+BASH32_PAT='[d]eclare -A|[l]ocal -A|[m]apfile|[r]eadarray|[&]>>|[|]&|[d]eclare -n|[l]ocal -n|\$\{[A-Za-z_][A-Za-z0-9_]*(,,|\^\^|@)|[<][(]|\$[R]ANDOM|\[\['
 bash32_guard() {
   local hits
   hits=$(grep -nE "$BASH32_PAT" "$1" 2>/dev/null || true)
@@ -106,6 +108,9 @@ case "$1" in
     done
     ver=${ref#*@}
     [ "$ver" = "$ref" ] && ver=latest
+    # Wrong-version sabotage knob: emulate a registry that hands back
+    # a stale pack despite the pinned ref (script-side check must bite).
+    [ -n "${STUB_NONO_PULL_WRONG_VER:-}" ] && ver="$STUB_NONO_PULL_WRONG_VER"
     mkdir -p "$HOME/.config/nono/packages/nolabs-ai/opencode"
     echo "{\"name\":\"opencode\",\"version\":\"$ver\"}" \
       > "$HOME/.config/nono/packages/nolabs-ai/opencode/package.json"
@@ -345,6 +350,23 @@ sec "syntax"
 if bash -n "$SCRIPT" 2>/dev/null; then ok "bash -n"; else no "bash -n"; fi
 bash32_guard "$SCRIPT"
 bash32_guard "$HERE/test-magpie-opencode.sh"
+# Guard self-test: the pattern must actually FLAG the banned idioms -
+# a silently narrowed BASH32_PAT would keep this suite green while the
+# spec 2 machine-enforcement quietly dies. Idioms are assembled from
+# parts so the guard never sees its own fixture text as a violation.
+b32_bb='['
+b32_d='$'
+b32_lp='('
+b32_dl='declare'
+for b32_idiom in "$b32_bb$b32_bb x ]]" "$b32_d""RANDOM=1" \
+  "diff <${b32_lp}true)" "${b32_dl} -A cfg"; do
+  printf '%s\n' "$b32_idiom" > "$RUNROOT/bash32-fixture.sh"
+  if grep -qE "$BASH32_PAT" "$RUNROOT/bash32-fixture.sh"; then
+    ok "bash32 pattern flags: $b32_idiom"
+  else
+    no "bash32 pattern flags: $b32_idiom"
+  fi
+done
 SHELLCHECK=""
 if command -v shellcheck >/dev/null 2>&1; then
   SHELLCHECK=shellcheck
@@ -385,6 +407,16 @@ new_env
 FN_BODY='magpie_setup_path' run_fn STUB_ID_ROOT=1
 ret_is "root run aborts" 1
 grep_ok "root message" "$STATE/screen.txt" "do not run as root"
+new_env
+# Entry guard (spec 5 step 1): ~/magpie cannot be created (unwritable
+# HOME) - the failure verdict is the only output, and it must still
+# reach fd 4 although the log file is impossible here.
+chmod 555 "$FAKE_HOME"
+run_e2e
+chmod 700 "$FAKE_HOME"
+ret_is "unwritable HOME aborts" 1
+grep_ok "entry verdict names the failure" "$STATE/screen.txt" "cannot create"
+nofile_ok "no log dir created" "$FAKE_HOME/magpie"
 
 # ============================================================
 sec "lock"
@@ -403,8 +435,15 @@ file_ok "other lock untouched" "$FAKE_HOME/magpie/.setup.lock/pid"
 new_env
 mkdir -p "$FAKE_HOME/magpie/.setup.lock"
 echo 999999 > "$FAKE_HOME/magpie/.setup.lock/pid"
-FN_BODY='magpie_take_lock; [ "$(cat "$HOME/magpie/.setup.lock/pid")" = "$$" ]' run_fn
+FN_BODY='magpie_take_lock' run_fn
 ret_is "stale lock reclaimed silently" 0
+# An early exit 0 inside take_lock (dead pid believed alive) skips any
+# FN_BODY assertion - these observe from outside: no heads-up on the
+# screen, and the reclaimed lock is gone with the sourcing shell
+# (owner's EXIT cleanup ran).
+grep_no "no already-running note on reclaim" "$STATE/screen.txt" \
+  "already running"
+nofile_ok "reclaimed lock released on exit" "$FAKE_HOME/magpie/.setup.lock/pid"
 
 # ============================================================
 sec "retry helper"
@@ -459,6 +498,17 @@ else
 fi
 [ -n "$kp" ] && kill "$kp" 2>/dev/null
 rm -f "$FAKE_HOME/magpie/.keepalive.pid"
+# Two starts in one run must not stack refresher loops: the live pid
+# in the pidfile short-circuits the second call (same pid kept, and
+# the owner-exit cleanup then stops the ONE loop it knows about).
+new_env
+FN_BODY='magpie_take_lock; magpie_start_keepalive
+p1=$(cat "$HOME/magpie/.keepalive.pid")
+magpie_start_keepalive
+p2=$(cat "$HOME/magpie/.keepalive.pid")
+[ "$p1" = "$p2" ]' run_fn
+ret_is "second start reuses live keep-alive" 0
+nofile_ok "pidfile gone after owner exit" "$FAKE_HOME/magpie/.keepalive.pid"
 new_env
 make_installed
 FN_BODY='magpie_sudo_warm; magpie_launch' run_fn STUB_SUDO_N_OK=0
@@ -647,6 +697,7 @@ grep_ok "failed step named" "$S" "SETUP FAILED (twice, reproducible): opencode i
 grep_ok "wifi hint" "$S" "Wi-Fi"
 grep_ok "system string in verdict" "$S" "system: "
 grep_ok "verdict points at the log" "$S" "everything else: "
+grep_ok "verdict quotes the last log line" "$S" "last log line: "
 grep_no "no code name in verdict" "$S" "code name"
 cnt_is "retry heads-up once per pass" "retrying automatically" "$S" 1
 cnt_is "failing step logged in both passes" "step failed after retries" "$FAKE_HOME/magpie/setup-log.txt" 2
@@ -727,6 +778,21 @@ file_ok "marker written" "$FAKE_HOME/magpie/.setup-finished"
 # ============================================================
 sec "E2E magpie dir guards"
 # ============================================================
+# Both course scripts share ~/magpie, so both specs pin the own-file
+# allowlist as the SAME list in the two scripts - neither script may
+# block the other's clone. Compare the guards verbatim (comments aside).
+magpie_guard_list() {
+  sed -n '/case \$entry in/,/esac/p' "$1" | grep -v '^ *#'
+}
+# Non-empty first: an extraction that quietly matched nothing (both
+# sides "") would make the comparison trivially true.
+if [ -n "$(magpie_guard_list "$SCRIPT")" ] \
+  && [ "$(magpie_guard_list "$SCRIPT")" \
+  = "$(magpie_guard_list "$HERE/../setup-magpie.sh")" ]; then
+  ok "clone guard lists identical in both course scripts"
+else
+  no "clone guard lists identical in both course scripts"
+fi
 new_env
 make_installed
 rm -rf "$FAKE_HOME/magpie/.git"
@@ -744,6 +810,25 @@ echo "log" > "$FAKE_HOME/magpie/setup-log.txt"
 echo "help" > "$FAKE_HOME/magpie/setup-help.txt"
 run_e2e MAGPIE_FORCE_SETUP=1
 ret_is "own files only -> clone proceeds" 0
+file_ok "clone recreated .git" "$FAKE_HOME/magpie/.git"
+grep_ok "clone happened" "$STATE/screen.txt" "OK: magpie cloned"
+
+new_env
+make_installed
+rm -rf "$FAKE_HOME/magpie/.git"
+# 2026-11 leftover machines: the distributed copies of setup-magpie.sh
+# dumped a rejected profile to ~/magpie/setup-help-profile.json, and
+# exactly on those runs the clone never happened (the profile step sits
+# BEFORE the clone). Hard-killed setup runs (SIGHUP/SIGKILL - no EXIT
+# trap) additionally leave setup-dl-* downloads, and a completed full
+# run leaves .setup-fullrun-ok. Both course scripts share ~/magpie, so
+# the launcher's guard is the setup script's guard list verbatim - all
+# these names must stand without blocking the clone.
+touch "$FAKE_HOME/magpie/setup-help-profile.json"
+touch "$FAKE_HOME/magpie/setup-dl-gams.exe"
+touch "$FAKE_HOME/magpie/.setup-fullrun-ok"
+run_e2e MAGPIE_FORCE_SETUP=1
+ret_is "setup-magpie leftovers -> clone proceeds" 0
 file_ok "clone recreated .git" "$FAKE_HOME/magpie/.git"
 grep_ok "clone happened" "$STATE/screen.txt" "OK: magpie cloned"
 
@@ -813,6 +898,17 @@ grep_ok "installed version back at pin" "$FAKE_HOME/.config/nono/packages/nolabs
 grep_no "drift still no sudo" "$STATE/sudo.log" "."
 
 # ============================================================
+sec "E2E pack wrong version after pull -> version check fails"
+# ============================================================
+new_env
+run_e2e STUB_NONO_PULL_WRONG_VER=8.8.8
+ret_is "wrong pack version exits 1" 1
+grep_ok "wrong version logged" "$FAKE_HOME/magpie/setup-log.txt" \
+  "nono pack wrong version after pull: got 8.8.8, want 9.9.9"
+grep_ok "pull step failure verdict" "$STATE/screen.txt" \
+  "SETUP FAILED (twice, reproducible): nono profile pull"
+
+# ============================================================
 sec "sourced step_failed: in-process pass 2"
 # ============================================================
 new_env
@@ -871,6 +967,16 @@ echo partial > "$HOME/magpie/dl.tgz"
 magpie_download "http://x/dl.tgz" "$HOME/magpie/dl.tgz" deadbeef' run_fn STUB_CURL_DL_FAILS=1
 ret_is "failed download removes the temp file" 1
 nofile_ok "no temp left to wedge a resume" "$FAKE_HOME/magpie/dl.tgz"
+# The download policy promised in spec 6.4 (flag list, stall guard,
+# resume) is pinned on the source text - a quiet flag drop would keep
+# every behavioural test green while course downloads lose their retry
+# and timeout behaviour.
+grep_ok "curl policy: retry flags" "$SCRIPT" \
+  "curl -sS -fL --retry 4 --retry-delay 5 --retry-all-errors"
+grep_ok "curl policy: stall guard" "$SCRIPT" \
+  "connect-timeout 15 --max-time 900"
+grep_ok "curl policy: resumed fetches" "$SCRIPT" \
+  "magpie_curl -C - -o"
 
 # ============================================================
 printf '\n========================================\n'

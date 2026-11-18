@@ -126,7 +126,9 @@ Order of operations:
    `MAGPIE_REPAIR=1` must skip the fast path - the marker is still
    present after a quick-fail, so honoring it here would relaunch the
    broken sandbox and never run the repair (6.11).
-5. Setup path starts: placeholder-pin guard (4). Then disk check: free
+5. Setup path starts: root guard (never run as root - dotfiles and
+   configs must stay user-owned), then the placeholder-pin guard (4).
+   Then disk check: free
    GB via `df -Pk ~/magpie`, below 4 the failure verdict aborts with the
    per-OS hint ("free space in WINDOWS (C: drive)" / "empty the Trash
    and delete big files"). Then take the lock (below) - only after it is
@@ -380,13 +382,19 @@ header block (`NONO_PACK_VERSION`) like the binaries:
   If `.git` exists but its `origin` is not the pinned URL, the foreign
   guard below fires. If HEAD does not resolve (interrupted fetch left
   `.git` without a checkout), the clone body re-runs and heals.
-- "Foreign content" guard: if `~/magpie` holds entries OTHER than this
-  script's own files (`.git/`, `setup-log.txt`, `setup-help.txt` (not
-  written any more - allowed to stand so an older distributed copy never
-  blocks a clone),
-  `.setup-finished`, `.setup.lock/`, `.keepalive.pid`, and the install
-  leftovers `opencode-dl.tgz`, `opencode-extract/`, `nono-dl.tar.gz`,
-  `nono-extract/`), error block
+- "Foreign content" guard: if `~/magpie` holds entries OTHER than the
+  housekeeping files of EITHER course script (both scripts share the
+  folder, so the allowlist is identical to setup-magpie.sh's:
+  `.git/`, `setup-log.txt`, `setup-help.txt` and `setup-help-profile.json`
+  (neither written any more - allowed to stand so older distributed
+  copies never block a clone; the `.json` held the rejected-profile dump
+  the 2026-11 copies left behind, written exactly by the runs that died
+  at the profile step BEFORE any clone), `.setup-finished`,
+  `.setup.lock/`, `.keepalive.pid`, `.setup-fullrun-ok` (setup script's
+  full-run marker), and the install leftovers `opencode-dl.tgz`,
+  `opencode-extract/`, `nono-dl.tar.gz`, `nono-extract/`, `setup-dl-*`
+  (the setup script's downloads - a hard-killed run skips its EXIT
+  cleanup)), error block
   ("folder exists but is not a magpie clone - move it away or delete
   it"). The check must exclude our own files - the log exists here
   before this step ever runs, so a plain non-empty test would abort
@@ -565,15 +573,26 @@ Offline harness (fake `$HOME`, stub `curl/apt/git/softwareupdate/sudo/df/
 tar/nono/opencode`), like the existing
 `.tmp/test-path-export.sh`:
 
-- syntax: `bash -n`, bash32 guard (no bash4+ constructs, run on the
-  script and the harness); shellcheck when
+- syntax: `bash -n`, bash32 guard (no bash4+ constructs, and none of
+  the 2's banned idioms - double bracket, dollar-RANDOM, process
+  substitution - run on the script and the harness; a per-idiom
+  fixture self-test pins the guard pattern itself, so narrowing it
+  goes red); shellcheck when
   available (bash mode).
+- entry guard: unwritable `$HOME` (cannot create `~/magpie`) -> the
+  failure verdict is the only output on screen (fd 4; the log file is
+  impossible here) and no log dir is left behind.
 - fast path: table of marker-present/absent x each check present/broken;
   broken install with marker falls into setup path;
   `MAGPIE_FORCE_SETUP`/`MAGPIE_REPAIR` both respected (repair must NOT
   take the fast path).
 - checksums: fake archive accepted on match, retried and blocked on
   mismatch.
+- download policy pinned on the source text: `curl -sS -fL --retry 4
+  --retry-delay 5 --retry-all-errors`, `--connect-timeout 15
+  --max-time 900`, `magpie_curl -C - -o` - a quiet flag drop would keep
+  the behavioural download tests green while course downloads lose
+  their retries and stall guard.
 - retry helper: transient failure (2 fails then 0) passes silently;
   persistent failure (3 fails) triggers pass 2; pass 2 failure prints
   the failure verdict and exits 1; `MAGPIE_PASS` never reaches 3.
@@ -581,7 +600,9 @@ tar/nono/opencode`), like the existing
   killed on the OWNER's exit AND before launch (the stub `nono run`
   records whether the pidfile was still alive at the launch instant);
   a non-owner exit ("already running", no lock ever taken) leaves the
-  loop and its pidfile untouched.
+  loop and its pidfile untouched; a second start while the pidfile pid
+  is alive never stacks a second loop (same pid kept, owner exit stops
+  the one loop).
 - sudo loop: stubbed `sudo -v` failing N times then succeeding - loop
   must not print the failure verdict for N < cap; failure verdict at cap.
 - sudo timing: day-one setup with git+curl present -> ZERO sudo
@@ -590,7 +611,10 @@ tar/nono/opencode`), like the existing
 - nono pack pin: pull always carries `@<pin>`; post-pull version
   verified; drift (installed != pin) -> fast path declines, setup
   force-re-pulls at the pin; `nono pin` called after every successful
-  pull.
+  pull. A registry that hands back a stale pack DESPITE the pinned ref
+  is a failure, never a silent pass: the wrong version is logged and
+  the step fails at the pass cap ("nono profile pull"). Pinned by the
+  suite's wrong-version scenario (stub knob `STUB_NONO_PULL_WRONG_VER`).
 - PATH: dedupe over two runs; both tools visible in the same run
   (final launch uses a stub `nono` that records its PATH); an rc whose
   last line has no final newline gets the new PATH line on its own
@@ -612,11 +636,16 @@ tar/nono/opencode`), like the existing
   ls-remote/fetch; re-entry with pre-existing `origin` remote and
   half-created branch must succeed (idempotent sub-steps); dir holding
   only the script's own files (incl. install leftovers) -> proceeds;
-  dir with one foreign file -> error block.
+  dir with one foreign file -> error block; the allowlist is pinned
+  VERBATIM-identical to `setup-magpie.sh`'s by a cross-file comparison
+  in both suites.
 - disk: stubbed `df` below 4 GB -> failure verdict, no install attempt;
   above -> untouched.
 - lock: live second instance -> single heads-up line, exit 0,
-  no installs; stale lock (dead pid) -> reclaimed silently;
+  no installs; stale lock (dead pid) -> reclaimed silently - asserted
+  from OUTSIDE the exit code (no heads-up on screen, reclaimed lock
+  released on the owner's exit: an early `exit 0` inside the lock
+  function must not skip the proof);
   pass-2 exec and in-process second pass -> lock seen as self-owned,
   setup continues (must NOT exit with "already running").
 - traps: SIGINT mid-setup (lock held = owner) -> EXIT trap ran ->
@@ -626,7 +655,8 @@ tar/nono/opencode`), like the existing
 - heads-up lines: printed exactly once per step that RUNS, zero for
   skipped steps (count equals executed steps).
 - magpie dir: log + marker land under `~/magpie` (no help file any
-  more - the verdict names the log instead of writing a copy).
+  more - the verdict names the log instead of writing a copy, and it
+  quotes the log's last line on screen: `last log line: ...`).
 
 Live tests (must): WSL Ubuntu end to end; Intel Mac + Apple Silicon Mac
 each once (CLT unattended install, Gatekeeper behavior of the curl'd

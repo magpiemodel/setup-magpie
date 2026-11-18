@@ -685,12 +685,20 @@ magpie_clone_magpie() {
   # shellcheck disable=SC2045  # ls -A: own-file allowlist check includes dotfiles.
   for entry in $(ls -A "$HOME/magpie" 2>/dev/null); do
     case $entry in
-      # setup-help.txt: copies distributed before the AI help block was
-      # removed may have left it there - a stray file must never block
-      # the clone of an otherwise clean folder.
-      .git|setup-log.txt|setup-help.txt|.setup-finished|.setup.lock| \
-      .keepalive.pid|opencode-dl.tgz|opencode-extract|nono-dl.tar.gz| \
-      nono-extract) ;;
+      # Both course scripts share ~/magpie, so this allowlist is the
+      # setup-magpie.sh guard's list verbatim: a stray housekeeping file
+      # from either script must never block the clone of an otherwise
+      # clean folder. setup-help.txt + setup-help-profile.json: copies
+      # distributed before the AI help block was removed may have left
+      # them there (the .json held a rejected profile - written exactly
+      # by the runs that died at the profile step, BEFORE any clone).
+      # setup-dl-* / .setup-fullrun-ok: downloads of a hard-killed
+      # setup-magpie.sh run (SIGHUP/SIGKILL skip its EXIT trap) and its
+      # full-run marker.
+      .git|setup-log.txt|setup-help.txt|setup-help-profile.json| \
+      .setup-finished|.setup.lock| \
+      .keepalive.pid|.setup-fullrun-ok|opencode-dl.tgz|opencode-extract| \
+      nono-dl.tar.gz|nono-extract|setup-dl-*) ;;
       *)
         magpie_fail "magpie folder exists but is not a magpie clone - move it away or delete it"
         ;;

@@ -1,8 +1,8 @@
 # setup-magpie.sh - spec (unified day-one course setup)
 
 Status: implemented in setup-magpie.sh (tests: tests/test-setup-magpie.sh,
-715 assertions (716 when shellcheck is present), all green on a Linux
-x86_64 dev host). Date: 2026-11-17.
+766 assertions (767 when shellcheck is present), all green on a Linux
+x86_64 dev host). Date: 2026-11-18.
 
 ## 1. Purpose
 
@@ -46,9 +46,10 @@ failure the screen names the step, the code name and the path of
   `magpie-opencode.sh` expects (`setup-log.txt`, `.setup.lock/`,
   `.keepalive.pid`, `opencode-dl.tgz`,
   `opencode-extract/`, `nono-dl.tar.gz`, `nono-extract/`).
-  `setup-help.txt` is NOT written any more (the AI help block is gone);
-  the clone guard still allows the name to stand, so a folder left by an
-  older distributed copy never blocks a clone.
+  `setup-help.txt` and `setup-help-profile.json` (the rejected-profile
+  dump) are NOT written any more (the AI help block is gone);
+  the clone guard still allows both names to stand, so a folder left by
+  an older distributed copy never blocks a clone.
   `.setup-finished` is `magpie-opencode.sh`'s finish marker ONLY -
   this script never writes it, so running both scripts side by side
   stays consistent. `.setup-fullrun-ok` (full-run marker, holds the
@@ -71,8 +72,9 @@ failure the screen names the step, the code name and the path of
   process runs.
 - Errors are only reported when reproducible (the `magpie-opencode.sh`
   model): in-step retries, then one full second pass in a fresh
-  process; only a failure repeating in pass 2 prints the `##` help
-  block and exits 1. This REPLACES the old course scripts' "continue
+  process; only a failure repeating in pass 2 prints the failure verdict
+  (step, code name, log path - no `##` help block any more) and exits 1.
+  This REPLACES the old course scripts' "continue
   after FAIL and keep installing" behaviour.
 - The run ends with: unsandboxed checks -> all PASS: sandbox gate
   (`nono run --profile magpie-profile -- ... bash <thisfile>
@@ -101,8 +103,9 @@ failure the screen names the step, the code name and the path of
   `magpie_rc_has_path` (adjacency check: only a real PATH field counts,
   comments and longer paths do not).
 - Disk guard has two tiers (from the old scripts, env-overridable,
-  raised for the full run): below `MAGPIE_DISK_ABORT_GB=9` the help
-  block aborts; below `MAGPIE_DISK_WARN_GB=18` a warning goes on
+  raised for the full run): below `MAGPIE_DISK_ABORT_GB=9` the run
+  aborts with the failure verdict; below `MAGPIE_DISK_WARN_GB=18` a
+  warning goes on
   screen and to the feed.
 - `HU_API_KEY`: exported for the run AND written as one grep-guarded
   rc line - there is no launcher in this script, students may start
@@ -170,7 +173,9 @@ feed), `magpie_licence_text()` - the single place the teacher pastes
 `gamslice.txt` (placeholder still inside = early warning on screen +
 feed, nothing is written) - and `MAGPIE_COURSE_LICENSEE`
 (`Potsdam-Institut`): the substring the checks demand in the GAMS
-banner while the licence is embedded; empty = weak generic check only.
+banner whenever it is set - embedded or not (see 6.6 and 8; without an
+embedded slice the banner must additionally carry no demo/expired
+wording); empty = weak generic check only.
 
 ## 5. Script skeleton and order of operations
 
@@ -268,9 +273,9 @@ find gfortran. Download `setup-dl-<name>.pkg` -> `magpie_sudo_warm` ->
 sha re-check right before `sudo installer -pkg ... -target /` (root
 never reads a file that changed after verification) -> remove the
 download. Checksum mismatch blocks BEFORE any sudo call. GAMS macOS
-uses the same helper. The magpie-profile read list keeps the literal
-`/usr/local/gfortran` - the sandbox policy always names the real
-system path.
+uses the same helper. The magpie-profile read list names the gfortran
+folder via `MAGPIE_GFORTRAN_DIR` - default that literal real system
+path, listed once it exists (6.7).
 
 ### 6.5 TinyTeX + tex PATH
 
@@ -439,7 +444,15 @@ username ever enters the profile or the feed. The Downloads original
 stays untouched and is re-copied on every fresh run (edit-and-rerun
 works); a rerun whose script is already native, and any system where
 `stat -f` fails or reports another type (macOS: `apfs`/`hfs`), skip
-the copy silently. The relocation is silent on screen (one log
+the copy silently. The teacher's copy of the script holds the feed
+credentials and the licence, and 9P sources are world-readable under
+the usual 022 umask: the folder is forced 700 and the copy 600 on
+EVERY relocation (`cp -f` recreates the file, so a one-time chmod would
+not survive reruns). A failing folder creation or copy (rare - the
+target sits in `$HOME`) keeps the run non-fatal, leaves `MAGPIE_SELF`
+on the Windows path and logs exactly one line, so the failure post's
+log tail explains the nono warnings that follow. The relocation is
+silent on screen (one log
 line) - the student never sees a 9P warning.
 
 The call runs in a subshell whose combined output is appended to
@@ -460,9 +473,15 @@ recursion-proof.
 
 `magpie_clone_body` / `magpie_clone_ok` / `magpie_clone_magpie` from
 `magpie-opencode.sh` 6.9, incl. foreign-dir / foreign-origin guards and
-the own-file allowlist (magpie-opencode's full list, incl. its
-`.setup-finished` marker - tolerated, never written here - extended
-with `setup-dl-*` and `.setup-fullrun-ok`).
+the own-file allowlist - now the SAME list in both scripts, since both
+share `~/magpie` and neither may block the other's clone (incl.
+magpie-opencode's `.setup-finished` marker - tolerated, never written
+here - plus this script's `setup-dl-*` downloads, `.setup-fullrun-ok`
+marker and the legacy
+`setup-help-profile.json`: the rejected-profile dump the 2026-11
+distributed copies left behind - written exactly by the runs that died
+at the profile step, BEFORE the clone, so a machine healing from that
+failure presents it to a clone with no `.git`).
 Origin acceptance (`magpie_clone_url_ok`, keys from `magpie_url_key`):
 a stored origin is normalized - trailing slash(es), trailing `.git`,
 scheme, `user@`, scp-style `host:path` colon -> `/` - and accepted when
@@ -727,20 +746,37 @@ HOME, stub binaries only, real git only against a local origin; PATH is
 a curated minimal bin dir so a host tex/pandoc/Rscript/gams can never
 shadow the stubs; pinned block sedded to 9.9.9/fake shas; scenario
 trees cloned from one template via hardlinks; previous scratch moved
-aside with a detached background rm): 715
-assertions (716 with shellcheck on PATH) - syntax (bash -n, bash32
-guard on script and harness, shellcheck -s bash where present); pin
+aside with a detached background rm): 766
+assertions (767 with shellcheck present) - syntax (bash -n, bash32
+guard on script and harness - it flags bash4+ syntax AND the 2's hard
+rules: double bracket, dollar-RANDOM, process substitution - shellcheck
+-s bash where present; a per-idiom fixture self-test pins the guard
+pattern ITSELF, so narrowing it goes red); pin
 placeholder guard;
 disk abort + warn tiers (incl. the raised 9 GB / 18 GB boundaries);
-root guard; lock live/stale (a second window
+root guard; entry guard (an
+unwritable HOME: the failure verdict is the only output on screen and
+no log dir is created); lock live/stale (a second window
 exits quietly and leaves the FIRST run's keep-alive + `setup-dl-*`
-untouched); system string before the OS is set; retry helper +
+untouched; the stale reclaim is asserted from OUTSIDE the exit code -
+an early `exit 0` inside the lock function (dead pid believed alive)
+must not skip the proof: silent screen and the reclaimed lock released
+on the owner's exit); system string before the OS is set; retry helper +
 fresh-process pass 2; sudo loop
 + keep-alive (killed BEFORE the gate - asserted with a live keep-alive
 in a dedicated sudo-prompt E2E, and `setup-dl-*.pkg` checksum mismatch
-asserting no sudo ran before verification); handle create-once/reuse
-(no box, and `magpie_greet` lands in the log, not on screen);
-feed target guard (anchored credential-free `STATUS_URL`); PUT
+asserting no sudo ran before verification; a second start while the
+pidfile pid is alive never stacks a second loop - same pid kept, owner
+exit stops the one loop); handle create-once/reuse
+(no box, and `magpie_greet` lands in the log, not on screen; a present
+but EMPTY or UNREADABLE handle file heals to a fresh name, never an
+empty one and never a leaked `cat:` error);
+download policy pinned on the
+source text (`curl -sS -fL --retry 4 --retry-delay 5
+--retry-all-errors`, `--connect-timeout 15 --max-time 900`,
+`magpie_curl -C - -o` - a quiet flag drop would keep the behavioural
+download tests green while course downloads lose retries and the stall
+guard); feed target guard (anchored credential-free `STATUS_URL`); PUT
 uploads recorded with credentials stripped - the stub strips (a password
 holding "@" too), a fake filled-in link proves no token/password reaches
 any artifact (start
@@ -754,13 +790,17 @@ silent, failing uploads ignored, `STATUS_URL=""`
 uploads nothing, combined FAIL
 detail with 3200 B cap (deep tail cut; the screen gets only the verdict
 + log path, and with `STATUS_URL=""` the log tail goes to the screen
-instead of the feed pointer),
+instead of the feed pointer - pinned both ways: with a live feed the
+tail must stay off the screen),
 CRASH on unexpected exit (3, silent 1; none after a FAIL post, none
 in the check-only child), retry-pass-2 announce; config
 write incl. foreign `.bak`; HU key dedupe; cache dirs created + rc
-lines deduped; rc appends survive a missing final newline; licence placeholder/pasted/
-mode-600/never-clobber/darwin-700; checks table (licensee-name PASS, demo FAIL,
-foreign-licence FAIL, weak-check fallback, unlicensed FAIL, probe temp dir
+lines deduped; rc appends survive a missing final newline; licence placeholder/
+blank-heredoc/pasted/mode-600/demo-slice-replacement
+(with `.bak` + feed line)/darwin-700; checks table (licensee-name PASS, demo FAIL,
+foreign-licence FAIL, weak-check fallback, unlicensed FAIL, a
+licensee-naming demo FAILs WITHOUT embedding (only the embedded name
+outranks demo wording), probe temp dir
 cleaned, no-scratch-dir FAIL, R/pandoc/tex/git lines, R library check
 (no line before the marker, PASS/FAIL with the marker, probe never runs
 in the gate child),
@@ -772,9 +812,18 @@ rerun path, `skipped (MAGPIE_FULL_RUN=0)` variant; no `##` and no
 failure line anywhere on a green run; no `setup-help.txt` ever
 written, and stale `setup-help.txt`/`setup-help-profile.json` from older
 copies dropped on the green path only);
-check-only child isolation; pack pull pin + drift + profile build/
+check-only child isolation; pack pull pin + drift + wrong-version-after-
+pull (a registry handing back a stale pack despite the pinned ref fails
+the step, never a silent pass) + profile build/
 validate/keep-modified/stale-generated-regenerates-with-`.bak` (+ cache
-write-list on both OSes, PATH-gams extra read entry); apt calls
+write-list on both OSes, the R user dirs asserted as read entries
+INSIDE the `read` block - the same path in `write` must never satisfy
+them - and as write entries; PATH-gams extra read entry);
+9P relocation (Windows-drive copies relocate `MAGPIE_SELF` to the
+native copy and the original stays untouched, the copy lands 600 under
+a 022 umask with its folder 700, native reruns do not recopy, a missing
+`stat` is tolerated, a blocked copy stays non-fatal
+and is logged); apt calls
 carry the dpkg lock timeout (base + tools, update + install); ubuntu floor
 blocks < 24.04 with the wsl hint; dev-lib guard (missing or half-configured
 package reruns the install, too-old apt R blocks the step); TinyTeX
@@ -788,7 +837,10 @@ bootstrap, no bootstrap when renv present, persistent failure -> the
 failure verdict, 3 attempts); clone guards (foreign dir,
 foreign origin, ssh/`.git`/trailing-slash/fork origin accepted, removed
 origin proceeds, interrupted heal, `setup-dl-*` leftovers tolerated,
-`.setup-fullrun-ok` marker tolerated by the guard);
+`.setup-fullrun-ok` marker tolerated by the guard, legacy
+`setup-help.txt`/`setup-help-profile.json` tolerated by the guard,
+and the two scripts' guard lists compared VERBATIM (comments aside -
+both specs pin one shared list));
 gate (child output and nono's own banner in the
 log exactly once and NOT on screen, parent prints the sandbox OK line,
 child exit code wins, sudo cooled at that instant), full run
@@ -800,19 +852,30 @@ two complete folders wins into the marker, escape hatch, caffeinate
 wrap on darwin);
 E2E day-one green run (7 heads-ups, OK lines, rc dedupe, licence
 written, clone checked out, no `.setup-finished`, `setup-dl-*` cleaned,
-full run marker + artifacts + two `n` prompt answers on stdin,
+full run marker + artifacts,
 profile write-list, cache rc lines, greet line in the log and off
-screen, plain `PASS gams (course licence found)` with no to-do note)
-+ second run all-skip (full run PASS line, start.R ran once)
+screen, plain `PASS gams (course licence found)` with no to-do note;
+the flow-matched prompt answers - `y` without `renv.lock`, two `n`
+with - are proven in the adjacent unit scenarios, incl. caffeinate on
+darwin)
++ second run all-skip (full run PASS line, verdict banner on screen
+and as the log's last line, start.R ran once)
 + E2E MAGPIE_FULL_RUN=0 (green, skip notes, no marker)
 + E2E deleted artifacts -> FAIL -> marker removal heals
 + E2E reproducible failure -> pass 2 -> failure
 verdict + FAIL feed line (step named, code name on screen, no
 `setup-help.txt`). Regression: tests/test-magpie-opencode.sh still
-192/0 (incl. the cleanup-ownership tests: owner exit stops the
+214/0 (= 197 + 17 verification pins: 4 guard-pattern fixture
+self-tests, the cross-file guard-list identity, the verdict quoting
+the log's last line, the entry guard on an unwritable HOME (3), the
+download policy pinned on the source text (3), the non-stacking
+keep-alive restart (2), and the post-pull pack version check (3); 213 without
+shellcheck; incl. the cleanup-ownership tests: owner exit stops the
 keep-alive and removes the lock; a non-owner exit leaves both alone;
-and the rc-append newline guard: an append to an rc without final
-newline starts its own line).
+the rc-append newline guard: an append to an rc without final
+newline starts its own line; and the launcher clone guard tolerating
+setup-magpie leftovers - `setup-help-profile.json`, `setup-dl-*`,
+`.setup-fullrun-ok`).
 
 Live pending (course day / reference machines): real GAMS download +
 extract, macOS pkg installs incl. Gatekeeper of `sudo installer`
@@ -821,7 +884,7 @@ answer on HU network, the full day-one run incl. the real ~40 min
 full run on Intel + Apple Silicon +
 WSL, read/write-list completeness of `magpie-profile` (expect one denial
 round per platform), stdin forwarding of `nono run` to the sandboxed
-child (the full-run `n` answers rely on it).
+child (the full-run prompt answers rely on it).
 
 ## 12. Teacher to-do before the session
 

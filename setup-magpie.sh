@@ -217,9 +217,15 @@ magpie_init_handle() {
     Wombat Toad Crane Hare Eagle Snake Turtle Parrot Hedgehog Beaver \
     Llama Alpaca Toucan Pelican Ferret)
   # Atomic first creation: two concurrent first runs converge on one
-  # name; the loser keeps the winner's handle.
+  # name; the loser keeps the winner's handle. An EMPTY or UNREADABLE
+  # existing file (stale-profile child) still yields the fresh name:
+  # the creation failed because the file exists, so the read alone must
+  # never decide - and no cat: error may reach the caller.
   if ! ( set -C; printf '%s\n' "$new_handle" > "$MAGPIE_HANDLE_FILE" ) 2>/dev/null; then
-    MAGPIE_HANDLE=$(cat "$MAGPIE_HANDLE_FILE")
+    MAGPIE_HANDLE=$(cat "$MAGPIE_HANDLE_FILE" 2>/dev/null || true)
+    if [ -z "$MAGPIE_HANDLE" ]; then
+      MAGPIE_HANDLE=$new_handle
+    fi
     return 0
   fi
   MAGPIE_HANDLE=$new_handle
@@ -482,12 +488,22 @@ magpie_native_self_copy() {
     *) return 0 ;;
   esac
   dest="$HOME/.magpie-course/self/setup-magpie.sh"
-  if ! mkdir -p "$HOME/.magpie-course/self" 2>/dev/null; then
-    return 0
-  fi
-  if cp -f "$MAGPIE_SELF" "$dest" 2>/dev/null; then
+  # Without the native copy the sandboxed steps would still read the
+  # 9P file (random denials, nono warnings). Rare - the folder sits in
+  # $HOME, which is writable in every run that got this far - but when
+  # folder or copy fails, the log has to say so. The teacher's copy of
+  # this script carries the feed credentials and the licence, and 9P
+  # sources are world-readable with a default 022 umask - so folder
+  # (700) and copy (600) are forced private on EVERY relocation (cp -f
+  # recreates the file, a one-time chmod would not survive reruns).
+  if mkdir -p "$HOME/.magpie-course/self" 2>/dev/null \
+    && chmod 700 "$HOME/.magpie-course/self" 2>/dev/null \
+    && cp -f "$MAGPIE_SELF" "$dest" 2>/dev/null \
+    && chmod 600 "$dest" 2>/dev/null; then
     MAGPIE_SELF=$dest
     magpie_log "script run from a Windows drive (9P) - sandboxed steps use $dest"
+  else
+    magpie_log "9P relocation copy failed - sandboxed steps still use the Windows path"
   fi
 }
 
@@ -1000,9 +1016,14 @@ magpie_r_user_dirs() {
 
 magpie_register_caches() {
   mkdir -p "$MADRAT_MAINFOLDER" "$RENV_PATHS_CACHE" || return 1
-  while IFS= read -r d; do
-    mkdir -p "$d" || return 1
-  done < <(magpie_r_user_dirs)
+  # Subshell + newline IFS: one mkdir per path (macOS "Application
+  # Support" has a space) with no process substitution, and a failed
+  # mkdir returns without leaving the modified IFS behind.
+  ( IFS='
+'
+    for d in $(magpie_r_user_dirs); do
+      mkdir -p "$d" || exit 1
+    done ) || return 1
   touch "$MAGPIE_RC" 2>/dev/null || true
   if ! grep -q '^export MADRAT_MAINFOLDER=' "$MAGPIE_RC" 2>/dev/null; then
     magpie_rc_newline "$MAGPIE_RC"
@@ -1624,13 +1645,18 @@ magpie_build_nono_profile() {
   fi
   # R user dirs (tools::R_user_dir): packages cache into them AT LOAD
   # TIME - readable AND writable, created by magpie_register_caches
-  # before this step runs.
+  # before this step runs. Newline-IFS loop (paths may hold spaces, no
+  # process substitution): the same pattern as the read list below.
   write_extra=""
-  while IFS= read -r d; do
+  oldIFS=$IFS
+  IFS='
+'
+  for d in $(magpie_r_user_dirs); do
     magpie_add_read_dir "$d"
     write_extra="$write_extra      \"$d\",
 "
-  done < <(magpie_r_user_dirs)
+  done
+  IFS=$oldIFS
   read_extra=""
   # The GAMS.framework entry stays literal on macOS (not existence-
   # gated): magpie_install_gams only reports success with that folder
@@ -1812,10 +1838,13 @@ magpie_clone_magpie() {
   # shellcheck disable=SC2045  # ls -A: own-file allowlist check includes dotfiles.
   for entry in $(ls -A "$HOME/magpie" 2>/dev/null); do
     case $entry in
-      # setup-help.txt: copies distributed before the AI help block was
-      # removed may have left it there - a stray file must never block
-      # the clone of an otherwise clean folder.
-      .git|setup-log.txt|setup-help.txt|.setup-finished|.setup.lock| \
+      # setup-help.txt + setup-help-profile.json: copies distributed
+      # before the AI help block was removed may have left them there
+      # (the .json held a rejected profile - written exactly by the
+      # runs that never reached the clone). A stray file must never
+      # block the clone of an otherwise clean folder.
+      .git|setup-log.txt|setup-help.txt|setup-help-profile.json| \
+      .setup-finished|.setup.lock| \
       .keepalive.pid|.setup-fullrun-ok|opencode-dl.tgz|opencode-extract| \
       nono-dl.tar.gz|nono-extract|setup-dl-*) ;;
       *)
@@ -2324,7 +2353,7 @@ magpie_entry() {
       magpie_fail "cannot create ~/magpie - check disk space and folder rights"
     fi
     # Windows-drive invocation -> native copy for sandboxed steps
-    # (log line goes to the file; the screen note rides fd 4).
+    # (log-only: the student never sees a 9P note).
     magpie_native_self_copy >> "$HOME/magpie/setup-log.txt" 2>&1
     magpie_main ${1+"$@"} >> "$HOME/magpie/setup-log.txt" 2>&1
   fi

@@ -47,9 +47,11 @@ mode_is() {
   if [ "$m" = "$3" ]; then ok "$1 (mode $m)"; else no "$1 (mode $m want $3)"; fi
 }
 
-# Bash 3.2 gate: flags bash4+ constructs. Bracketed first letters keep
-# this pattern text from matching itself.
-BASH32_PAT='[d]eclare -A|[l]ocal -A|[m]apfile|[r]eadarray|[&]>>|[|]&|[d]eclare -n|[l]ocal -n|\$\{[A-Za-z_][A-Za-z0-9_]*(,,|\^\^|@)'
+# Bash 3.2 gate: flags bash4+ constructs plus the banned double
+# bracket, dollar-RANDOM and the angle-paren process substitution
+# (bash-3.2-valid but banned by design, spec 2). Bracketed first
+# letters keep this pattern text from matching itself.
+BASH32_PAT='[d]eclare -A|[l]ocal -A|[m]apfile|[r]eadarray|[&]>>|[|]&|[d]eclare -n|[l]ocal -n|\$\{[A-Za-z_][A-Za-z0-9_]*(,,|\^\^|@)|[<][(]|\$[R]ANDOM|\[\['
 bash32_guard() {
   local hits
   hits=$(grep -nE "$BASH32_PAT" "$1" 2>/dev/null || true)
@@ -156,6 +158,9 @@ case "$1" in
     echo "pull force=$force ref=$ref" >> "$STATE/nono.log"
     ver=${ref#*@}
     [ "$ver" = "$ref" ] && ver=latest
+    # Wrong-version sabotage knob: emulate a registry that hands back
+    # a stale pack despite the pinned ref (script-side check must bite).
+    [ -n "${STUB_NONO_PULL_WRONG_VER:-}" ] && ver="$STUB_NONO_PULL_WRONG_VER"
     mkdir -p "$HOME/.config/nono/packages/nolabs-ai/opencode"
     echo "{\"name\":\"opencode\",\"version\":\"$ver\"}" \
       > "$HOME/.config/nono/packages/nolabs-ai/opencode/package.json"
@@ -735,6 +740,23 @@ sec "syntax"
 if bash -n "$SCRIPT" 2>/dev/null; then ok "bash -n"; else no "bash -n"; fi
 bash32_guard "$SCRIPT"
 bash32_guard "$HERE/test-setup-magpie.sh"
+# Guard self-test: the pattern must actually FLAG the banned idioms -
+# a silently narrowed BASH32_PAT would keep this suite green while the
+# spec 2 machine-enforcement quietly dies. Idioms are assembled from
+# parts so the guard never sees its own fixture text as a violation.
+b32_bb='['
+b32_d='$'
+b32_lp='('
+b32_dl='declare'
+for b32_idiom in "$b32_bb$b32_bb x ]]" "$b32_d""RANDOM=1" \
+  "diff <${b32_lp}true)" "${b32_dl} -A cfg"; do
+  printf '%s\n' "$b32_idiom" > "$RUNROOT/bash32-fixture.sh"
+  if grep -qE "$BASH32_PAT" "$RUNROOT/bash32-fixture.sh"; then
+    ok "bash32 pattern flags: $b32_idiom"
+  else
+    no "bash32 pattern flags: $b32_idiom"
+  fi
+done
 SHELLCHECK=""
 if command -v shellcheck >/dev/null 2>&1; then
   SHELLCHECK=shellcheck
@@ -808,6 +830,17 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_se
   run_fn STUB_ID_ROOT=1
 ret_is "root run aborts" 1
 grep_ok "root message" "$STATE/screen.txt" "do not run as root"
+new_env
+# Entry guard: ~/magpie cannot be created (unwritable HOME) - the
+# failure verdict is the only output, and it must still reach the
+# screen although the log file is impossible here.
+chmod 555 "$FAKE_HOME"
+run_e2e
+chmod 700 "$FAKE_HOME"
+ret_is "unwritable HOME aborts" 1
+grep_ok "entry verdict names the failure" "$STATE/screen.txt" \
+  "cannot create ~/magpie"
+nofile_ok "no log dir created" "$FAKE_HOME/magpie"
 
 # ============================================================
 sec "lock"
@@ -826,8 +859,15 @@ file_ok "other lock untouched" "$FAKE_HOME/magpie/.setup.lock/pid"
 new_env
 mkdir -p "$FAKE_HOME/magpie/.setup.lock"
 echo 999999 > "$FAKE_HOME/magpie/.setup.lock/pid"
-FN_BODY='magpie_take_lock; [ "$(cat "$HOME/magpie/.setup.lock/pid")" = "$$" ]' run_fn
+FN_BODY='magpie_take_lock' run_fn
 ret_is "stale lock reclaimed silently" 0
+# An early exit 0 inside take_lock (dead pid believed alive) skips any
+# FN_BODY assertion - these observe from outside: no heads-up on the
+# screen, and the reclaimed lock is gone with the sourcing shell
+# (owner's EXIT cleanup ran).
+grep_no "no already-running note on reclaim" "$STATE/screen.txt" \
+  "already running"
+nofile_ok "reclaimed lock released on exit" "$FAKE_HOME/magpie/.setup.lock/pid"
 # The second window must NOT clean the FIRST run's state: no deletion
 # of its setup-dl-* downloads, no kill of its keep-alive.
 new_env
@@ -948,6 +988,16 @@ else
   no "SIGKILL owner stops the sudo refresher (grew $n1 -> $n2)"
   [ -n "$KAPID" ] && kill "$KAPID" 2>/dev/null
 fi
+# Two starts in one run must not stack refresher loops: the live pid
+# in the pidfile short-circuits the second call (same pid kept, and
+# the owner-exit cleanup then stops the ONE loop it knows about).
+FN_BODY='MAGPIE_HANDLE=T1; magpie_take_lock; magpie_start_keepalive
+p1=$(cat "$HOME/magpie/.keepalive.pid")
+magpie_start_keepalive
+p2=$(cat "$HOME/magpie/.keepalive.pid")
+[ "$p1" = "$p2" ]' run_fn
+ret_is "second start reuses live keep-alive" 0
+nofile_ok "pidfile gone after owner exit" "$FAKE_HOME/magpie/.keepalive.pid"
 # keep-alive is killed BEFORE the sandbox gate runs:
 new_env
 make_tools
@@ -1201,13 +1251,39 @@ grep_ok "greet reuses handle (log)" "$FAKE_HOME/magpie/setup-log.txt" \
   "reporting status as Fox123"
 grep_no "no greet line on screen" "$STATE/screen.txt" "Fox123"
 grep_no "no box on reuse" "$STATE/screen.txt" "NOTE IT DOWN"
+# Present but EMPTY handle file (a sandboxed child with a stale profile
+# can leave one): init must fall back to a FRESH name, never run under
+# an empty one (the noclobber creation fails - the file exists - so the
+# second read must not decide alone).
+new_env
+: > "$FAKE_HOME/.magpie-course-handle"
+FN_BODY='magpie_greet' run_fn
+ret_is "empty handle file heals" 0
+grep_ok "empty handle gets a fresh name" "$FAKE_HOME/magpie/setup-log.txt" \
+  "reporting status as [A-Z][a-z]*[0-9][0-9][0-9]"
+grep_no "never greets with an empty handle" "$FAKE_HOME/magpie/setup-log.txt" \
+  "reporting status as $"
+# Present but UNREADABLE handle file (a stale-profile child may leave
+# one it cannot even read): the same fresh-name healing, and the
+# cat errors must stay suppressed - no "cat:" line may leak into the
+# log the failure post quotes.
+new_env
+echo "Fox123" > "$FAKE_HOME/.magpie-course-handle"
+chmod 000 "$FAKE_HOME/.magpie-course-handle"
+FN_BODY='magpie_greet' run_fn
+ret_is "unreadable handle file heals" 0
+grep_ok "unreadable handle gets a fresh name" "$FAKE_HOME/magpie/setup-log.txt" \
+  "reporting status as [A-Z][a-z]*[0-9][0-9][0-9]"
+grep_no "no cat error leaks (unreadable handle)" "$FAKE_HOME/magpie/setup-log.txt" \
+  "cat:"
+chmod 600 "$FAKE_HOME/.magpie-course-handle" 2>/dev/null || true
 
 # ============================================================
 sec "config write"
 # ============================================================
 new_env
 CFG="$FAKE_HOME/.config/opencode/opencode.json"
-FN_BODY='magpie_os_placeholder=1; magpie_write_opencode_config' run_fn
+FN_BODY='magpie_write_opencode_config' run_fn
 ret_is "writes fresh config" 0
 grep_ok "model preselected" "$CFG" '"model": "hu/llm3"'
 FN_BODY='magpie_write_opencode_config' run_fn
@@ -1289,6 +1365,9 @@ grep_ok "course licence in place" "$T" "TEST-LICENCE-CONTENT"
 grep_ok "old slice kept as bak" "$T.bak" "OLD-DEMO-SLICE"
 grep_ok "replacement logged" "$FAKE_HOME/magpie/setup-log.txt" \
   "replacing non-course gamslice.txt"
+# The spec promises the replacement as a FEED line too: the TA reads
+# the demo-license swap on the course feed, not just in a local log.
+grep_ok "replacement fed" "$STATE/feed.log" "replaced non-course gamslice.txt"
 mode_is "replaced licence mode 600" "$T" 600
 new_env
 SRC="$ENV/magpie_lic.sh"
@@ -1404,6 +1483,19 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' \
 ret_is "demo banner FAILs (placeholder licence too)" 1
 grep_ok "demo FAIL line (placeholder)" "$STATE/screen.txt" \
   "FAIL gams runs only with the free demo licence"
+# Without an embedded slice, naming the licensee is NOT enough: a demo
+# slice registered with the institute name (banner shows both) must
+# never pose as the course licence. With an embedded slice the name
+# outranks the demo word (scenario above) - without one it must not.
+new_env
+make_tools
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' \
+  run_fn STUB_GAMS_BANNER="Licensee: Potsdam-Institut (demo license)"
+ret_is "licensee+demo without embedding FAILs" 1
+grep_ok "poseur demo FAIL line" "$STATE/screen.txt" \
+  "FAIL gams runs only with the free demo licence"
+grep_no "poseur never PASSes as course licence" "$STATE/screen.txt" \
+  "PASS gams (course licence found)"
 new_env
 make_tools
 SRC="$ENV/magpie_lic.sh"
@@ -1524,6 +1616,17 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_pu
 ret_is "pack pulled at pin" 0
 grep_ok "pull carries the pin" "$STATE/nono.log" "pull nolabs-ai/opencode@9.9.9"
 grep_ok "pack pinned" "$STATE/nono.log" "nono pin nolabs-ai/opencode"
+# The registry hands back a stale pack despite the pinned ref: the
+# post-pull version check must catch it and fail the step at the cap.
+new_env
+put_nono
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; MAGPIE_PASS=2 magpie_pull_nono_profile' \
+  run_fn STUB_NONO_PULL_WRONG_VER=8.8.8
+ret_is "wrong pack version fails" 1
+grep_ok "wrong version logged" "$FAKE_HOME/magpie/setup-log.txt" \
+  "nono pack wrong version after pull: got 8.8.8, want 9.9.9"
+grep_ok "pull step failure verdict" "$STATE/screen.txt" \
+  "SETUP FAILED (twice, reproducible): nono profile pull"
 new_env
 put_nono
 # Read entries are gated on folder existence (validation rejects
@@ -1612,10 +1715,14 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
 magpie_register_caches; magpie_step_magpie_profile' run_fn
 ret_is "linux profile has cache write paths" 0
 PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+# Scoped read-block extract: the same quoted path also lands in WRITE
+# (the user dirs are write entries too), so a whole-file grep can never
+# prove a READ grant - it passes on the write entry alone.
+sed -n '/"read": \[/,/\]/p' "$PJSON" > "$STATE/read-block.txt"
 grep_ok "write section present" "$PJSON" '"write"'
 grep_ok "write holds madrat" "$PJSON" "$FAKE_HOME/.madrat"
 grep_ok "write holds renv cache" "$PJSON" ".cache/R/renv"
-grep_ok "read holds madrat too" "$PJSON" "$FAKE_HOME/.madrat"
+grep_ok "read holds madrat too" "$STATE/read-block.txt" "$FAKE_HOME/.madrat"
 # R user dirs: literal write entries (registered before the build),
 # gated read entries (the folders exist after registration).
 grep_ok "write holds the R cache dir" "$PJSON" \
@@ -1624,8 +1731,12 @@ grep_ok "write holds the R data dir" "$PJSON" \
   '"'"$FAKE_HOME"'/.local/share/R"'
 grep_ok "write holds the R config dir" "$PJSON" \
   '"'"$FAKE_HOME"'/.config/R"'
-grep_ok "read holds the R data dir" "$PJSON" \
+grep_ok "read holds the R cache dir" "$STATE/read-block.txt" \
+  '"'"$FAKE_HOME"'/.cache/R"'
+grep_ok "read holds the R data dir" "$STATE/read-block.txt" \
   '"'"$FAKE_HOME"'/.local/share/R"'
+grep_ok "read holds the R config dir" "$STATE/read-block.txt" \
+  '"'"$FAKE_HOME"'/.config/R"'
 # The 2026-11 course failure: apt texlive satisfied the TinyTeX step,
 # so ~/.TinyTeX never existed - the read list must simply omit it and
 # the build must pass, not reference a folder validation rejects.
@@ -1651,7 +1762,8 @@ PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
 grep_ok "darwin keeps gams framework read" "$PJSON" "/Library/Frameworks/GAMS.framework"
 grep_ok "darwin reads clang toolchain dir" "$PJSON" "$FAKE_HOME/fakeclt"
 grep_ok "darwin write holds R user dirs" "$PJSON" "org.R-project.R"
-grep_ok "darwin reads the R data dir" "$PJSON" \
+sed -n '/"read": \[/,/\]/p' "$PJSON" > "$STATE/read-block.txt"
+grep_ok "darwin reads the R data dir" "$STATE/read-block.txt" \
   '"'"$FAKE_HOME"'/Library/Application Support/org.R-project.R"'
 grep_ok "darwin reads gfortran dir" "$PJSON" "$FAKE_HOME/gfortran"
 grep_ok "darwin reads Library/TinyTeX" "$PJSON" "$FAKE_HOME/Library/TinyTeX"
@@ -1792,7 +1904,11 @@ stat_stub
 DL="$FAKE_HOME/mnt/c/Users/Max Mustermann/Downloads"
 mkdir -p "$DL"
 printf 'MAGPIE-9P-ORIGINAL\n' > "$DL/setup-magpie.sh"
-FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1
+# Real Downloads files sit world-readable on the 9P mount, and a fresh
+# login shell has umask 022: the relocated copy of the (teacher-filled:
+# feed credentials + licence) script must still land private.
+chmod 644 "$DL/setup-magpie.sh"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; umask 022
 MAGPIE_SELF="'"$DL"'/setup-magpie.sh"
 magpie_native_self_copy
 printf "%s\n" "$MAGPIE_SELF" > "$STATE/self.txt"' run_fn
@@ -1801,9 +1917,13 @@ NATIVE="$FAKE_HOME/.magpie-course/self/setup-magpie.sh"
 grep_ok "self redirected to native copy" "$STATE/self.txt" \
   "\.magpie-course/self/setup-magpie.sh"
 grep_ok "copy carries the content" "$NATIVE" "MAGPIE-9P-ORIGINAL"
+file_ok "Windows-drive original stays untouched" "$DL/setup-magpie.sh"
 grep_ok "Windows drive note logged" "$FAKE_HOME/magpie/setup-log.txt" \
   "Windows drive"
 grep_no "Linux-side note off screen" "$STATE/screen.txt" "Linux-side copy"
+# Private modes despite the 022 umask: the copy holds the filled script.
+mode_is "native copy is 600" "$NATIVE" 600
+mode_is "self folder is 700" "$FAKE_HOME/.magpie-course/self" 700
 # Reruns from the relocated (native) path must not copy again.
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1
 MAGPIE_SELF="'"$FAKE_HOME"'/.magpie-course/self/setup-magpie.sh"
@@ -1825,6 +1945,24 @@ printf "%s\n" "$MAGPIE_SELF" > "$STATE/self.txt"' run_fn
 ret_is "missing stat tolerated (exit 0)" 0
 grep_ok "self kept without stat" "$STATE/self.txt" "^/bin/sh$"
 nofile_ok "no copy folder made" "$FAKE_HOME/.magpie-course/self"
+# The copy destination cannot be created (~/.magpie-course taken):
+# the run must not die here, but it must not stay silent either - the
+# log names the still-9P path state for whoever reads the feed tail.
+new_env
+stat_stub
+DL="$FAKE_HOME/mnt/c/Users/Max Mustermann/Downloads"
+mkdir -p "$DL"
+printf 'MAGPIE-9P-ORIGINAL\n' > "$DL/setup-magpie.sh"
+printf 'occupied\n' > "$FAKE_HOME/.magpie-course"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1
+MAGPIE_SELF="'"$DL"'/setup-magpie.sh"
+magpie_native_self_copy
+printf "%s\n" "$MAGPIE_SELF" > "$STATE/self.txt"' run_fn
+ret_is "blocked relocation stays non-fatal (exit 0)" 0
+grep_ok "self stays on the Windows path" "$STATE/self.txt" "mnt/c/Users"
+grep_ok "failed copy is logged" "$FAKE_HOME/magpie/setup-log.txt" \
+  "9P relocation copy failed"
+grep_no "failed copy note off screen" "$STATE/screen.txt" "9P"
 
 # ============================================================
 sec "macOS branches (forced MAGPIE_OS=darwin, stub installer)"
@@ -1962,10 +2100,35 @@ echo partial > "$HOME/magpie/dl.tgz"
 magpie_download "http://x/dl.tgz" "$HOME/magpie/dl.tgz" deadbeef' run_fn STUB_CURL_DL_FAILS=1
 ret_is "failed download removes the temp file" 1
 nofile_ok "no temp left to wedge a resume" "$FAKE_HOME/magpie/dl.tgz"
+# The download policy promised in the spec (flag list, stall guard,
+# resume) is pinned on the source text - a quiet flag drop would keep
+# every behavioural test green while course downloads lose their retry
+# and timeout behaviour.
+grep_ok "curl policy: retry flags" "$SCRIPT" \
+  "curl -sS -fL --retry 4 --retry-delay 5 --retry-all-errors"
+grep_ok "curl policy: stall guard" "$SCRIPT" \
+  "--connect-timeout 15 --max-time 900"
+grep_ok "curl policy: resumed fetches" "$SCRIPT" \
+  "magpie_curl -C - -o"
 
 # ============================================================
 sec "magpie clone guards"
 # ============================================================
+# Both course scripts share ~/magpie, so both specs pin the own-file
+# allowlist as the SAME list in the two scripts - neither script may
+# block the other's clone. Compare the guards verbatim (comments aside).
+magpie_guard_list() {
+  sed -n '/case \$entry in/,/esac/p' "$1" | grep -v '^ *#'
+}
+# Non-empty first: an extraction that quietly matched nothing (both
+# sides "") would make the comparison trivially true.
+if [ -n "$(magpie_guard_list "$SCRIPT")" ] \
+  && [ "$(magpie_guard_list "$SCRIPT")" \
+  = "$(magpie_guard_list "$HERE/../magpie-opencode.sh")" ]; then
+  ok "clone guard lists identical in both course scripts"
+else
+  no "clone guard lists identical in both course scripts"
+fi
 new_env
 make_installed
 rm -rf "$FAKE_HOME/magpie/.git"
@@ -1977,13 +2140,20 @@ new_env
 make_installed
 rm -rf "$FAKE_HOME/magpie/.git"
 echo "log" > "$FAKE_HOME/magpie/setup-log.txt"
-# Legacy leftover: not written any more, but the name must stay in the
+# Legacy leftovers: not written any more, but the names must stay in the
 # clone guard's allowlist so an old distributed copy never blocks a clone.
+# setup-help-profile.json is the profile-rejection dump the 2026-11
+# distributed copies left behind - exactly on the machines whose clone
+# never ran (the profile step sits BEFORE the clone).
 echo "help" > "$FAKE_HOME/magpie/setup-help.txt"
+echo "{}" > "$FAKE_HOME/magpie/setup-help-profile.json"
 run_e2e
 ret_is "own files only -> clone proceeds" 0
 file_ok "clone recreated .git" "$FAKE_HOME/magpie/.git"
 grep_ok "clone happened" "$STATE/screen.txt" "OK: magpie downloaded"
+grep_no "no false foreign-dir abort" "$STATE/screen.txt" "not a magpie clone"
+nofile_ok "legacy profile dump dropped on green path" \
+  "$FAKE_HOME/magpie/setup-help-profile.json"
 new_env
 make_installed
 rm -rf "$FAKE_HOME/magpie/.git"
@@ -2509,6 +2679,18 @@ grep_ok "second run also finished" "$FAKE_HOME/magpie/setup-log.txt" "magpie: al
 grep_ok "second run checks full run PASS" "$STATE/screen.txt" "PASS full run (output/default_"
 grep_ok "second run skipped the run" "$FAKE_HOME/magpie/setup-log.txt" "full run: marker verified"
 cnt_is "start.R ran once over two runs" "runscripts=default.R" "$STATE/rscript.log" 1
+# A rerun of a finished install must not end in silence (spec 10): the
+# screen file is rewritten per run_e2e, so this line is from run 2 -
+# the verdict prints on the marker-verified short-circuit too.
+grep_ok "verdict on the rerun path" "$STATE/screen.txt" \
+  "SETUP COMPLETE - MAgPIE is installed, checked and working"
+# And it is the log's last line again (log accumulates, tail = run 2).
+if tail -n 1 "$FAKE_HOME/magpie/setup-log.txt" \
+  | grep -q "SETUP COMPLETE - all checks passed, full run output/default_"; then
+  ok "log's last line is the verdict (rerun)"
+else
+  no "log's last line is the verdict (rerun) [got: $(tail -n 1 "$FAKE_HOME/magpie/setup-log.txt")]"
+fi
 
 # ============================================================
 sec "E2E sudo prompt: keep-alive stopped before the gate"
@@ -2722,6 +2904,10 @@ mkdir -p "$FAKE_HOME/magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_fail "posted step"' run_fn
 ret_is "fail exits 1" 1
 grep_no "no crash line after FAIL post" "$STATE/feed.log" "CRASH"
+# with a live feed the screen gets only the pointer lines - the log
+# tail belongs to the no-feed case (spec 7: it goes to the screen
+# *instead of* the feed pointer, never alongside it)
+grep_no "log tail stays off screen with a live feed" "$STATE/screen.txt" "--- last 25 log lines ---"
 new_env
 mkdir -p "$FAKE_HOME/magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; MAGPIE_CHECK_ONLY=1; exit 3' run_fn
