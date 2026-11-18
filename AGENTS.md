@@ -10,10 +10,15 @@ each with a paired spec and an offline bash test harness:
 
 `README.md` is the students' moodle post, not dev docs.
 
-Both course scripts write their running log to `~/magpie/setup-log.txt`
+Both course scripts keep ALL their state (log, lock, pidfile, downloads,
+markers, handle) in the work dir `~/setup-magpie`; the running log is
+`~/setup-magpie/setup-log.txt`
 (everything that is not a student-facing `magpie_say` line: step
 attempts, diagnostics, sandbox-gate child output). When the user says
-"the log", they mean that file.
+"the log", they mean that file. `~/magpie` is the clone alone; at entry
+both scripts run `magpie_sweep_legacy`, which moves old-layout state
+out of `~/magpie` (and `~/.magpie-course-handle`) into the work dir and
+deletes the leftover junk names, best-effort.
 
 ## Commands
 
@@ -85,7 +90,7 @@ that checks the JSON paths exist.
 - Landlock grants do **not** follow symlinks out of a granted tree:
   `/usr/lib/R/etc/*` are symlinks to `/etc/R` (profile resolves the target
   with R's `normalizePath` and lists it), and `/mnt/c` (9P) cannot be
-  enforced at all — the script relocates itself to `~/.magpie-course/self/`.
+  enforced at all — the script relocates itself to `~/setup-magpie/self/`.
 - Compiles need `~`-external trees the pack profile lacks: `/usr/libexec/gcc`
   (cc1), `/usr/lib/gcc` (collect2), `/usr/include`, and `/var/lib/dpkg`
   (dpkg-query requirements check).

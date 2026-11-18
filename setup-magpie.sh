@@ -132,12 +132,21 @@ MAGPIE_TOOLCHAIN_DIRS_DARWIN="${MAGPIE_TOOLCHAIN_DIRS_DARWIN-/Library/Developer/
 # reporting them missing. Harness-overridable like the toolchain.
 MAGPIE_DPKG_DIRS="${MAGPIE_DPKG_DIRS-/var/lib/dpkg}"
 
-MAGPIE_HANDLE_FILE="$HOME/.magpie-course-handle"
+# Work dir for EVERYTHING this script writes: log, lock, keep-alive
+# pidfile, downloads, the full-run marker, the 9P relocation copy and
+# the handle file. ~/magpie is reserved for the clone plus the
+# repo-native artifacts the repo itself produces (renv/, output/, ...).
+# Derived from $HOME, so the offline harness's fake HOME scopes every
+# path automatically.
+MAGPIE_SETUP_DIR="$HOME/setup-magpie"
+MAGPIE_HANDLE_FILE="$MAGPIE_SETUP_DIR/.magpie-course-handle"
 
 # Bump when the generated magpie-profile content changes: profiles
 # written by an older script version are detected by the marker in
-# meta.description and regenerated (old copy kept as .bak).
-MAGPIE_PROFILE_SCHEMA="10"
+# meta.description and regenerated (old copy kept as .bak). 11 moved
+# the read_file entries (relocated script copy + handle file) into
+# $MAGPIE_SETUP_DIR.
+MAGPIE_PROFILE_SCHEMA="11"
 
 # Deterministic madrat mainfolder + renv cache folder. The nono profile
 # allows writes in them and the sandboxed children get them passed in,
@@ -362,7 +371,7 @@ magpie_sys_string() {
 }
 
 # Final verdict: one screen verdict + feed post (log tail included) +
-# exit 1. No AI help block and no ~/magpie/setup-help.txt: the student
+# exit 1. No AI help block and no setup-help.txt: the student
 # sends the code name, the TA reads the feed and this machine's log.
 # Fix hints stay inside the step text (that is where the WSL/sudo hints
 # already live). $1 step text, $2 check results ("").
@@ -370,7 +379,7 @@ magpie_fail() {
   step=$1
   results=${2:-}
   MAGPIE_FAIL_POSTED=1
-  logfile="$HOME/magpie/setup-log.txt"
+  logfile="$MAGPIE_SETUP_DIR/setup-log.txt"
   # The log tail rides along (capped): whoever reads the feed needs the
   # context, not just the step name.
   detail=$(
@@ -455,7 +464,7 @@ magpie_retry() {
 # ---------------- sudo ----------------
 
 magpie_start_keepalive() {
-  pidfile="$HOME/magpie/.keepalive.pid"
+  pidfile="$MAGPIE_SETUP_DIR/.keepalive.pid"
   old=$(cat "$pidfile" 2>/dev/null || echo "")
   if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
     return 0
@@ -515,17 +524,19 @@ magpie_native_self_copy() {
     v9fs|9p) ;;
     *) return 0 ;;
   esac
-  dest="$HOME/.magpie-course/self/setup-magpie.sh"
+  dest="$MAGPIE_SETUP_DIR/self/setup-magpie.sh"
   # Without the native copy the sandboxed steps would still read the
   # 9P file (random denials, nono warnings). Rare - the folder sits in
-  # $HOME, which is writable in every run that got this far - but when
-  # folder or copy fails, the log has to say so. The teacher's copy of
-  # this script carries the feed credentials and the licence, and 9P
-  # sources are world-readable with a default 022 umask - so folder
-  # (700) and copy (600) are forced private on EVERY relocation (cp -f
-  # recreates the file, a one-time chmod would not survive reruns).
-  if mkdir -p "$HOME/.magpie-course/self" 2>/dev/null \
-    && chmod 700 "$HOME/.magpie-course/self" 2>/dev/null \
+  # the work dir, which is writable in every run that got this far -
+  # but when folder or copy fails, the log has to say so. The teacher's
+  # copy of this script carries the feed credentials and the licence,
+  # and 9P sources are world-readable with a default 022 umask - so
+  # folder (700) and copy (600) are forced private on EVERY relocation
+  # (cp -f recreates the file, a one-time chmod would not survive
+  # reruns). The parent folder itself comes from the work-dir mkdir in
+  # magpie_entry; only self/ is created and locked down here.
+  if mkdir -p "$MAGPIE_SETUP_DIR/self" 2>/dev/null \
+    && chmod 700 "$MAGPIE_SETUP_DIR/self" 2>/dev/null \
     && cp -f "$MAGPIE_SELF" "$dest" 2>/dev/null \
     && chmod 600 "$dest" 2>/dev/null; then
     MAGPIE_SELF=$dest
@@ -533,6 +544,54 @@ magpie_native_self_copy() {
   else
     magpie_log "9P relocation copy failed - sandboxed steps still use the Windows path"
   fi
+}
+
+# ---------------- legacy state sweep ----------------
+
+# Older script versions kept ALL course state under ~/magpie. That
+# folder is the clone's home now, so every normal run sweeps it clean:
+# state worth keeping is MOVED into the work dir (log history: append
+# when both exist; a work-dir marker always wins and the old copy is
+# dropped), junk with no value at a new path is DELETED. Best-effort
+# throughout (2>/dev/null, || true) - the sweep never fails a setup.
+# It matches EXACTLY these names (plus the setup-dl-* glob): a stray
+# unknown file is left where it is, so the clone guard still reacts to
+# it exactly as before.
+magpie_sweep_legacy() {
+  old="$HOME/magpie"
+  if [ -f "$old/setup-log.txt" ]; then
+    if [ -f "$MAGPIE_SETUP_DIR/setup-log.txt" ]; then
+      cat "$old/setup-log.txt" >> "$MAGPIE_SETUP_DIR/setup-log.txt" \
+        2>/dev/null || true
+      rm -f "$old/setup-log.txt" 2>/dev/null || true
+    else
+      mv "$old/setup-log.txt" "$MAGPIE_SETUP_DIR/setup-log.txt" \
+        2>/dev/null || true
+    fi
+  fi
+  for kept in .setup-fullrun-ok .setup-finished; do
+    if [ -f "$old/$kept" ]; then
+      if [ -f "$MAGPIE_SETUP_DIR/$kept" ]; then
+        rm -f "$old/$kept" 2>/dev/null || true
+      else
+        mv "$old/$kept" "$MAGPIE_SETUP_DIR/$kept" 2>/dev/null || true
+      fi
+    fi
+  done
+  # setup-magpie.sh also consolidated the hidden internal state: the
+  # code name MOVES to the work dir when no new handle exists yet
+  # (existing names must survive), and the old relocation folder goes
+  # - the copy regenerates on demand.
+  if [ -f "$HOME/.magpie-course-handle" ] && [ ! -f "$MAGPIE_HANDLE_FILE" ]; then
+    mv "$HOME/.magpie-course-handle" "$MAGPIE_HANDLE_FILE" 2>/dev/null || true
+  fi
+  rm -rf "$HOME/.magpie-course" 2>/dev/null || true
+  rm -f "$old"/setup-dl-* "$old/opencode-dl.tgz" "$old/nono-dl.tar.gz" \
+    "$old/setup-help.txt" "$old/setup-help-profile.json" \
+    "$old/.keepalive.pid" 2>/dev/null || true
+  rm -rf "$old/opencode-extract" "$old/nono-extract" "$old/.setup.lock" \
+    2>/dev/null || true
+  return 0
 }
 
 # ---------------- lock + traps ----------------
@@ -543,7 +602,7 @@ magpie_arm_traps() {
 }
 
 magpie_stop_keepalive() {
-  pidfile="$HOME/magpie/.keepalive.pid"
+  pidfile="$MAGPIE_SETUP_DIR/.keepalive.pid"
   if [ -f "$pidfile" ]; then
     pid=$(cat "$pidfile" 2>/dev/null || echo "")
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
@@ -557,11 +616,12 @@ magpie_stop_keepalive() {
   command -v sudo >/dev/null 2>&1 && sudo -k >/dev/null 2>&1 || true
 }
 
-# A crash must leave no foreign files in ~/magpie (magpie clone guard).
-# Only the lock owner may clean: a second window that exits with
-# "already running" must not touch the FIRST run's downloads or
-# keep-alive. keep-alive and setup-dl-* only ever exist once the lock
-# is held, so ownership gating loses nothing.
+# A crash must leave no foreign files behind: the owner's EXIT cleanup
+# removes its downloads and the lock from the work dir. Only the lock
+# owner may clean: a second window that exits with "already running"
+# must not touch the FIRST run's downloads or keep-alive. keep-alive
+# and setup-dl-* only ever exist once the lock is held, so ownership
+# gating loses nothing.
 magpie_cleanup() {
   # Unexpected exit: report it - a silent crash would look like a
   # healthy run on the feed. 0/130 = clean/abort, 1 after a FAIL post
@@ -571,12 +631,12 @@ magpie_cleanup() {
   if [ -z "${MAGPIE_CHECK_ONLY:-}" ] && [ "$code" != 0 ] && [ "$code" != 130 ] \
     && { [ "$code" != 1 ] || [ "${MAGPIE_FAIL_POSTED:-}" != 1 ]; }; then
     magpie_report "$(printf 'setup: CRASH exit=%s\n%s' "$code" \
-      "$(tail -n 10 "$HOME/magpie/setup-log.txt" 2>/dev/null | head -c 3200)")"
+      "$(tail -n 10 "$MAGPIE_SETUP_DIR/setup-log.txt" 2>/dev/null | head -c 3200)")"
   fi
-  lock="$HOME/magpie/.setup.lock"
+  lock="$MAGPIE_SETUP_DIR/.setup.lock"
   if [ -f "$lock/pid" ] && [ "$(cat "$lock/pid" 2>/dev/null)" = "$$" ]; then
     magpie_stop_keepalive
-    for leftover in "$HOME/magpie"/setup-dl-*; do
+    for leftover in "$MAGPIE_SETUP_DIR"/setup-dl-*; do
       rm -f "$leftover"
     done
     rm -rf "$lock"
@@ -584,7 +644,7 @@ magpie_cleanup() {
 }
 
 magpie_take_lock() {
-  lock="$HOME/magpie/.setup.lock"
+  lock="$MAGPIE_SETUP_DIR/.setup.lock"
   if mkdir "$lock" 2>/dev/null; then
     printf '%s\n' "$$" > "$lock/pid"
     magpie_arm_traps
@@ -612,7 +672,7 @@ magpie_take_lock() {
 # Two tiers: below ABORT the failure verdict stops the run; below WARN the
 # feed sees a warning but the run continues.
 magpie_check_disk() {
-  free_kb=$(df -Pk "$HOME/magpie" | awk 'NR==2 {print $4}')
+  free_kb=$(df -Pk "$MAGPIE_SETUP_DIR" | awk 'NR==2 {print $4}')
   free_gb=$((free_kb / 1024 / 1024))
   if [ "$free_gb" -lt "$MAGPIE_DISK_ABORT_GB" ]; then
     if [ "$MAGPIE_OS" = "darwin" ]; then
@@ -781,11 +841,11 @@ magpie_resolve_nono() {
 }
 
 # magpie_install_pkg <name> <url> <sha>: download a pinned .pkg under
-# ~/magpie (setup-dl-*), install it system-wide. sudo only when it runs.
-# The sha is re-checked right before sudo reads the file (root must
-# never read a file that changed after verification).
+# the work dir (setup-dl-*), install it system-wide. sudo only when it
+# runs. The sha is re-checked right before sudo reads the file (root
+# must never read a file that changed after verification).
 magpie_install_pkg() {
-  pkg="$HOME/magpie/setup-dl-$1.pkg"
+  pkg="$MAGPIE_SETUP_DIR/setup-dl-$1.pkg"
   magpie_download "$2" "$pkg" "$3" || return 1
   if [ "$(magpie_sha256 "$pkg")" != "$3" ]; then
     magpie_log "checksum re-check failed before installer: $pkg"
@@ -873,8 +933,8 @@ magpie_opencode_target() {
 }
 
 magpie_install_opencode_body() {
-  tmp="$HOME/magpie/opencode-dl.tgz"
-  dir="$HOME/magpie/opencode-extract"
+  tmp="$MAGPIE_SETUP_DIR/opencode-dl.tgz"
+  dir="$MAGPIE_SETUP_DIR/opencode-extract"
   rm -rf "$dir"
   mkdir -p "$dir" || return 1
   url="https://registry.npmjs.org/@opencode%2fcli-$MAGPIE_OC_TARGET/-/cli-$MAGPIE_OC_TARGET-$OPENCODE_VERSION.tgz"
@@ -927,8 +987,8 @@ magpie_nono_triple() {
 }
 
 magpie_install_nono_body() {
-  tmp="$HOME/magpie/nono-dl.tar.gz"
-  dir="$HOME/magpie/nono-extract"
+  tmp="$MAGPIE_SETUP_DIR/nono-dl.tar.gz"
+  dir="$MAGPIE_SETUP_DIR/nono-extract"
   rm -rf "$dir"
   mkdir -p "$dir" || return 1
   url="https://github.com/nolabs-ai/nono/releases/download/v$NONO_VERSION/nono-v$NONO_VERSION-$MAGPIE_NONO_TRIPLE.tar.gz"
@@ -1443,7 +1503,7 @@ magpie_find_gams() {
 # re-checked right before the exe runs. No gamsinst (magpie names its
 # solvers itself, like the official MAgPIE Dockerfile).
 magpie_gams_body_linux() {
-  dl="$HOME/magpie/setup-dl-gams.exe"
+  dl="$MAGPIE_SETUP_DIR/setup-dl-gams.exe"
   magpie_download "$GAMS_URL_LINUX_X64" "$dl" "$GAMS_SHA256_LINUX_X64" || return 1
   if [ "$(magpie_sha256 "$dl")" != "$GAMS_SHA256_LINUX_X64" ]; then
     magpie_log "checksum re-check failed before extract: $dl"
@@ -1860,6 +1920,9 @@ magpie_step_magpie_profile() {
 
 magpie_clone_body() {
   repo="$HOME/magpie"
+  # The entry no longer creates ~/magpie: only this step (the clone
+  # itself) may make the folder the clone lives in.
+  mkdir -p "$repo" || return 1
   git -C "$repo" init -q || return 1
   git -C "$repo" remote get-url origin >/dev/null 2>&1 \
     || git -C "$repo" remote add origin "$MAGPIE_MAGPIE_URL" || return 1
@@ -1944,11 +2007,13 @@ magpie_clone_magpie() {
   # shellcheck disable=SC2045  # ls -A: own-file allowlist check includes dotfiles.
   for entry in $(ls -A "$HOME/magpie" 2>/dev/null); do
     case $entry in
-      # setup-help.txt + setup-help-profile.json: copies distributed
-      # before the AI help block was removed may have left them there
-      # (the .json held a rejected profile - written exactly by the
-      # runs that never reached the clone). A stray file must never
-      # block the clone of an otherwise clean folder.
+      # Belt-and-braces: the legacy sweep at entry moves these names
+      # out of ~/magpie before the guard runs, but the allowlist stays
+      # - a file the sweep could not remove must still not block the
+      # clone. setup-help.txt + setup-help-profile.json: copies
+      # distributed before the AI help block was removed may have left
+      # them there (the .json held a rejected profile - written
+      # exactly by the runs that never reached the clone).
       .git|setup-log.txt|setup-help.txt|setup-help-profile.json| \
       .setup-finished|.setup.lock| \
       .keepalive.pid|.setup-fullrun-ok|opencode-dl.tgz|opencode-extract| \
@@ -2173,7 +2238,7 @@ magpie_sandbox_gate() {
     env MAGPIE_CHECK_ONLY=1 "PATH=${texbin:+$texbin:}$PATH" \
     "MADRAT_MAINFOLDER=$MADRAT_MAINFOLDER" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
     bash "$MAGPIE_SELF" --check-only ) \
-    >> "$HOME/magpie/setup-log.txt" 2>&1
+    >> "$MAGPIE_SETUP_DIR/setup-log.txt" 2>&1
   rc=$?
   if [ "$rc" -eq 0 ]; then
     magpie_say "OK: sandbox check passed"
@@ -2192,10 +2257,12 @@ magpie_full_run_complete() {
 }
 
 # Marker content (output/<run folder>) or "" - one place, three users:
-# the checks, the verdict block and the log's final line.
+# the checks, the verdict block and the log's final line. The marker
+# file itself lives in the work dir; the path it stores stays relative
+# to the clone ("$HOME/magpie/$fullrel" wherever it is used).
 magpie_fullrel() {
-  if [ -f "$HOME/magpie/.setup-fullrun-ok" ]; then
-    cat "$HOME/magpie/.setup-fullrun-ok" 2>/dev/null || echo ""
+  if [ -f "$MAGPIE_SETUP_DIR/.setup-fullrun-ok" ]; then
+    cat "$MAGPIE_SETUP_DIR/.setup-fullrun-ok" 2>/dev/null || echo ""
   else
     echo ""
   fi
@@ -2256,7 +2323,7 @@ magpie_full_run_body() {
 # swallows run errors, so a NEW complete run folder decides, not the
 # exit code. Any failure goes straight to the failure verdict.
 magpie_step_full_run() {
-  marker="$HOME/magpie/.setup-fullrun-ok"
+  marker="$MAGPIE_SETUP_DIR/.setup-fullrun-ok"
   if [ "${MAGPIE_FULL_RUN:-1}" = "0" ]; then
     magpie_say "Full run skipped (MAGPIE_FULL_RUN=0) - run it yourself: cd ~/magpie, then Rscript start.R"
     magpie_report "setup: full run skipped (MAGPIE_FULL_RUN=0)"
@@ -2295,13 +2362,9 @@ magpie_step_full_run() {
 
 # An older copy of this file wrote an "AI help" block next to the log
 # (setup-help.txt, and setup-help-profile.json for a rejected profile).
-# Nothing writes them any more, and a stale FAIL block on a machine that
-# just passed every check is pure confusion - so the green path drops
-# them. Never on a failing path: whoever is mid-troubleshooting may
-# still be reading exactly that file.
-magpie_drop_stale_help() {
-  rm -f "$HOME/magpie/setup-help.txt" "$HOME/magpie/setup-help-profile.json"
-}
+# Nothing writes them any more; the legacy sweep at entry removes both
+# from ~/magpie on every normal run, so no stale FAIL block can
+# confuse a machine that has since passed every check.
 
 # The very last thing on screen. The old NEXT STEPS block is gone - the
 # course page has it, and a run that worked should end in a verdict a
@@ -2327,7 +2390,9 @@ magpie_print_verdict() {
 
 # ---------------- main ----------------
 
-# All state lives under ~/magpie (same filenames as magpie-opencode.sh).
+# All course-script state lives in the work dir ~/setup-magpie (same
+# filenames as magpie-opencode.sh); ~/magpie holds only the clone and
+# what the repo itself writes there.
 # .setup-finished belongs to magpie-opencode.sh - never written here.
 magpie_setup_path() {
   if [ "$(id -u)" = "0" ]; then
@@ -2380,7 +2445,6 @@ magpie_setup_path() {
   fi
 
   magpie_step_full_run
-  magpie_drop_stale_help
   magpie_print_verdict
   magpie_report "setup: run finished"
   # The log's last line is the verdict too: `tail -n 1 setup-log.txt`
@@ -2462,17 +2526,22 @@ magpie_entry() {
   esac
   if [ -n "$check_only" ]; then
     # Sandbox gate child: a denied write must not abort - the checks
-    # report what the sandbox lets them see. No log file either.
-    mkdir -p "$HOME/magpie" 2>/dev/null || true
+    # report what the sandbox lets them see. No log file, no
+    # directories: the gate already cds into ~/magpie, and the child
+    # needs neither dir (the work dir is invisible to the sandbox by
+    # design - no sweep, no mkdir here).
     magpie_main ${1+"$@"}
   else
-    if ! mkdir -p "$HOME/magpie" 2>/dev/null; then
-      magpie_fail "cannot create ~/magpie - check disk space and folder rights"
+    if ! mkdir -p "$MAGPIE_SETUP_DIR" 2>/dev/null; then
+      magpie_fail "cannot create ~/setup-magpie - check disk space and folder rights"
     fi
+    # Move state an older script version left in ~/magpie out of the
+    # clone's folder, then drop the junk names (best-effort, silent).
+    magpie_sweep_legacy
     # Windows-drive invocation -> native copy for sandboxed steps
     # (log-only: the student never sees a 9P note).
-    magpie_native_self_copy >> "$HOME/magpie/setup-log.txt" 2>&1
-    magpie_main ${1+"$@"} >> "$HOME/magpie/setup-log.txt" 2>&1
+    magpie_native_self_copy >> "$MAGPIE_SETUP_DIR/setup-log.txt" 2>&1
+    magpie_main ${1+"$@"} >> "$MAGPIE_SETUP_DIR/setup-log.txt" 2>&1
   fi
 }
 

@@ -1,3 +1,12 @@
 /setup-*.json
+/setup-log.txt
+/setup-dl-*
+/opencode-dl.tgz
+/opencode-extract/
+/nono-dl.tar.gz
+/nono-extract/
+/.setup.lock/
+/.keepalive.pid
+/self/
 /.tmp/
 tests/shellcheck

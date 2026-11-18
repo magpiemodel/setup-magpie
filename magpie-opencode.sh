@@ -41,6 +41,13 @@ MAGPIE_SUDO_RETRY_SECS="${MAGPIE_SUDO_RETRY_SECS:-2}"
 # it at a local repository.
 MAGPIE_MAGPIE_URL="${MAGPIE_MAGPIE_URL:-https://github.com/magpiemodel/magpie.git}"
 
+# Work dir for EVERYTHING this script writes: log, lock, keep-alive
+# pidfile, downloads, the finish marker. ~/magpie is reserved for the
+# clone plus the repo-native artifacts the clone itself produces.
+# Derived from $HOME, so the offline harness's fake HOME scopes every
+# path automatically (same constant as setup-magpie.sh).
+MAGPIE_SETUP_DIR="$HOME/setup-magpie"
+
 # ---------------- screen, log ----------------
 
 magpie_now() {
@@ -75,7 +82,7 @@ magpie_sys_string() {
 # Final verdict: one screen verdict + exit 1. This script has no feed, so
 # the screen has to carry what the setup script uploads: the step, its
 # hint, the system string and the log's last line (the rest stays in the
-# file). No AI help block, no ~/magpie/setup-help.txt.
+# file). No AI help block, no setup-help.txt.
 # $1 step text, $2 hint (landlock|clt|wifi|sudo|"").
 magpie_fail() {
   step=$1
@@ -95,7 +102,7 @@ magpie_fail() {
       hint_line="The password you typed was never accepted. Use your own login/administrator password, then run this file again."
       ;;
   esac
-  logfile="$HOME/magpie/setup-log.txt"
+  logfile="$MAGPIE_SETUP_DIR/setup-log.txt"
   magpie_say ""
   magpie_say "SETUP FAILED (twice, reproducible): $step"
   if [ -n "$hint_line" ]; then
@@ -156,7 +163,7 @@ magpie_retry() {
 # ---------------- sudo ----------------
 
 magpie_start_keepalive() {
-  pidfile="$HOME/magpie/.keepalive.pid"
+  pidfile="$MAGPIE_SETUP_DIR/.keepalive.pid"
   old=$(cat "$pidfile" 2>/dev/null || echo "")
   if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
     return 0
@@ -192,6 +199,49 @@ magpie_sudo_warm() {
   magpie_fail "password was never accepted" "sudo"
 }
 
+# ---------------- legacy state sweep ----------------
+
+# Older script versions kept ALL course state under ~/magpie. That
+# folder is the clone's home now, so every normal run sweeps it clean:
+# state worth keeping is MOVED into the work dir (log history: append
+# when both exist; a work-dir marker always wins and the old copy is
+# dropped), junk with no value at a new path is DELETED. Best-effort
+# throughout (2>/dev/null, || true) - the sweep never fails a setup,
+# and it runs before the fast-path check so a migrated
+# .setup-finished is visible to it. It matches EXACTLY these names
+# (plus the setup-dl-* glob): a stray unknown file is left where it
+# is, so the clone guard still reacts to it exactly as before.
+# (setup-magpie.sh has the same function plus its own hidden handle
+# file and relocation folder - that state never exists here.)
+magpie_sweep_legacy() {
+  old="$HOME/magpie"
+  if [ -f "$old/setup-log.txt" ]; then
+    if [ -f "$MAGPIE_SETUP_DIR/setup-log.txt" ]; then
+      cat "$old/setup-log.txt" >> "$MAGPIE_SETUP_DIR/setup-log.txt" \
+        2>/dev/null || true
+      rm -f "$old/setup-log.txt" 2>/dev/null || true
+    else
+      mv "$old/setup-log.txt" "$MAGPIE_SETUP_DIR/setup-log.txt" \
+        2>/dev/null || true
+    fi
+  fi
+  for kept in .setup-fullrun-ok .setup-finished; do
+    if [ -f "$old/$kept" ]; then
+      if [ -f "$MAGPIE_SETUP_DIR/$kept" ]; then
+        rm -f "$old/$kept" 2>/dev/null || true
+      else
+        mv "$old/$kept" "$MAGPIE_SETUP_DIR/$kept" 2>/dev/null || true
+      fi
+    fi
+  done
+  rm -f "$old"/setup-dl-* "$old/opencode-dl.tgz" "$old/nono-dl.tar.gz" \
+    "$old/setup-help.txt" "$old/setup-help-profile.json" \
+    "$old/.keepalive.pid" 2>/dev/null || true
+  rm -rf "$old/opencode-extract" "$old/nono-extract" "$old/.setup.lock" \
+    2>/dev/null || true
+  return 0
+}
+
 # ---------------- lock + traps ----------------
 
 magpie_arm_traps() {
@@ -200,7 +250,7 @@ magpie_arm_traps() {
 }
 
 magpie_stop_keepalive() {
-  pidfile="$HOME/magpie/.keepalive.pid"
+  pidfile="$MAGPIE_SETUP_DIR/.keepalive.pid"
   if [ -f "$pidfile" ]; then
     pid=$(cat "$pidfile" 2>/dev/null || echo "")
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
@@ -220,7 +270,7 @@ magpie_stop_keepalive() {
 # The keep-alive only ever starts once the lock is held; the fast path
 # stops a stale one via the explicit call in magpie_launch.
 magpie_cleanup() {
-  lock="$HOME/magpie/.setup.lock"
+  lock="$MAGPIE_SETUP_DIR/.setup.lock"
   if [ -f "$lock/pid" ] && [ "$(cat "$lock/pid" 2>/dev/null)" = "$$" ]; then
     magpie_stop_keepalive
     rm -rf "$lock"
@@ -228,7 +278,7 @@ magpie_cleanup() {
 }
 
 magpie_take_lock() {
-  lock="$HOME/magpie/.setup.lock"
+  lock="$MAGPIE_SETUP_DIR/.setup.lock"
   if mkdir "$lock" 2>/dev/null; then
     printf '%s\n' "$$" > "$lock/pid"
     magpie_arm_traps
@@ -254,7 +304,7 @@ magpie_take_lock() {
 # ---------------- disk + pins ----------------
 
 magpie_check_disk() {
-  free_kb=$(df -Pk "$HOME/magpie" | awk 'NR==2 {print $4}')
+  free_kb=$(df -Pk "$MAGPIE_SETUP_DIR" | awk 'NR==2 {print $4}')
   free_gb=$((free_kb / 1024 / 1024))
   if [ "$free_gb" -ge "$MAGPIE_DISK_MIN_GB" ]; then
     magpie_log "disk: $free_gb GB free"
@@ -453,8 +503,8 @@ magpie_opencode_target() {
 }
 
 magpie_install_opencode_body() {
-  tmp="$HOME/magpie/opencode-dl.tgz"
-  dir="$HOME/magpie/opencode-extract"
+  tmp="$MAGPIE_SETUP_DIR/opencode-dl.tgz"
+  dir="$MAGPIE_SETUP_DIR/opencode-extract"
   rm -rf "$dir"
   mkdir -p "$dir" || return 1
   url="https://registry.npmjs.org/@opencode%2fcli-$MAGPIE_OC_TARGET/-/cli-$MAGPIE_OC_TARGET-$OPENCODE_VERSION.tgz"
@@ -506,8 +556,8 @@ magpie_nono_triple() {
 }
 
 magpie_install_nono_body() {
-  tmp="$HOME/magpie/nono-dl.tar.gz"
-  dir="$HOME/magpie/nono-extract"
+  tmp="$MAGPIE_SETUP_DIR/nono-dl.tar.gz"
+  dir="$MAGPIE_SETUP_DIR/nono-extract"
   rm -rf "$dir"
   mkdir -p "$dir" || return 1
   url="https://github.com/nolabs-ai/nono/releases/download/v$NONO_VERSION/nono-v$NONO_VERSION-$MAGPIE_NONO_TRIPLE.tar.gz"
@@ -646,6 +696,9 @@ magpie_pull_nono_profile() {
 
 magpie_clone_body() {
   repo="$HOME/magpie"
+  # The entry no longer creates ~/magpie: only this step (the clone
+  # itself) may make the folder the clone lives in.
+  mkdir -p "$repo" || return 1
   git -C "$repo" init -q || return 1
   git -C "$repo" remote get-url origin >/dev/null 2>&1 \
     || git -C "$repo" remote add origin "$MAGPIE_MAGPIE_URL" || return 1
@@ -685,13 +738,16 @@ magpie_clone_magpie() {
   # shellcheck disable=SC2045  # ls -A: own-file allowlist check includes dotfiles.
   for entry in $(ls -A "$HOME/magpie" 2>/dev/null); do
     case $entry in
-      # Both course scripts share ~/magpie, so this allowlist is the
-      # setup-magpie.sh guard's list verbatim: a stray housekeeping file
-      # from either script must never block the clone of an otherwise
-      # clean folder. setup-help.txt + setup-help-profile.json: copies
-      # distributed before the AI help block was removed may have left
-      # them there (the .json held a rejected profile - written exactly
-      # by the runs that died at the profile step, BEFORE any clone).
+      # Belt-and-braces: the legacy sweep at entry moves the shared
+      # housekeeping names out of ~/magpie before the guard runs, but
+      # the allowlist stays as the setup-magpie.sh guard's list
+      # verbatim - a file the sweep could not remove (or state from an
+      # older distributed copy arriving between sweep and clone) must
+      # never block the clone of an otherwise clean folder.
+      # setup-help.txt + setup-help-profile.json: copies distributed
+      # before the AI help block was removed may have left them there
+      # (the .json held a rejected profile - written exactly by the
+      # runs that died at the profile step, BEFORE any clone).
       # setup-dl-* / .setup-fullrun-ok: downloads of a hard-killed
       # setup-magpie.sh run (SIGHUP/SIGKILL skip its EXIT trap) and its
       # full-run marker.
@@ -732,7 +788,7 @@ magpie_sandbox_smoke_step() {
     date '+%Y-%m-%d %H:%M:%S'
     nono --version 2>/dev/null || true
     opencode --version 2>/dev/null || true
-  } > "$HOME/magpie/.setup-finished"
+  } > "$MAGPIE_SETUP_DIR/.setup-finished"
 }
 
 # ---------------- launch ----------------
@@ -785,7 +841,7 @@ magpie_fast_path_ok() {
   if [ -n "${MAGPIE_FORCE_SETUP:-}" ] || [ -n "${MAGPIE_REPAIR:-}" ]; then
     return 1
   fi
-  if [ ! -f "$HOME/magpie/.setup-finished" ]; then
+  if [ ! -f "$MAGPIE_SETUP_DIR/.setup-finished" ]; then
     return 1
   fi
   if ! magpie_clone_ok; then
@@ -863,10 +919,14 @@ magpie_entry() {
     fi
   fi
   magpie_arm_traps
-  if ! mkdir -p "$HOME/magpie" 2>/dev/null; then
-    magpie_fail "cannot create $HOME/magpie - check disk space and folder rights"
+  if ! mkdir -p "$MAGPIE_SETUP_DIR" 2>/dev/null; then
+    magpie_fail "cannot create ~/setup-magpie - check disk space and folder rights"
   fi
-  magpie_main ${1+"$@"} >> "$HOME/magpie/setup-log.txt" 2>&1
+  # Move state an older script version left in ~/magpie out of the
+  # clone's folder, then drop the junk names (best-effort, silent) -
+  # BEFORE the fast-path check, so a migrated .setup-finished counts.
+  magpie_sweep_legacy
+  magpie_main ${1+"$@"} >> "$MAGPIE_SETUP_DIR/setup-log.txt" 2>&1
 }
 
 if [ -z "${MAGPIE_SOURCED:-}" ]; then

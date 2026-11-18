@@ -182,7 +182,7 @@ case "$1" in
       *--check-only*)
         # Keep-alive state AT the gate instant: the discriminating
         # evidence that the script stops it before the sandbox runs.
-        if [ -f "$HOME/magpie/.keepalive.pid" ]; then
+        if [ -f "$HOME/setup-magpie/.keepalive.pid" ]; then
           echo alive >> "$STATE/keepalive_at_gate.txt"
         else
           echo dead >> "$STATE/keepalive_at_gate.txt"
@@ -207,7 +207,7 @@ case "$1" in
         # Full-run request: probe the keep-alive the same way, then
         # re-enact the inner bash -c payload so the stub Rscript
         # fakes the run folder + artifacts.
-        if [ -f "$HOME/magpie/.keepalive.pid" ]; then
+        if [ -f "$HOME/setup-magpie/.keepalive.pid" ]; then
           echo alive >> "$STATE/keepalive_at_gate.txt"
         else
           echo dead >> "$STATE/keepalive_at_gate.txt"
@@ -731,8 +731,8 @@ run_fn() {
     . "$SRC"
     fill_pins
     magpie_arm_traps
-    mkdir -p "$FAKE_HOME/magpie"
-    eval "$FN_BODY" </dev/null >> "$FAKE_HOME/magpie/setup-log.txt" 2>&1
+    mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
+    eval "$FN_BODY" </dev/null >> "$FAKE_HOME/setup-magpie/setup-log.txt" 2>&1
   ) 4> "$STATE/screen.txt"
   RET=$?
 }
@@ -756,7 +756,7 @@ make_installed() {
   mkdir -p "$FAKE_HOME/.opencode/bin" "$FAKE_HOME/.nono/bin" \
     "$FAKE_HOME/.config/opencode" \
     "$FAKE_HOME/.config/nono/packages/nolabs-ai/opencode" \
-    "$FAKE_HOME/magpie"
+    "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
   git -C "$FAKE_HOME/magpie" init -q
   git -C "$FAKE_HOME/magpie" remote add origin "file://$STATE/origin.git"
   git -C "$FAKE_HOME/magpie" -c user.email=t@t -c user.name=t \
@@ -822,7 +822,7 @@ new_env
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; R_SHA256_DARWIN_X64=TBD; magpie_require_pins' run_fn
 ret_is "pins TBD aborts" 1
 grep_ok "failure verdict shown" "$STATE/screen.txt" "script incomplete: pinned versions/checksums missing"
-nofile_ok "no lock created" "$FAKE_HOME/magpie/.setup.lock"
+nofile_ok "no lock created" "$FAKE_HOME/setup-magpie/.setup.lock"
 grep_ok "FAIL reported to feed" "$STATE/feed.log" "FAIL script incomplete"
 new_env
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; GFORTRAN_SHA256=""; magpie_require_pins' run_fn
@@ -868,34 +868,36 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_se
 ret_is "root run aborts" 1
 grep_ok "root message" "$STATE/screen.txt" "do not run as root"
 new_env
-# Entry guard: ~/magpie cannot be created (unwritable HOME) - the
+# Entry guard: ~/setup-magpie cannot be created (unwritable HOME) - the
 # failure verdict is the only output, and it must still reach the
-# screen although the log file is impossible here.
+# screen although the log file is impossible here. ~/magpie is NOT
+# created by the entry any more - the clone owns that folder.
 chmod 555 "$FAKE_HOME"
 run_e2e
 chmod 700 "$FAKE_HOME"
 ret_is "unwritable HOME aborts" 1
 grep_ok "entry verdict names the failure" "$STATE/screen.txt" \
-  "cannot create ~/magpie"
-nofile_ok "no log dir created" "$FAKE_HOME/magpie"
+  "cannot create ~/setup-magpie"
+nofile_ok "no work dir created" "$FAKE_HOME/setup-magpie"
+nofile_ok "entry never touches ~/magpie" "$FAKE_HOME/magpie"
 
 # ============================================================
 sec "lock"
 # ============================================================
 new_env
-mkdir -p "$FAKE_HOME/magpie/.setup.lock"
+mkdir -p "$FAKE_HOME/setup-magpie/.setup.lock"
 sleep 60 &
 LIVEPID=$!
-echo "$LIVEPID" > "$FAKE_HOME/magpie/.setup.lock/pid"
+echo "$LIVEPID" > "$FAKE_HOME/setup-magpie/.setup.lock/pid"
 FN_BODY='magpie_take_lock' run_fn
 kill "$LIVEPID" 2>/dev/null
 ret_is "live lock exits 0" 0
 grep_ok "heads-up line" "$STATE/screen.txt" "already running in another window"
 cnt_is "single line" "already running" "$STATE/screen.txt" 1
-file_ok "other lock untouched" "$FAKE_HOME/magpie/.setup.lock/pid"
+file_ok "other lock untouched" "$FAKE_HOME/setup-magpie/.setup.lock/pid"
 new_env
-mkdir -p "$FAKE_HOME/magpie/.setup.lock"
-echo 999999 > "$FAKE_HOME/magpie/.setup.lock/pid"
+mkdir -p "$FAKE_HOME/setup-magpie/.setup.lock"
+echo 999999 > "$FAKE_HOME/setup-magpie/.setup.lock/pid"
 FN_BODY='magpie_take_lock' run_fn
 ret_is "stale lock reclaimed silently" 0
 # An early exit 0 inside take_lock (dead pid believed alive) skips any
@@ -904,23 +906,23 @@ ret_is "stale lock reclaimed silently" 0
 # (owner's EXIT cleanup ran).
 grep_no "no already-running note on reclaim" "$STATE/screen.txt" \
   "already running"
-nofile_ok "reclaimed lock released on exit" "$FAKE_HOME/magpie/.setup.lock/pid"
+nofile_ok "reclaimed lock released on exit" "$FAKE_HOME/setup-magpie/.setup.lock/pid"
 # The second window must NOT clean the FIRST run's state: no deletion
 # of its setup-dl-* downloads, no kill of its keep-alive.
 new_env
-mkdir -p "$FAKE_HOME/magpie/.setup.lock"
+mkdir -p "$FAKE_HOME/setup-magpie/.setup.lock"
 sleep 60 &
 LIVEPID=$!
-echo "$LIVEPID" > "$FAKE_HOME/magpie/.setup.lock/pid"
+echo "$LIVEPID" > "$FAKE_HOME/setup-magpie/.setup.lock/pid"
 sleep 60 &
 KPID=$!
-echo "$KPID" > "$FAKE_HOME/magpie/.keepalive.pid"
-touch "$FAKE_HOME/magpie/setup-dl-gams.exe"
+echo "$KPID" > "$FAKE_HOME/setup-magpie/.keepalive.pid"
+touch "$FAKE_HOME/setup-magpie/setup-dl-gams.exe"
 FN_BODY='magpie_take_lock' run_fn
 kill "$LIVEPID" 2>/dev/null
 ret_is "second window exits 0 quietly" 0
-file_ok "first run download untouched" "$FAKE_HOME/magpie/setup-dl-gams.exe"
-file_ok "first run keepalive pidfile untouched" "$FAKE_HOME/magpie/.keepalive.pid"
+file_ok "first run download untouched" "$FAKE_HOME/setup-magpie/setup-dl-gams.exe"
+file_ok "first run keepalive pidfile untouched" "$FAKE_HOME/setup-magpie/.keepalive.pid"
 if [ -n "$KPID" ] && kill -0 "$KPID" 2>/dev/null; then ok "first run keepalive not killed"; else no "first run keepalive not killed"; fi
 kill "$KPID" 2>/dev/null
 
@@ -933,7 +935,7 @@ new_env
 EXPECT_SYS=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d '"' -f 2)
 FN_BODY='magpie_sys_string' run_fn
 ret_is "system string survives unset MAGPIE_OS" 0
-grep_ok "system string reports the distro" "$FAKE_HOME/magpie/setup-log.txt" "$EXPECT_SYS"
+grep_ok "system string reports the distro" "$FAKE_HOME/setup-magpie/setup-log.txt" "$EXPECT_SYS"
 
 # ============================================================
 sec "retry helper + pass-2 model"
@@ -944,7 +946,7 @@ ret_is "2 fails then success" 0
 new_env
 FN_BODY='alwaysfail() { return 1; }; magpie_retry 3 alwaysfail' run_fn
 ret_is "persistent fail returns 1" 1
-grep_ok "3 attempts logged" "$FAKE_HOME/magpie/setup-log.txt" "attempt 3/3"
+grep_ok "3 attempts logged" "$FAKE_HOME/setup-magpie/setup-log.txt" "attempt 3/3"
 new_env
 make_tools
 cat > "$STATE/pass2.sh" <<EOS
@@ -983,13 +985,13 @@ new_env
 FN_BODY='MAGPIE_HANDLE=T1; magpie_sudo_warm' run_fn STUB_SUDO_N_OK=1
 ret_is "warm timestamp no prompt" 0
 grep_no "no prompt line" "$STATE/screen.txt" "asked now"
-nofile_ok "keepalive only after ask" "$FAKE_HOME/magpie/.keepalive.pid"
+nofile_ok "keepalive only after ask" "$FAKE_HOME/setup-magpie/.keepalive.pid"
 new_env
 FN_BODY='MAGPIE_HANDLE=T1; magpie_take_lock; magpie_sudo_warm' run_fn STUB_SUDO_N_OK=0
 ret_is "prompt starts keepalive" 0
 grep_ok "prompt line" "$STATE/screen.txt" "Type it blind"
-wait_gone "$FAKE_HOME/magpie/.keepalive.pid"
-nofile_ok "owner exit stops keepalive + removes pidfile" "$FAKE_HOME/magpie/.keepalive.pid"
+wait_gone "$FAKE_HOME/setup-magpie/.keepalive.pid"
+nofile_ok "owner exit stops keepalive + removes pidfile" "$FAKE_HOME/setup-magpie/.keepalive.pid"
 # SIGKILL of the owner (no EXIT trap can run): the loop must watch the
 # owner's own pid ($$), not $PPID - bash keeps $PPID at the OUTER parent
 # inside a subshell, which would keep refreshing after the owner dies.
@@ -1001,15 +1003,15 @@ export PATH="$FAKE_BIN:$MINBIN"
 export MAGPIE_KEEPALIVE_SECS=0.05
 export MAGPIE_SOURCED=1 MAGPIE_SELF=""
 . "$SRC"
-mkdir -p "\$HOME/magpie"
+mkdir -p "\$HOME/setup-magpie"
 magpie_start_keepalive
 wait
 EOS
 chmod 755 "$STATE/keepstart.sh"
 bash "$STATE/keepstart.sh" >/dev/null 2>&1 &
 KAOWNER=$!
-wait_file "$FAKE_HOME/magpie/.keepalive.pid"
-KAPID=$(cat "$FAKE_HOME/magpie/.keepalive.pid" 2>/dev/null || echo "")
+wait_file "$FAKE_HOME/setup-magpie/.keepalive.pid"
+KAPID=$(cat "$FAKE_HOME/setup-magpie/.keepalive.pid" 2>/dev/null || echo "")
 sleep 0.25
 kill -9 "$KAOWNER" 2>/dev/null
 wait "$KAOWNER" 2>/dev/null
@@ -1029,12 +1031,12 @@ fi
 # in the pidfile short-circuits the second call (same pid kept, and
 # the owner-exit cleanup then stops the ONE loop it knows about).
 FN_BODY='MAGPIE_HANDLE=T1; magpie_take_lock; magpie_start_keepalive
-p1=$(cat "$HOME/magpie/.keepalive.pid")
+p1=$(cat "$HOME/setup-magpie/.keepalive.pid")
 magpie_start_keepalive
-p2=$(cat "$HOME/magpie/.keepalive.pid")
+p2=$(cat "$HOME/setup-magpie/.keepalive.pid")
 [ "$p1" = "$p2" ]' run_fn
 ret_is "second start reuses live keep-alive" 0
-nofile_ok "pidfile gone after owner exit" "$FAKE_HOME/magpie/.keepalive.pid"
+nofile_ok "pidfile gone after owner exit" "$FAKE_HOME/setup-magpie/.keepalive.pid"
 # keep-alive is killed BEFORE the sandbox gate runs:
 new_env
 make_tools
@@ -1045,7 +1047,7 @@ magpie_take_lock; magpie_sudo_warm; magpie_stop_keepalive; magpie_sandbox_gate' 
   run_fn STUB_SUDO_N_OK=0
 ret_is "gate ran after sudo prompt" 0
 grep_ok "keep-alive dead at gate instant" "$STATE/keepalive_at_gate.txt" "dead"
-nofile_ok "keepalive pidfile gone" "$FAKE_HOME/magpie/.keepalive.pid"
+nofile_ok "keepalive pidfile gone" "$FAKE_HOME/setup-magpie/.keepalive.pid"
 grep_ok "gate args: profile" "$STATE/nono.log" "--profile magpie-profile"
 grep_ok "gate args: allow-cwd" "$STATE/nono.log" "--allow-cwd"
 grep_ok "gate args: check-only child" "$STATE/nono.log" "--check-only"
@@ -1059,14 +1061,14 @@ grep_ok "no warm sudo at gate instant" "$STATE/sudo_at_gate.txt" "cool"
 # The gate child's output stays OFF the screen: the parent printed the
 # check block already, and nono's own chatter is student-noise too.
 grep_no "gate child output off screen" "$STATE/screen.txt" "GATE-CHILD-OUTPUT-MARKER"
-grep_ok "gate child output reaches log" "$FAKE_HOME/magpie/setup-log.txt" "GATE-CHILD-OUTPUT-MARKER"
+grep_ok "gate child output reaches log" "$FAKE_HOME/setup-magpie/setup-log.txt" "GATE-CHILD-OUTPUT-MARKER"
 grep_no "nono's own banner off screen" "$STATE/screen.txt" "NONO-BANNER-MARKER"
-grep_ok "nono's own banner reaches log" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "nono's own banner reaches log" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "NONO-BANNER-MARKER"
 # The log holds the child block ONCE (single append - no tee double
 # write), and the parent owns the one student-facing gate line.
 cnt_is "gate child logged once" "GATE-CHILD-OUTPUT-MARKER" \
-  "$FAKE_HOME/magpie/setup-log.txt" 1
+  "$FAKE_HOME/setup-magpie/setup-log.txt" 1
 grep_ok "parent prints the gate OK line" "$STATE/screen.txt" \
   "OK: sandbox check passed"
 # A failing gate child stays failing through the pipe (exit code of the
@@ -1079,8 +1081,8 @@ MAGPIE_SELF=/bin/true; magpie_take_lock; magpie_sandbox_gate' \
   run_fn STUB_NONO_GATE_EXIT=1 STUB_SUDO_N_OK=1
 ret_is "gate exit code survives the log append" 1
 # Early stop runs before the gate; it must be a harmless no-op when no
-# keep-alive ever started and $HOME/magpie is absent (no file created,
-# exit 0). Custom subshell: run_fn always creates $HOME/magpie.
+# keep-alive ever started and $HOME/setup-magpie is absent (no file
+# created, exit 0). Custom subshell: run_fn always creates the dirs.
 new_env
 (
   base_env
@@ -1089,8 +1091,8 @@ new_env
   magpie_stop_keepalive
 ) >> "$STATE/screen.txt" 2>&1
 RET=$?
-ret_is "stop is a no-op with no magpie dir" 0
-nofile_ok "stop creates no magpie dir" "$FAKE_HOME/magpie"
+ret_is "stop is a no-op with no work dir" 0
+nofile_ok "stop creates no work dir" "$FAKE_HOME/setup-magpie"
 
 # ============================================================
 sec "cache folders + rc lines"
@@ -1161,22 +1163,22 @@ new_env
   export MAGPIE_SOURCED=1
   . "$SCRIPT"
   exec 4>/dev/null
-  mkdir -p "$FAKE_HOME/magpie"
+  mkdir -p "$FAKE_HOME/setup-magpie"
   magpie_start_keepalive
   magpie_take_lock
   sleep 5 &
   wait $!
 ) 2>/dev/null &
 tp=$!
-wait_file "$FAKE_HOME/magpie/.keepalive.pid"
-wait_file "$FAKE_HOME/magpie/.setup.lock/pid"
-kp=$(cat "$FAKE_HOME/magpie/.keepalive.pid" 2>/dev/null || echo "")
+wait_file "$FAKE_HOME/setup-magpie/.keepalive.pid"
+wait_file "$FAKE_HOME/setup-magpie/.setup.lock/pid"
+kp=$(cat "$FAKE_HOME/setup-magpie/.keepalive.pid" 2>/dev/null || echo "")
 kill -TERM "$tp" 2>/dev/null
 wait "$tp" 2>/dev/null
 rc=$?
 [ -n "$kp" ] && ok "keepalive was running" || no "keepalive was running"
 [ "$rc" = 130 ] && ok "exit code 130 on TERM" || no "exit code 130 on TERM (got $rc)"
-nofile_ok "lock removed" "$FAKE_HOME/magpie/.setup.lock"
+nofile_ok "lock removed" "$FAKE_HOME/setup-magpie/.setup.lock"
 if [ -n "$kp" ] && kill -0 "$kp" 2>/dev/null; then no "keepalive killed"; else ok "keepalive killed"; fi
 
 # ============================================================
@@ -1235,7 +1237,7 @@ make_tools
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_apt_tools' run_fn
 ret_is "all build libs present skips" 0
 grep_no "skip when libs present" "$STATE/apt.log" "DPkg::Lock::Timeout=120 install"
-grep_ok "skip logged" "$FAKE_HOME/magpie/setup-log.txt" "build libraries present"
+grep_ok "skip logged" "$FAKE_HOME/setup-magpie/setup-log.txt" "build libraries present"
 # A half-configured library still answers dpkg -s (exit 0) - the guard
 # must check the status line, not just the exit code.
 new_env
@@ -1244,7 +1246,7 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_st
   run_fn STUB_DPKG_HALF=libgdal-dev
 ret_is "half-configured -dev lib reruns apt step" 0
 grep_ok "half-configured reran the install" "$STATE/apt.log" "DPkg::Lock::Timeout=120 install"
-grep_no "half-configured no skip log" "$FAKE_HOME/magpie/setup-log.txt" "build libraries present"
+grep_no "half-configured no skip log" "$FAKE_HOME/setup-magpie/setup-log.txt" "build libraries present"
 
 # ============================================================
 sec "apt tools: dist-upgrade escalation"
@@ -1274,17 +1276,18 @@ sec "handle (code name)"
 # ============================================================
 new_env
 FN_BODY='magpie_init_handle' run_fn
-file_ok "handle file created" "$FAKE_HOME/.magpie-course-handle"
-h=$(cat "$FAKE_HOME/.magpie-course-handle" 2>/dev/null)
+file_ok "handle file created" "$FAKE_HOME/setup-magpie/.magpie-course-handle"
+h=$(cat "$FAKE_HOME/setup-magpie/.magpie-course-handle" 2>/dev/null)
 case $h in
   [A-Z][a-z]*[0-9][0-9][0-9]) ok "handle format: Animal+3digits ($h)" ;;
   *) no "handle format: Animal+3digits ($h)" ;;
 esac
 grep_no "no user-facing box" "$STATE/screen.txt" "NOTE IT DOWN"
 new_env
-echo "Fox123" > "$FAKE_HOME/.magpie-course-handle"
+mkdir -p "$FAKE_HOME/setup-magpie"
+echo "Fox123" > "$FAKE_HOME/setup-magpie/.magpie-course-handle"
 FN_BODY='magpie_greet' run_fn
-grep_ok "greet reuses handle (log)" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "greet reuses handle (log)" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "reporting status as Fox123"
 grep_no "no greet line on screen" "$STATE/screen.txt" "Fox123"
 grep_no "no box on reuse" "$STATE/screen.txt" "NOTE IT DOWN"
@@ -1293,27 +1296,29 @@ grep_no "no box on reuse" "$STATE/screen.txt" "NOTE IT DOWN"
 # an empty one (the noclobber creation fails - the file exists - so the
 # second read must not decide alone).
 new_env
-: > "$FAKE_HOME/.magpie-course-handle"
+mkdir -p "$FAKE_HOME/setup-magpie"
+: > "$FAKE_HOME/setup-magpie/.magpie-course-handle"
 FN_BODY='magpie_greet' run_fn
 ret_is "empty handle file heals" 0
-grep_ok "empty handle gets a fresh name" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "empty handle gets a fresh name" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "reporting status as [A-Z][a-z]*[0-9][0-9][0-9]"
-grep_no "never greets with an empty handle" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_no "never greets with an empty handle" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "reporting status as $"
 # Present but UNREADABLE handle file (a stale-profile child may leave
 # one it cannot even read): the same fresh-name healing, and the
 # cat errors must stay suppressed - no "cat:" line may leak into the
 # log the failure post quotes.
 new_env
-echo "Fox123" > "$FAKE_HOME/.magpie-course-handle"
-chmod 000 "$FAKE_HOME/.magpie-course-handle"
+mkdir -p "$FAKE_HOME/setup-magpie"
+echo "Fox123" > "$FAKE_HOME/setup-magpie/.magpie-course-handle"
+chmod 000 "$FAKE_HOME/setup-magpie/.magpie-course-handle"
 FN_BODY='magpie_greet' run_fn
 ret_is "unreadable handle file heals" 0
-grep_ok "unreadable handle gets a fresh name" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "unreadable handle gets a fresh name" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "reporting status as [A-Z][a-z]*[0-9][0-9][0-9]"
-grep_no "no cat error leaks (unreadable handle)" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_no "no cat error leaks (unreadable handle)" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "cat:"
-chmod 600 "$FAKE_HOME/.magpie-course-handle" 2>/dev/null || true
+chmod 600 "$FAKE_HOME/setup-magpie/.magpie-course-handle" 2>/dev/null || true
 
 # ============================================================
 sec "config write"
@@ -1324,7 +1329,7 @@ FN_BODY='magpie_write_opencode_config' run_fn
 ret_is "writes fresh config" 0
 grep_ok "model preselected" "$CFG" '"model": "hu/llm3"'
 FN_BODY='magpie_write_opencode_config' run_fn
-grep_ok "identical skip logged" "$FAKE_HOME/magpie/setup-log.txt" "already in place"
+grep_ok "identical skip logged" "$FAKE_HOME/setup-magpie/setup-log.txt" "already in place"
 nofile_ok "no bak on skip" "$CFG.bak"
 new_env
 mkdir -p "$FAKE_HOME/.config/opencode"
@@ -1391,7 +1396,7 @@ T="$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx/gamslice.txt"
 grep_ok "licence content" "$T" "TEST-LICENCE-CONTENT"
 mode_is "licence mode 600" "$T" 600
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' run_fn
-grep_ok "rerun: already in place" "$FAKE_HOME/magpie/setup-log.txt" "already in place"
+grep_ok "rerun: already in place" "$FAKE_HOME/setup-magpie/setup-log.txt" "already in place"
 # The 2026-11 trap: the GAMS installer always ships a demo slice at
 # this path, so existence must never skip the course licence - a
 # DIFFERENT file is replaced and survives as .bak.
@@ -1400,7 +1405,7 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' run_fn
 ret_is "demo slice replaced by course licence" 0
 grep_ok "course licence in place" "$T" "TEST-LICENCE-CONTENT"
 grep_ok "old slice kept as bak" "$T.bak" "OLD-DEMO-SLICE"
-grep_ok "replacement logged" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "replacement logged" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "replacing non-course gamslice.txt"
 # The spec promises the replacement as a FEED line too: the TA reads
 # the demo-license swap on the course feed, not just in a local log.
@@ -1466,14 +1471,14 @@ ret_is "old R FAILs" 1
 grep_ok "R version line" "$STATE/screen.txt" "FAIL R older than 4.3"
 new_env
 make_tools
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 touch "$FAKE_HOME/magpie/renv.lock"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
 ret_is "renv.lock green library PASS" 0
 grep_ok "renv PASS" "$STATE/screen.txt" "PASS renv R library"
 new_env
 make_tools
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 touch "$FAKE_HOME/magpie/renv.lock"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn STUB_RENV_EXIT=1
 ret_is "renv.lock broken library FAIL" 1
@@ -1582,8 +1587,8 @@ ret_is "child fails without tools" 1
 grep_ok "sandbox label fed" "$STATE/feed.log" "sandbox check result"
 grep_ok "result lines on screen" "$STATE/screen.txt" "code name: "
 grep_ok "check lines printed" "$STATE/screen.txt" "FAIL gams"
-nofile_ok "no lock in child" "$FAKE_HOME/magpie/.setup.lock"
-nofile_ok "no log tee in child" "$FAKE_HOME/magpie/setup-log.txt"
+nofile_ok "no lock in child" "$FAKE_HOME/setup-magpie/.setup.lock"
+nofile_ok "no log tee in child" "$FAKE_HOME/setup-magpie/setup-log.txt"
 nofile_ok "no opencode install in child" "$FAKE_HOME/.opencode"
 grep_no "no archive download in child" "$STATE/curl.log" "registry.npmjs.org"
 new_env
@@ -1605,7 +1610,7 @@ mkdir -p "$FAKE_HOME/.TinyTeX/share"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_tinytex' \
   run_fn
 ret_is "half TinyTeX dir reinstall heals" 0
-grep_ok "half dir logged" "$FAKE_HOME/magpie/setup-log.txt" "incomplete"
+grep_ok "half dir logged" "$FAKE_HOME/setup-magpie/setup-log.txt" "incomplete"
 grep_ok "install_tinytex ran" "$STATE/rscript.log" "install_tinytex"
 nofile_ok "stale share gone" "$FAKE_HOME/.TinyTeX/share"
 file_ok "tex binary exists" "$FAKE_HOME/.TinyTeX/bin/x86_64-unknown-linux-gnu/tex"
@@ -1656,7 +1661,7 @@ tail -n 1 "$STATE/rscript.log" > "$STATE/call2"
 grep_ok "install.packages runs before the gate" "$STATE/call1" "install.packages"
 grep_ok "gate + install_tinytex run second" "$STATE/call2" "install_tinytex"
 grep_ok "install chatter reaches the log (no silencing)" \
-  "$FAKE_HOME/magpie/setup-log.txt" "STUB-INSTALL-PACKAGES-MARKER"
+  "$FAKE_HOME/setup-magpie/setup-log.txt" "STUB-INSTALL-PACKAGES-MARKER"
 file_ok "tex installed (gate pass)" "$FAKE_HOME/.TinyTeX/bin/x86_64-unknown-linux-gnu/tex"
 new_env
 cp "$STATE/binlib/Rscript" "$FAKE_BIN/Rscript"
@@ -1675,7 +1680,7 @@ grep_ok "step failure verdict" "$STATE/screen.txt" \
   "SETUP FAILED (twice, reproducible): TinyTeX install"
 cnt_is "stale gate retried to the cap" "install.packages" "$STATE/rscript.log" 3
 grep_ok "retried install chatter reaches the log" \
-  "$FAKE_HOME/magpie/setup-log.txt" "STUB-INSTALL-PACKAGES-MARKER"
+  "$FAKE_HOME/setup-magpie/setup-log.txt" "STUB-INSTALL-PACKAGES-MARKER"
 
 # ============================================================
 sec "nono profile: pull + magpie-profile build"
@@ -1693,7 +1698,7 @@ put_nono
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; MAGPIE_PASS=2 magpie_pull_nono_profile' \
   run_fn STUB_NONO_PULL_WRONG_VER=8.8.8
 ret_is "wrong pack version fails" 1
-grep_ok "wrong version logged" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "wrong version logged" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "nono pack wrong version after pull: got 8.8.8, want 9.9.9"
 grep_ok "pull step failure verdict" "$STATE/screen.txt" \
   "SETUP FAILED (twice, reproducible): nono profile pull"
@@ -1732,7 +1737,8 @@ EOS
 chmod 755 "$FAKE_BIN/Rscript"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
 : > "$HOME/setup-magpie.sh"
-: > "$HOME/.magpie-course-handle"
+mkdir -p "$HOME/setup-magpie"
+: > "$HOME/setup-magpie/.magpie-course-handle"
 MAGPIE_SELF="$HOME/setup-magpie.sh"
 magpie_step_magpie_profile' run_fn
 ret_is "profile with script file builds" 0
@@ -1740,7 +1746,7 @@ PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
 grep_ok "read_file lists the script" "$PJSON" \
   '"path": "'"$FAKE_HOME"'/setup-magpie.sh"'
 grep_ok "read_file lists the handle file" "$PJSON" \
-  '"path": "'"$FAKE_HOME"'/.magpie-course-handle"'
+  '"path": "'"$FAKE_HOME"'/setup-magpie/.magpie-course-handle"'
 grep_ok "write section after read_file intact" "$PJSON" '"write"'
 # The 2026-11 gate death: apt R (Renviron, libraries) was invisible in
 # the sandbox -> "cannot find system Renviron" -> FAIL R. R.home and
@@ -1902,15 +1908,15 @@ OFP
 put_nono
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
 ret_is "stale generated profile regenerated" 0
-grep_ok "regenerated content current" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json" "(setup v10)"
+grep_ok "regenerated content current" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json" "(setup v11)"
 grep_ok "stale copy kept as bak" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json.bak" "/stale/old/path"
-grep_ok "regeneration logged" "$FAKE_HOME/magpie/setup-log.txt" "regenerated"
+grep_ok "regeneration logged" "$FAKE_HOME/setup-magpie/setup-log.txt" "regenerated"
 # Rerun right after regeneration: content is current now, so the cmp
 # branch reports "already in place" - no second regeneration.
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
 ret_is "rerun after regen: profile current" 0
-grep_ok "rerun: already in place logged" "$FAKE_HOME/magpie/setup-log.txt" "already in place"
-cnt_is "regenerated exactly once over two runs" "regenerated" "$FAKE_HOME/magpie/setup-log.txt" 1
+grep_ok "rerun: already in place logged" "$FAKE_HOME/setup-magpie/setup-log.txt" "already in place"
+cnt_is "regenerated exactly once over two runs" "regenerated" "$FAKE_HOME/setup-magpie/setup-log.txt" 1
 # A hand-edited copy of our template keeps the marker: still
 # regenerated (documented tradeoff) - the edit survives in .bak.
 new_env
@@ -1947,7 +1953,7 @@ new_env
 SRC="$ENV/magpie_lic.sh"
 cp "$STATE/binlib/gams" "$FAKE_BIN/gams"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_licence_dir' run_fn
-grep_ok "licence dir follows PATH-gams" "$FAKE_HOME/magpie/setup-log.txt" "$FAKE_BIN"
+grep_ok "licence dir follows PATH-gams" "$FAKE_HOME/setup-magpie/setup-log.txt" "$FAKE_BIN"
 new_env
 make_tools
 put_nono
@@ -1962,9 +1968,9 @@ grep_ok "profile step named in verdict" "$STATE/screen.txt" \
 # ONE line: nothing is written to a side file any more, and a multi-line
 # dump would push the diagnostics out of the 25 log lines that the
 # failure post carries.
-grep_ok "validator complaint logged" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "validator complaint logged" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "failed validation: path /home/x/.TinyTeX does not exist"
-grep_ok "rejected candidate logged" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "rejected candidate logged" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "rejected candidate: { \"meta\""
 nofile_ok "no candidate side file" "$FAKE_HOME/magpie/setup-help-profile.json"
 new_env
@@ -2005,27 +2011,27 @@ MAGPIE_SELF="'"$DL"'/setup-magpie.sh"
 magpie_native_self_copy
 printf "%s\n" "$MAGPIE_SELF" > "$STATE/self.txt"' run_fn
 ret_is "9P script relocates (exit 0)" 0
-NATIVE="$FAKE_HOME/.magpie-course/self/setup-magpie.sh"
+NATIVE="$FAKE_HOME/setup-magpie/self/setup-magpie.sh"
 grep_ok "self redirected to native copy" "$STATE/self.txt" \
-  "\.magpie-course/self/setup-magpie.sh"
+  "setup-magpie/self/setup-magpie.sh"
 grep_ok "copy carries the content" "$NATIVE" "MAGPIE-9P-ORIGINAL"
 file_ok "Windows-drive original stays untouched" "$DL/setup-magpie.sh"
-grep_ok "Windows drive note logged" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "Windows drive note logged" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "Windows drive"
 grep_no "Linux-side note off screen" "$STATE/screen.txt" "Linux-side copy"
 # Private modes despite the 022 umask: the copy holds the filled script.
 mode_is "native copy is 600" "$NATIVE" 600
-mode_is "self folder is 700" "$FAKE_HOME/.magpie-course/self" 700
+mode_is "self folder is 700" "$FAKE_HOME/setup-magpie/self" 700
 # Reruns from the relocated (native) path must not copy again.
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1
-MAGPIE_SELF="'"$FAKE_HOME"'/.magpie-course/self/setup-magpie.sh"
+MAGPIE_SELF="'"$FAKE_HOME"'/setup-magpie/self/setup-magpie.sh"
 magpie_native_self_copy
 printf "%s\n" "$MAGPIE_SELF" > "$STATE/self.txt"' run_fn
 ret_is "native script stays put (exit 0)" 0
 grep_ok "self unchanged after native run" "$STATE/self.txt" \
-  "^$FAKE_HOME/.magpie-course/self/setup-magpie.sh$"
+  "^$FAKE_HOME/setup-magpie/self/setup-magpie.sh$"
 cnt_is "no second relocation" "Windows drive" \
-  "$FAKE_HOME/magpie/setup-log.txt" 1
+  "$FAKE_HOME/setup-magpie/setup-log.txt" 1
 # No stat at all (ancient systems): silent no-op, MAGPIE_SELF kept.
 new_env
 rm -f "$MINBIN/stat"
@@ -2036,23 +2042,24 @@ magpie_native_self_copy
 printf "%s\n" "$MAGPIE_SELF" > "$STATE/self.txt"' run_fn
 ret_is "missing stat tolerated (exit 0)" 0
 grep_ok "self kept without stat" "$STATE/self.txt" "^/bin/sh$"
-nofile_ok "no copy folder made" "$FAKE_HOME/.magpie-course/self"
-# The copy destination cannot be created (~/.magpie-course taken):
-# the run must not die here, but it must not stay silent either - the
-# log names the still-9P path state for whoever reads the feed tail.
+nofile_ok "no copy folder made" "$FAKE_HOME/setup-magpie/self"
+# The copy destination cannot be created (setup-magpie/self taken by a
+# file): the run must not die here, but it must not stay silent either -
+# the log names the still-9P path state for whoever reads the feed tail.
 new_env
 stat_stub
 DL="$FAKE_HOME/mnt/c/Users/Max Mustermann/Downloads"
 mkdir -p "$DL"
 printf 'MAGPIE-9P-ORIGINAL\n' > "$DL/setup-magpie.sh"
-printf 'occupied\n' > "$FAKE_HOME/.magpie-course"
+mkdir -p "$FAKE_HOME/setup-magpie"
+printf 'occupied\n' > "$FAKE_HOME/setup-magpie/self"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1
 MAGPIE_SELF="'"$DL"'/setup-magpie.sh"
 magpie_native_self_copy
 printf "%s\n" "$MAGPIE_SELF" > "$STATE/self.txt"' run_fn
 ret_is "blocked relocation stays non-fatal (exit 0)" 0
 grep_ok "self stays on the Windows path" "$STATE/self.txt" "mnt/c/Users"
-grep_ok "failed copy is logged" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "failed copy is logged" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "9P relocation copy failed"
 grep_no "failed copy note off screen" "$STATE/screen.txt" "9P"
 
@@ -2087,14 +2094,14 @@ FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_st
     MAGPIE_GFORTRAN_DIR_NEW="$FAKE_HOME/no-opt-gf"
 ret_is "gfortran pkg installs" 0
 grep_ok "14.2 pkg is the one downloaded" "$STATE/curl.log" "gfortran-14.2-universal.pkg"
-grep_ok "attempt logs pkg + FC target" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "attempt logs pkg + FC target" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "gfortran install attempt: gfortran-14.2-universal.pkg, FC target $FAKE_HOME/no-opt-gf/bin"
 grep_ok "installer -pkg called" "$STATE/installer.log" "installer -pkg"
 grep_ok "gfortran pkg name" "$STATE/installer.log" "setup-dl-gfortran.pkg"
 grep_ok "installer via sudo" "$STATE/sudo.log" "sudo installer -pkg"
 grep_ok "OK line" "$STATE/screen.txt" "OK: gfortran installed"
 file_ok "gfortran now on PATH" "$FAKE_BIN/gfortran"
-nofile_ok "setup-dl pkg removed" "$FAKE_HOME/magpie/setup-dl-gfortran.pkg"
+nofile_ok "setup-dl pkg removed" "$FAKE_HOME/setup-magpie/setup-dl-gfortran.pkg"
 new_env
 FN_BODY='MAGPIE_OS=darwin; MAGPIE_HANDLE=T1
 MAGPIE_PKG_URL=$GFORTRAN_URL; MAGPIE_PKG_SHA=$GFORTRAN_SHA256; magpie_gfortran_body' \
@@ -2102,7 +2109,7 @@ MAGPIE_PKG_URL=$GFORTRAN_URL; MAGPIE_PKG_SHA=$GFORTRAN_SHA256; magpie_gfortran_b
 ret_is "gfortran checksum mismatch blocks" 1
 nofile_ok "installer never called" "$STATE/installer.log"
 nofile_ok "no sudo before verify" "$STATE/sudo.log"
-nofile_ok "no pkg left behind" "$FAKE_HOME/magpie/setup-dl-gfortran.pkg"
+nofile_ok "no pkg left behind" "$FAKE_HOME/setup-magpie/setup-dl-gfortran.pkg"
 # The 2026-11 Pangolin317 loop, machine-checked: detection asks R (R CMD
 # config FC), it never guesses an install dir. An FC that resolves to an
 # executable IS the present verdict - and that bin dir is what the rc
@@ -2116,9 +2123,9 @@ FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_st
     STUB_FC_PATH="$FAKE_HOME/opt-gf/bin/gfortran"
 ret_is "r fc resolves - step skips" 0
 nofile_ok "no pkg download (fc present)" "$STATE/curl.log"
-grep_ok "present verdict logged" "$FAKE_HOME/magpie/setup-log.txt" "gfortran: present"
+grep_ok "present verdict logged" "$FAKE_HOME/setup-magpie/setup-log.txt" "gfortran: present"
 grep_ok "rc gains the FC bin dir" "$FAKE_HOME/.zshrc" "$FAKE_HOME/opt-gf/bin"
-grep_ok "gfortran registered log" "$FAKE_HOME/magpie/setup-log.txt" "gfortran registered"
+grep_ok "gfortran registered log" "$FAKE_HOME/setup-magpie/setup-log.txt" "gfortran registered"
 # Installer success alone must never read as present: R is there, its FC
 # is not, so the step keeps the retry model and fails - after having
 # downloaded exactly the one pinned pkg.
@@ -2130,7 +2137,7 @@ FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_st
 ret_is "fc unresolved - step fails after the retries" 1
 grep_ok "14.2 pkg url (fc unresolved)" "$STATE/curl.log" "gfortran-14.2-universal.pkg"
 grep_ok "installer ran (fc unresolved)" "$STATE/installer.log" "installer -pkg"
-grep_ok "step failed verdict logged" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "step failed verdict logged" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "step failed after retries: gfortran install"
 # What the feed's 25-line tail must show instead of three identical
 # `installer:` stanzas: FC plus a one-line listing of BOTH pkg targets.
@@ -2144,10 +2151,10 @@ MAGPIE_GFORTRAN_DIR="$HOME/legacy-gf"; MAGPIE_GFORTRAN_DIR_NEW="$HOME/opt-gf"
 magpie_gfortran_body' \
   run_fn STUB_GF_TARGET="$FAKE_HOME/opt-gf/bin"
 ret_is "installed but fc unresolved fails the body" 1
-grep_ok "fc diagnostic line" "$FAKE_HOME/magpie/setup-log.txt" "no usable FC: fc= |"
-grep_ok "diagnostic lists the new pkg tree" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "fc diagnostic line" "$FAKE_HOME/setup-magpie/setup-log.txt" "no usable FC: fc= |"
+grep_ok "diagnostic lists the new pkg tree" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "new $FAKE_HOME/opt-gf/bin: (gfortran"
-grep_ok "diagnostic lists the legacy tree" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "diagnostic lists the legacy tree" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "legacy $FAKE_HOME/legacy-gf/bin: (gfortran-6"
 # Off-PATH pkg target: the dir must land in rc + this run's PATH, or
 # renv restore compiles fail and sandboxed children never see gfortran.
@@ -2161,7 +2168,7 @@ FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_st
 ret_is "gfortran off-PATH present skips + registers" 0
 nofile_ok "no pkg download" "$STATE/curl.log"
 grep_ok "rc gfortran dir line" "$FAKE_HOME/.zshrc" "$FAKE_HOME/opt-gf/bin"
-grep_ok "gfortran registered log" "$FAKE_HOME/magpie/setup-log.txt" "gfortran registered"
+grep_ok "gfortran registered log" "$FAKE_HOME/setup-magpie/setup-log.txt" "gfortran registered"
 # The legacy 6.x-era tree (/usr/local/gfortran, what this script never
 # installs): a usable gfortran is a usable gfortran - skip, register
 # THAT dir.
@@ -2196,7 +2203,7 @@ FN_BODY='MAGPIE_OS=darwin; MAGPIE_HANDLE=T1; magpie_install_pkg gams "$GAMS_URL_
 ret_is "gams pkg download + sudo installer" 0
 grep_ok "gams pkg passed to installer" "$STATE/installer.log" "setup-dl-gams.pkg"
 grep_ok "installer target root" "$STATE/installer.log" "-target /"
-nofile_ok "gams pkg file removed" "$FAKE_HOME/magpie/setup-dl-gams.pkg"
+nofile_ok "gams pkg file removed" "$FAKE_HOME/setup-magpie/setup-dl-gams.pkg"
 new_env
 FN_BODY='MAGPIE_OS=darwin; MAGPIE_HANDLE=T1; magpie_install_pkg gams "$GAMS_URL_DARWIN_ARM64" "$GAMS_SHA256_DARWIN_ARM64"' \
   run_fn STUB_BAD_ARCHIVE=1
@@ -2214,7 +2221,7 @@ file_ok "gams binary extracted" "$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx/gam
 grep_ok "OK line" "$STATE/screen.txt" "OK: GAMS 54.6.1 installed"
 grep_ok "gams install fed" "$STATE/feed.log" "gams 54.6.1 installed"
 grep_ok "gams dir in rc" "$FAKE_HOME/.bashrc" "gams54.6.1_linux_x64_64_sfx"
-nofile_ok "exe removed after extract" "$FAKE_HOME/magpie/setup-dl-gams.exe"
+nofile_ok "exe removed after extract" "$FAKE_HOME/setup-magpie/setup-dl-gams.exe"
 new_env
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_install_gams' \
   run_fn STUB_BAD_GAMS=1
@@ -2225,7 +2232,7 @@ new_env
 mkdir -p "$FAKE_HOME/gams/gams47.6.0_linux_x64_64_sfx" \
   "$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx"
 FN_BODY='MAGPIE_OS=linux; magpie_find_gams_dir' run_fn
-grep_ok "pinned version folder preferred" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "pinned version folder preferred" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "gams54.6.1_linux_x64_64_sfx"
 # A reinstall removes the pinned folder only - other versions stay.
 new_env
@@ -2252,18 +2259,18 @@ chmod 755 "$ENV/ro-gams"
 sec "download temp-file guard"
 # ============================================================
 new_env
-FN_BODY='MAGPIE_OS=linux; mkdir -p "$HOME/magpie"
-cp "$STATE/archives/cli-$OC_TARGET-9.9.9.tgz" "$HOME/magpie/dl.tgz"
-magpie_download "http://x/cli-$OC_TARGET-9.9.9.tgz" "$HOME/magpie/dl.tgz" "$OC_SHA"' run_fn
+FN_BODY='MAGPIE_OS=linux; mkdir -p "$HOME/setup-magpie"
+cp "$STATE/archives/cli-$OC_TARGET-9.9.9.tgz" "$HOME/setup-magpie/dl.tgz"
+magpie_download "http://x/cli-$OC_TARGET-9.9.9.tgz" "$HOME/setup-magpie/dl.tgz" "$OC_SHA"' run_fn
 ret_is "intact temp file skips re-download" 0
 grep_no "no request for the asset" "$STATE/curl.log" "cli-"
-file_ok "temp file kept for the caller" "$FAKE_HOME/magpie/dl.tgz"
+file_ok "temp file kept for the caller" "$FAKE_HOME/setup-magpie/dl.tgz"
 new_env
-FN_BODY='MAGPIE_OS=linux; mkdir -p "$HOME/magpie"
-echo partial > "$HOME/magpie/dl.tgz"
-magpie_download "http://x/dl.tgz" "$HOME/magpie/dl.tgz" deadbeef' run_fn STUB_CURL_DL_FAILS=1
+FN_BODY='MAGPIE_OS=linux; mkdir -p "$HOME/setup-magpie"
+echo partial > "$HOME/setup-magpie/dl.tgz"
+magpie_download "http://x/dl.tgz" "$HOME/setup-magpie/dl.tgz" deadbeef' run_fn STUB_CURL_DL_FAILS=1
 ret_is "failed download removes the temp file" 1
-nofile_ok "no temp left to wedge a resume" "$FAKE_HOME/magpie/dl.tgz"
+nofile_ok "no temp left to wedge a resume" "$FAKE_HOME/setup-magpie/dl.tgz"
 # The download policy promised in the spec (flag list, stall guard,
 # resume) is pinned on the source text - a quiet flag drop would keep
 # every behavioural test green while course downloads lose their retry
@@ -2301,49 +2308,50 @@ run_e2e
 ret_is "foreign dir blocks" 1
 grep_ok "foreign dir message" "$STATE/screen.txt" "not a magpie clone"
 new_env
-make_installed
-rm -rf "$FAKE_HOME/magpie/.git"
-echo "log" > "$FAKE_HOME/magpie/setup-log.txt"
-# Legacy leftovers: not written any more, but the names must stay in the
-# clone guard's allowlist so an old distributed copy never blocks a clone.
-# setup-help-profile.json is the profile-rejection dump the 2026-11
-# distributed copies left behind - exactly on the machines whose clone
-# never ran (the profile step sits BEFORE the clone).
-echo "help" > "$FAKE_HOME/magpie/setup-help.txt"
-echo "{}" > "$FAKE_HOME/magpie/setup-help-profile.json"
-run_e2e
-ret_is "own files only -> clone proceeds" 0
+# The guard's allowlist, pinned directly: every name an old layout could
+# leave in ~/magpie (own logs, markers, install leftovers) must let the
+# clone through. In a real entry run the legacy sweep moves or drops
+# most of these BEFORE the guard runs - the allowlist stays as the
+# second line for leftovers the sweep could not remove, and it is the
+# only code deciding tolerance, so exercise it as a unit (magpie_clone_-
+# magpie straight, sweep bypassed). setup-help-profile.json is the
+# profile-rejection dump the 2026-11 distributed copies left behind -
+# exactly on the machines whose clone never ran (the profile step sits
+# BEFORE the clone).
+FN_BODY='mkdir -p "$HOME/magpie/opencode-extract" "$HOME/magpie/nono-extract"
+echo "log" > "$HOME/magpie/setup-log.txt"
+echo "help" > "$HOME/magpie/setup-help.txt"
+echo "{}" > "$HOME/magpie/setup-help-profile.json"
+touch "$HOME/magpie/opencode-dl.tgz" "$HOME/magpie/nono-dl.tar.gz"
+touch "$HOME/magpie/setup-dl-crashed.pkg"
+printf "2026-01-01 00:00:00\nnono 0.81.0\nopencode 2.2.7\n" \
+  > "$HOME/magpie/.setup-finished"
+printf "output/default_2026-01-01_00.00.00\n" > "$HOME/magpie/.setup-fullrun-ok"
+magpie_clone_magpie' run_fn
+ret_is "own files only -> guard proceeds" 0
 file_ok "clone recreated .git" "$FAKE_HOME/magpie/.git"
 grep_ok "clone happened" "$STATE/screen.txt" "OK: magpie downloaded"
 grep_no "no false foreign-dir abort" "$STATE/screen.txt" "not a magpie clone"
-nofile_ok "legacy profile dump dropped on green path" \
-  "$FAKE_HOME/magpie/setup-help-profile.json"
 new_env
 make_installed
 rm -rf "$FAKE_HOME/magpie/.git"
-touch "$FAKE_HOME/magpie/opencode-dl.tgz" "$FAKE_HOME/magpie/nono-dl.tar.gz"
-touch "$FAKE_HOME/magpie/setup-dl-crashed.pkg"
-mkdir -p "$FAKE_HOME/magpie/opencode-extract" "$FAKE_HOME/magpie/nono-extract"
-run_e2e
-ret_is "install leftovers (incl. setup-dl) -> clone proceeds" 0
-file_ok "clone recreated .git" "$FAKE_HOME/magpie/.git"
-new_env
-make_installed
-rm -rf "$FAKE_HOME/magpie/.git"
-# magpie-opencode's finish marker is foreign state but tolerated (never
-# written here - magpie_setup_path comment). The full run marker is
-# own state and tolerated by the guard too (the run then FAILs later at
-# the stale marker - proof: the clone itself proceeds).
+# Legacy layout markers still sitting in ~/magpie: the entry sweep
+# moves them into the work dir before any step runs, so the guard sees
+# a bare folder, the clone proceeds - and the FULL RUN then fails on
+# the (migrated, stale) marker instead of re-running.
 printf '2026-01-01 00:00:00\nnono 0.81.0\nopencode 2.2.7\n' \
   > "$FAKE_HOME/magpie/.setup-finished"
 printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/magpie/.setup-fullrun-ok"
 run_e2e
-ret_is "markers tolerated by guard, run fails on stale marker" 1
+ret_is "legacy markers migrated, run fails on stale marker" 1
 grep_no "no false foreign-dir abort" "$STATE/screen.txt" "not a magpie clone"
 file_ok "clone recreated .git" "$FAKE_HOME/magpie/.git"
 grep_ok "clone happened" "$STATE/screen.txt" "OK: magpie downloaded"
 grep_ok "stale marker FAIL line" "$STATE/screen.txt" "FAIL full run artifacts missing - rerun this file"
-grep_ok "existing opencode marker kept untouched" "$FAKE_HOME/magpie/.setup-finished" "nono 0.81.0"
+grep_ok "finished marker moved to work dir" \
+  "$FAKE_HOME/setup-magpie/.setup-finished" "nono 0.81.0"
+nofile_ok "old finished marker gone" "$FAKE_HOME/magpie/.setup-finished"
+nofile_ok "old fullrun marker gone" "$FAKE_HOME/magpie/.setup-fullrun-ok"
 new_env
 make_installed
 rm -rf "$FAKE_HOME/magpie/.git"
@@ -2351,7 +2359,7 @@ git -C "$FAKE_HOME/magpie" init -q
 git -C "$FAKE_HOME/magpie" remote add origin "file://$STATE/origin.git"
 run_e2e
 ret_is "interrupted clone healed on rerun" 0
-grep_ok "heal logged" "$FAKE_HOME/magpie/setup-log.txt" "interrupted clone found"
+grep_ok "heal logged" "$FAKE_HOME/setup-magpie/setup-log.txt" "interrupted clone found"
 grep_ok "clone checked out file" "$FAKE_HOME/magpie/README.md" "readme"
 new_env
 make_installed
@@ -2368,7 +2376,7 @@ make_installed
 git -C "$FAKE_HOME/magpie" remote set-url origin git@github.com:magpiemodel/magpie.git
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_clone_magpie' run_fn
 ret_is "official repo via ssh url accepted" 0
-grep_ok "url note logged" "$FAKE_HOME/magpie/setup-log.txt" "using the existing clone"
+grep_ok "url note logged" "$FAKE_HOME/setup-magpie/setup-log.txt" "using the existing clone"
 grep_no "no false not-a-clone" "$STATE/screen.txt" "not a magpie clone"
 new_env
 make_installed
@@ -2381,7 +2389,7 @@ git -C "$FAKE_HOME/magpie" remote set-url origin git@github.com:student/magpie.g
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_clone_magpie' \
   run_fn "MAGPIE_MAGPIE_URL=file://$STATE/magpie"
 ret_is "same-name fork accepted with note" 0
-grep_ok "fork url note" "$FAKE_HOME/magpie/setup-log.txt" "origin is"
+grep_ok "fork url note" "$FAKE_HOME/setup-magpie/setup-log.txt" "origin is"
 grep_no "no false not-a-clone (fork)" "$STATE/screen.txt" "not a magpie clone"
 # A trailing slash is spelling, not another repo.
 new_env
@@ -2396,7 +2404,7 @@ make_installed
 git -C "$FAKE_HOME/magpie" remote remove origin
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_clone_magpie' run_fn
 ret_is "removed origin proceeds" 0
-grep_no "no note for empty origin" "$FAKE_HOME/magpie/setup-log.txt" "origin is"
+grep_no "no note for empty origin" "$FAKE_HOME/setup-magpie/setup-log.txt" "origin is"
 new_env
 make_installed
 rm -rf "$FAKE_HOME/magpie/.git"
@@ -2414,7 +2422,7 @@ sec "renv restore step"
 # No renv.lock: skip quietly, no R calls.
 new_env
 make_tools
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_renv_restore' run_fn
 ret_is "no renv.lock skips quietly" 0
 grep_no "no restore attempt" "$STATE/rscript.log" "renv"
@@ -2422,7 +2430,7 @@ grep_no "no heads-up when skipped" "$STATE/screen.txt" "installing"
 # Library already loads: skip, restore never called.
 new_env
 make_tools
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 touch "$FAKE_HOME/magpie/renv.lock"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_renv_restore' run_fn
 ret_is "populated library skips restore" 0
@@ -2431,7 +2439,7 @@ grep_no "no heads-up when skipped" "$STATE/screen.txt" "installing"
 # Load test fails: restore runs, verify passes, feed + OK line.
 new_env
 make_tools
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 touch "$FAKE_HOME/magpie/renv.lock"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_renv_restore' \
   run_fn STUB_RENV_EXIT=1 STUB_RENV_PKG_EXIT=1
@@ -2443,7 +2451,7 @@ grep_ok "OK line" "$STATE/screen.txt" "OK: R packages installed"
 grep_ok "restore fed" "$STATE/feed.log" "setup: renv restored"
 new_env
 make_tools
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 touch "$FAKE_HOME/magpie/renv.lock"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_renv_restore' \
   run_fn STUB_RENV_EXIT=1
@@ -2451,7 +2459,7 @@ grep_no "no bootstrap when renv present" "$STATE/rscript.log" "renv/activate.R"
 grep_ok "restore still called" "$STATE/rscript.log" "renv::restore"
 new_env
 make_tools
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 touch "$FAKE_HOME/magpie/renv.lock"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
 MAGPIE_PASS=2 magpie_step_renv_restore' \
@@ -2467,7 +2475,7 @@ sec "full run step"
 new_env
 make_tools
 put_nono
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' run_fn
 ret_is "full run completes" 0
 grep_ok "sandbox run via profile" "$STATE/nono.log" "run --profile magpie-profile --allow-cwd -- env"
@@ -2483,10 +2491,10 @@ grep_ok "40 min heads-up" "$STATE/screen.txt" "full magpie run, about 40 min"
 grep_ok "OK line" "$STATE/screen.txt" "OK: full magpie run finished"
 grep_ok "feed start" "$STATE/feed.log" "setup: full run start"
 grep_ok "feed finished" "$STATE/feed.log" "setup: full run finished"
-file_ok "marker written" "$FAKE_HOME/magpie/.setup-fullrun-ok"
-grep_ok "marker names run folder" "$FAKE_HOME/magpie/.setup-fullrun-ok" \
+file_ok "marker written" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
+grep_ok "marker names run folder" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok" \
   '^output/default_[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}_[0-9]\{2\}\.[0-9]\{2\}\.[0-9]\{2\}$'
-RUNDIR=$(sed -n 1p "$FAKE_HOME/magpie/.setup-fullrun-ok")
+RUNDIR=$(sed -n 1p "$FAKE_HOME/setup-magpie/.setup-fullrun-ok")
 file_ok "fulldata.gdx present" "$FAKE_HOME/magpie/$RUNDIR/fulldata.gdx"
 file_ok "report.rds present" "$FAKE_HOME/magpie/$RUNDIR/report.rds"
 # Without renv.lock start.R asks "Try to fix automatically? (Y/n)"
@@ -2495,7 +2503,7 @@ file_ok "report.rds present" "$FAKE_HOME/magpie/$RUNDIR/report.rds"
 new_env
 make_tools
 put_nono
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' \
   run_fn STUB_FULLRUN_CAPTURE=1
 ret_is "prompt-fed run completes" 0
@@ -2506,7 +2514,7 @@ cnt_is "no n answer without lockfile" "^n$" "$STATE/fullrun_stdin" 0
 new_env
 make_tools
 put_nono
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 : > "$FAKE_HOME/magpie/renv.lock"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' \
   run_fn STUB_FULLRUN_CAPTURE=1
@@ -2516,46 +2524,48 @@ cnt_is "two n answers reach Rscript" "^n$" "$STATE/fullrun_stdin" 2
 new_env
 make_tools
 put_nono
-mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"
+mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00" \
+    "$FAKE_HOME/setup-magpie"
 touch "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/fulldata.gdx \
   "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/full.lst \
   "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.rds \
   "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.mif
-printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/magpie/.setup-fullrun-ok"
+printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' run_fn
 ret_is "verified marker skips the run" 0
 grep_no "no sandbox run" "$STATE/nono.log" "runscripts=default.R"
 grep_no "no R run" "$STATE/rscript.log" "start.R"
-grep_ok "skip logged" "$FAKE_HOME/magpie/setup-log.txt" "full run: marker verified"
+grep_ok "skip logged" "$FAKE_HOME/setup-magpie/setup-log.txt" "full run: marker verified"
 grep_no "no heads-up on skip" "$STATE/screen.txt" "40 min"
 # Non-zero sandbox exit: straight to the failure verdict, no marker.
 new_env
 make_tools
 put_nono
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
 MAGPIE_PASS=2 magpie_step_full_run' run_fn STUB_FULLRUN_FAIL=1
 ret_is "non-zero sandbox exit fails" 1
 grep_ok "failure verdict" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible)"
 grep_ok "step named" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
 grep_ok "FAIL fed" "$STATE/feed.log" "setup: FAIL full magpie run"
-nofile_ok "no marker on failure" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+nofile_ok "no marker on failure" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 # Exit 0 but swallowed run error (no output artifacts): artifacts fail it.
 new_env
 make_tools
 put_nono
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
 MAGPIE_PASS=2 magpie_step_full_run' run_fn STUB_FULLRUN_NO_OUTPUT=1
 ret_is "missing postprocessing artifacts fail" 1
 grep_ok "artifact failure named" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
-nofile_ok "no marker without artifacts" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+nofile_ok "no marker without artifacts" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 grep_no "no finished feed line" "$STATE/feed.log" "setup: full run finished"
 # An OLD complete run folder is not accepted as the NEW one (no-op run).
 new_env
 make_tools
 put_nono
-mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"
+mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00" \
+    "$FAKE_HOME/setup-magpie"
 touch "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/fulldata.gdx \
   "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/full.lst \
   "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.rds \
@@ -2563,33 +2573,34 @@ touch "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/fulldata.gdx \
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
 MAGPIE_PASS=2 magpie_step_full_run' run_fn STUB_FULLRUN_NOTHING=1
 ret_is "old folder is not accepted as new" 1
-nofile_ok "no marker without a new folder" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+nofile_ok "no marker without a new folder" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 # Non-zero inner Rscript exit despite COMPLETE artifacts: the exit code
 # fails the step too (spec: non-zero sandbox exit fails regardless).
 new_env
 make_tools
 put_nono
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
 MAGPIE_PASS=2 magpie_step_full_run' run_fn STUB_FULLRUN_RSCRIPT_EXIT=1
 ret_is "non-zero exit with complete artifacts fails" 1
 grep_ok "exit-code failure named" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
-nofile_ok "no marker on non-zero exit" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+nofile_ok "no marker on non-zero exit" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 grep_ok "exit-code FAIL fed" "$STATE/feed.log" "setup: FAIL full magpie run"
 # An old complete folder plus a NEW complete folder: the marker names
 # the NEWEST one (sort direction).
 new_env
 make_tools
 put_nono
-mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"
+mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00" \
+    "$FAKE_HOME/setup-magpie"
 touch "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/fulldata.gdx \
   "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/full.lst \
   "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.rds \
   "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.mif
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' run_fn
 ret_is "new folder wins over old complete one" 0
-file_ok "marker written (newest wins)" "$FAKE_HOME/magpie/.setup-fullrun-ok"
-grep_no "marker is not the old folder" "$FAKE_HOME/magpie/.setup-fullrun-ok" \
+file_ok "marker written (newest wins)" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
+grep_no "marker is not the old folder" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok" \
   "^output/default_2026-01-01_00\\.00\\.00$"
 file_ok "old run folder untouched" \
   "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00/fulldata.gdx"
@@ -2597,25 +2608,25 @@ file_ok "old run folder untouched" \
 new_env
 make_tools
 put_nono
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' \
   run_fn MAGPIE_FULL_RUN=0
 ret_is "escape hatch returns 0" 0
 grep_ok "screen note" "$STATE/screen.txt" "Full run skipped (MAGPIE_FULL_RUN=0)"
 grep_ok "feed note" "$STATE/feed.log" "setup: full run skipped (MAGPIE_FULL_RUN=0)"
-nofile_ok "no marker written" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+nofile_ok "no marker written" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 grep_no "no sandbox run" "$STATE/nono.log" "runscripts=default.R"
 # macOS: the whole call is wrapped in caffeinate -is.
 new_env
 make_tools
 put_nono
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 : > "$FAKE_HOME/magpie/renv.lock"
 FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' \
   run_fn STUB_FULLRUN_CAPTURE=1
 ret_is "darwin full run through caffeinate" 0
 grep_ok "caffeinate wraps the call" "$STATE/caffeinate.log" "caffeinate -is nono run --profile magpie-profile"
-file_ok "marker written (darwin)" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+file_ok "marker written (darwin)" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 cnt_is "prompt answers survive caffeinate" "^n$" "$STATE/fullrun_stdin" 2
 
 # ============================================================
@@ -2629,20 +2640,21 @@ grep_no "no full run line before the marker" "$STATE/screen.txt" "full run"
 grep_no "no library line before the marker" "$STATE/screen.txt" "R libraries"
 new_env
 make_tools
-mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"
+mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00" \
+    "$FAKE_HOME/setup-magpie"
 touch "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/fulldata.gdx \
   "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/full.lst \
   "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.rds \
   "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.mif
-printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/magpie/.setup-fullrun-ok"
+printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
 ret_is "marker + artifacts PASS" 0
 grep_ok "PASS line" "$STATE/screen.txt" "PASS full run (output/default_2026-01-01_00.00.00)"
 grep_ok "library line with marker" "$STATE/screen.txt" "PASS R libraries (lucode2, gms load)"
 new_env
 make_tools
-mkdir -p "$FAKE_HOME/magpie"
-printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/magpie/.setup-fullrun-ok"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
+printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
 ret_is "stale marker FAILs" 1
 grep_ok "FAIL line" "$STATE/screen.txt" "FAIL full run artifacts missing - rerun this file"
@@ -2650,20 +2662,21 @@ grep_ok "FAIL line" "$STATE/screen.txt" "FAIL full run artifacts missing - rerun
 for artifact in fulldata.gdx full.lst report.rds report.mif; do
   new_env
   make_tools
-  mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"
+  mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00" \
+      "$FAKE_HOME/setup-magpie"
   touch "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/fulldata.gdx \
     "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/full.lst \
     "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.rds \
     "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.mif
   rm "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00/$artifact"
-  printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/magpie/.setup-fullrun-ok"
+  printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
   FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
   ret_is "missing $artifact alone FAILs the check" 1
 done
 new_env
 make_tools
-mkdir -p "$FAKE_HOME/magpie"
-printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/magpie/.setup-fullrun-ok"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
+printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn MAGPIE_FULL_RUN=0
 ret_is "escape hatch check SKIPs" 0
 grep_ok "SKIP via env line" "$STATE/screen.txt" "SKIP full run (skipped via MAGPIE_FULL_RUN=0)"
@@ -2676,12 +2689,13 @@ sec "R library check line"
 # none - and the probe never runs in the gate child, where a Landlock
 # denial would block the setup on a message the student cannot act on.
 put_complete_run() {
-  mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"
+  mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00" \
+    "$FAKE_HOME/setup-magpie"
   touch "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/fulldata.gdx \
     "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/full.lst \
     "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.rds \
     "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.mif
-  printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/magpie/.setup-fullrun-ok"
+  printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 }
 new_env
 make_tools
@@ -2701,21 +2715,138 @@ grep_no "no library line in the child" "$STATE/screen.txt" "R libraries"
 grep_no "probe never runs in the child" "$STATE/rscript.log" "library(lucode2)"
 
 # ============================================================
-sec "stale AI-help files dropped on the green path"
+sec "legacy sweep: old ~/magpie state moves, junk goes"
 # ============================================================
+# All state left by the pre-work-dir layout lives in ~/magpie (logs,
+# markers, lock, pid, leftovers) plus ~/.magpie-course-handle and the
+# ~/.magpie-course relocation folder. magpie_sweep_legacy moves what
+# is valuable and drops what is regenerable - the sweep runs at entry,
+# before any step, and every rm is best-effort (a machine where one
+# removal fails must still run).
 new_env
-FN_BODY='MAGPIE_OS=linux; mkdir -p "$HOME/magpie"
+FN_BODY='echo OLDLOG > "$HOME/magpie/setup-log.txt"
+printf "2026-01-01 00:00:00\n" > "$HOME/magpie/.setup-finished"
+printf "output/x\n" > "$HOME/magpie/.setup-fullrun-ok"
+echo Fox123 > "$HOME/.magpie-course-handle"
+mkdir -p "$HOME/.magpie-course/self"
+echo OLDSELF > "$HOME/.magpie-course/self/setup-magpie.sh"
 echo stale > "$HOME/magpie/setup-help.txt"
 echo stale > "$HOME/magpie/setup-help-profile.json"
-magpie_drop_stale_help' run_fn
-nofile_ok "setup-help.txt dropped" "$FAKE_HOME/magpie/setup-help.txt"
-nofile_ok "profile dump dropped" "$FAKE_HOME/magpie/setup-help-profile.json"
+touch "$HOME/magpie/setup-dl-crashed.pkg" "$HOME/magpie/opencode-dl.tgz"
+touch "$HOME/magpie/nono-dl.tar.gz" "$HOME/magpie/.keepalive.pid"
+mkdir -p "$HOME/magpie/opencode-extract" "$HOME/magpie/nono-extract"
+mkdir -p "$HOME/magpie/.setup.lock"
+echo 999999 > "$HOME/magpie/.setup.lock/pid"
+magpie_sweep_legacy' run_fn
+ret_is "sweep always succeeds" 0
+grep_ok "old log moved" "$FAKE_HOME/setup-magpie/setup-log.txt" "OLDLOG"
+nofile_ok "old log path empty" "$FAKE_HOME/magpie/setup-log.txt"
+grep_ok "finished marker moved" "$FAKE_HOME/setup-magpie/.setup-finished" \
+  "2026-01-01"
+grep_ok "fullrun marker moved" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok" \
+  "output/x"
+grep_ok "handle moved with the code name" \
+  "$FAKE_HOME/setup-magpie/.magpie-course-handle" "Fox123"
+nofile_ok "old handle path gone" "$FAKE_HOME/.magpie-course-handle"
+nofile_ok "relocation folder gone" "$FAKE_HOME/.magpie-course"
+nofile_ok "help file swept" "$FAKE_HOME/magpie/setup-help.txt"
+nofile_ok "profile dump swept" "$FAKE_HOME/magpie/setup-help-profile.json"
+nofile_ok "dl leftover swept" "$FAKE_HOME/magpie/setup-dl-crashed.pkg"
+nofile_ok "opencode leftover swept" "$FAKE_HOME/magpie/opencode-dl.tgz"
+nofile_ok "nono leftover swept" "$FAKE_HOME/magpie/nono-dl.tar.gz"
+nofile_ok "keepalive pid swept" "$FAKE_HOME/magpie/.keepalive.pid"
+nofile_ok "stale lock dir swept" "$FAKE_HOME/magpie/.setup.lock"
+nofile_ok "extract dir swept" "$FAKE_HOME/magpie/opencode-extract"
+nofile_ok "nono extract dir swept" "$FAKE_HOME/magpie/nono-extract"
+# Conflicts: work-dir state wins (never clobber a current run), the old
+# log is APPENDED (history survives), an existing handle is kept.
 new_env
-make_tools
-put_complete_run
-FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; echo stale > "$HOME/magpie/setup-help.txt"
-magpie_fail "some step"' run_fn
-grep_ok "help file survives a failing run" "$FAKE_HOME/magpie/setup-help.txt" "stale"
+FN_BODY='echo OLDLOG > "$HOME/magpie/setup-log.txt"
+echo NEWLOG > "$HOME/setup-magpie/setup-log.txt"
+echo OLDH > "$HOME/magpie/.setup-fullrun-ok"
+echo NEWH > "$HOME/setup-magpie/.setup-fullrun-ok"
+echo OLDH > "$HOME/magpie/.setup-finished"
+echo NEWH > "$HOME/setup-magpie/.setup-finished"
+echo OLD > "$HOME/.magpie-course-handle"
+echo NEW > "$HOME/setup-magpie/.magpie-course-handle"
+magpie_sweep_legacy' run_fn
+ret_is "conflict sweep succeeds" 0
+grep_ok "old log appended below the new one" \
+  "$FAKE_HOME/setup-magpie/setup-log.txt" "OLDLOG"
+grep_ok "new log content kept" "$FAKE_HOME/setup-magpie/setup-log.txt" "NEWLOG"
+nofile_ok "old log consumed" "$FAKE_HOME/magpie/setup-log.txt"
+grep_ok "work dir marker wins" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok" "NEWH"
+nofile_ok "shadowed old marker dropped" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+grep_ok "existing handle wins" "$FAKE_HOME/setup-magpie/.magpie-course-handle" "NEW"
+new_env
+# Handle migration through the real entry path (not just the sweep):
+# the greet must find the moved code name and keep reporting under it
+# - students were told to remember exactly that name.
+FN_BODY='echo Fox123 > "$HOME/.magpie-course-handle"
+magpie_sweep_legacy; magpie_greet' run_fn
+grep_ok "greet reuses the migrated name" "$FAKE_HOME/setup-magpie/setup-log.txt" \
+  "reporting status as Fox123"
+nofile_ok "old handle path gone" "$FAKE_HOME/.magpie-course-handle"
+new_env
+FN_BODY='magpie_sweep_legacy; magpie_greet' run_fn
+grep_ok "no old handle: fresh name at the new path" \
+  "$FAKE_HOME/setup-magpie/setup-log.txt" \
+  "reporting status as [A-Z][a-z]*[0-9][0-9][0-9]"
+file_ok "fresh handle lands in the work dir" \
+  "$FAKE_HOME/setup-magpie/.magpie-course-handle"
+new_env
+# Full old-layout machine, end to end: state in ~/magpie, code name at
+# the old path, 9P copy folder present. The new script migrates the
+# valuable pieces, verifies the moved full-run marker against the moved
+# artifacts (no 40-minute rerun), installs green - and the student
+# keeps the code name they wrote down.
+E2E_SCRIPT="$ENV/magpie_lic.sh"
+mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00" \
+  "$FAKE_HOME/magpie/opencode-extract" "$FAKE_HOME/magpie/nono-extract" \
+  "$FAKE_HOME/magpie/.setup.lock" "$FAKE_HOME/.magpie-course/self"
+touch "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/fulldata.gdx \
+  "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/full.lst \
+  "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.rds \
+  "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.mif
+printf 'output/default_2026-01-01_00.00.00\n' > "$FAKE_HOME/magpie/.setup-fullrun-ok"
+printf '2026-01-01 00:00:00\nnono 0.81.0\nopencode 2.2.7\n' > "$FAKE_HOME/magpie/.setup-finished"
+echo 'OLD-LAYOUT-LOG' > "$FAKE_HOME/magpie/setup-log.txt"
+echo 'Fox123' > "$FAKE_HOME/.magpie-course-handle"
+echo junk > "$FAKE_HOME/magpie/setup-help.txt"
+echo '{}' > "$FAKE_HOME/magpie/setup-help-profile.json"
+echo junk > "$FAKE_HOME/magpie/setup-dl-crashed.pkg"
+echo junk > "$FAKE_HOME/magpie/opencode-dl.tgz"
+echo junk > "$FAKE_HOME/magpie/nono-dl.tar.gz"
+echo junk > "$FAKE_HOME/magpie/.keepalive.pid"
+echo 999999 > "$FAKE_HOME/magpie/.setup.lock/pid"
+echo 'OLD-SELF' > "$FAKE_HOME/.magpie-course/self/setup-magpie.sh"
+# the old install's clone (healed in place, not re-cloned)
+git -C "$FAKE_HOME/magpie" init -q
+git -C "$FAKE_HOME/magpie" remote add origin "file://$STATE/origin.git"
+git -C "$FAKE_HOME/magpie" -c user.email=t@t -c user.name=t \
+  commit -q --allow-empty -m init
+run_e2e
+ret_is "old layout migrates to a green run" 0
+grep_ok "existing clone recognized" "$FAKE_HOME/setup-magpie/setup-log.txt" \
+  "magpie: already cloned"
+grep_ok "migrated marker verified, no rerun" \
+  "$FAKE_HOME/setup-magpie/setup-log.txt" "full run: marker verified"
+grep_no "no fresh 40-min run on a migrated marker" "$STATE/screen.txt" \
+  "full magpie run, about 40 min"
+grep_ok "migrated marker intact" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok" \
+  "output/default_2026-01-01_00.00.00"
+grep_ok "old log content moved into the work dir log" \
+  "$FAKE_HOME/setup-magpie/setup-log.txt" "OLD-LAYOUT-LOG"
+grep_ok "student keeps the code name" \
+  "$FAKE_HOME/setup-magpie/setup-log.txt" "reporting status as Fox123"
+grep_ok "run verdict" "$STATE/screen.txt" "SETUP COMPLETE"
+nofile_ok "old handle path gone" "$FAKE_HOME/.magpie-course-handle"
+nofile_ok "relocation folder gone" "$FAKE_HOME/.magpie-course"
+nofile_ok "old log moved away" "$FAKE_HOME/magpie/setup-log.txt"
+nofile_ok "old markers moved away" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+nofile_ok "junk help files gone" "$FAKE_HOME/magpie/setup-help.txt"
+nofile_ok "stale lock gone" "$FAKE_HOME/magpie/.setup.lock"
+nofile_ok "dl leftovers gone" "$FAKE_HOME/magpie/opencode-dl.tgz"
 
 # ============================================================
 sec "E2E day-one green run"
@@ -2731,22 +2862,22 @@ grep_ok "tools OK line" "$S" "OK: R + support packages installed"
 grep_ok "TinyTeX OK line" "$S" "OK: TinyTeX installed"
 grep_ok "GAMS OK line" "$S" "OK: GAMS 54.6.1 installed"
 grep_no "licence path off screen" "$S" "Course licence written"
-grep_ok "licence written logged" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "licence written logged" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "course licence written"
 grep_no "profile pull OK off screen" "$S" "OK: nono profile opencode pulled"
-grep_ok "profile pull logged" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "profile pull logged" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "nono profile opencode pulled"
 grep_no "magpie-profile OK off screen" "$S" "magpie-profile in place"
-grep_ok "magpie-profile logged" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "magpie-profile logged" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "magpie-profile in place"
 grep_no "PATH plumbing off screen" "$S" "Added opencode to PATH"
-grep_ok "PATH add logged" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "PATH add logged" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "added opencode to PATH"
 grep_ok "clone OK line" "$S" "OK: magpie downloaded"
 cnt_is "exactly 7 heads-ups" "installing" "$S" 7
 grep_no "apt skipped no heads-up" "$S" "installing git + curl"
 grep_no "no failure verdict" "$S" "SETUP FAILED"
-grep_ok "greet logs the handle on first run" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "greet logs the handle on first run" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "reporting status as"
 grep_no "no greet line on screen" "$S" "Reporting status as"
 grep_no "no CONOPT note in the green run" "$S" "CONOPT"
@@ -2783,24 +2914,25 @@ grep_ok "upload name holds handle and date" "$STATE/feed_url.log" \
 grep_no "no credentials in upload urls" "$STATE/feed_url.log" "@"
 # curl output stays suppressed (-s, -o /dev/null): the stub emits a
 # response body + progress noise, none of it may reach the student log.
-grep_no "no upload response noise in the log" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_no "no upload response noise in the log" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "stub-response-noise"
-grep_no "no upload progress noise in the log" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_no "no upload progress noise in the log" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "stub-progress-noise"
 # state on disk
 file_ok "clone checked out" "$FAKE_HOME/magpie/README.md"
-file_ok "log under ~/magpie" "$FAKE_HOME/magpie/setup-log.txt"
+file_ok "log under ~/setup-magpie" "$FAKE_HOME/setup-magpie/setup-log.txt"
 # The log has to END with the verdict: tail -n 1 answers "did it work?"
-if tail -n 1 "$FAKE_HOME/magpie/setup-log.txt" \
+if tail -n 1 "$FAKE_HOME/setup-magpie/setup-log.txt" \
   | grep -q "SETUP COMPLETE - all checks passed, full run output/default_"; then
   ok "log's last line is the verdict"
 else
-  no "log's last line is the verdict [got: $(tail -n 1 "$FAKE_HOME/magpie/setup-log.txt")]"
+  no "log's last line is the verdict [got: $(tail -n 1 "$FAKE_HOME/setup-magpie/setup-log.txt")]"
 fi
-nofile_ok ".setup-finished never written" "$FAKE_HOME/magpie/.setup-finished"
-nofile_ok "lock released" "$FAKE_HOME/magpie/.setup.lock"
-nofile_ok "no setup-dl leftovers" "$FAKE_HOME/magpie/setup-dl-gams.exe"
-ls "$FAKE_HOME/magpie" | grep -q '^setup-dl-' && no "no setup-dl-* leftovers" || ok "no setup-dl-* leftovers"
+nofile_ok ".setup-finished never written" "$FAKE_HOME/setup-magpie/.setup-finished"
+nofile_ok "lock released" "$FAKE_HOME/setup-magpie/.setup.lock"
+nofile_ok "no setup-dl leftovers" "$FAKE_HOME/setup-magpie/setup-dl-gams.exe"
+ls "$FAKE_HOME/setup-magpie" | grep -q '^setup-dl-' \
+  && no "no setup-dl-* leftovers" || ok "no setup-dl-* leftovers"
 T="$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx/gamslice.txt"
 grep_ok "licence in gams dir" "$T" "TEST-LICENCE-CONTENT"
 mode_is "licence mode 600" "$T" 600
@@ -2810,21 +2942,21 @@ cnt_is "rc dedupe nono" ".nono/bin" "$FAKE_HOME/.bashrc" 1
 cnt_is "rc HU key once" "HU_API_KEY" "$FAKE_HOME/.bashrc" 1
 grep_ok "rc gams dir line" "$FAKE_HOME/.bashrc" "gams54.6.1_linux_x64_64_sfx"
 grep_ok "rc texbin line" "$FAKE_HOME/.bashrc" ".TinyTeX/bin"
-grep_ok "tex registered" "$FAKE_HOME/magpie/setup-log.txt" "TinyTeX registered"
+grep_ok "tex registered" "$FAKE_HOME/setup-magpie/setup-log.txt" "TinyTeX registered"
 grep_ok "pull pinned" "$STATE/nono.log" "pull nolabs-ai/opencode@9.9.9"
 grep_ok "gate ran" "$STATE/nono.log" "--profile magpie-profile"
 grep_ok "keep-alive dead at gate" "$STATE/keepalive_at_gate.txt" "dead"
 grep_ok "sudo cooled before gate" "$STATE/sudo.log" "sudo -k"
 grep_no "gate child output off screen (E2E)" "$S" "GATE-CHILD-OUTPUT-MARKER"
-grep_ok "gate child output in log (E2E)" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "gate child output in log (E2E)" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "GATE-CHILD-OUTPUT-MARKER"
 grep_no "nono banner off screen (E2E)" "$S" "NONO-BANNER-MARKER"
-grep_ok "nono banner in log (E2E)" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "nono banner in log (E2E)" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "NONO-BANNER-MARKER"
 grep_ok "sandbox check OK line on screen" "$S" "OK: sandbox check passed"
 grep_no "no sudo -v (all silent)" "$STATE/sudo.log" "sudo -v"
-file_ok "full run marker" "$FAKE_HOME/magpie/.setup-fullrun-ok"
-RUNREL=$(sed -n 1p "$FAKE_HOME/magpie/.setup-fullrun-ok" 2>/dev/null)
+file_ok "full run marker" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
+RUNREL=$(sed -n 1p "$FAKE_HOME/setup-magpie/.setup-fullrun-ok" 2>/dev/null)
 file_ok "marker folder holds fulldata.gdx" "$FAKE_HOME/magpie/$RUNREL/fulldata.gdx"
 file_ok "marker folder holds report.rds" "$FAKE_HOME/magpie/$RUNREL/report.rds"
 file_ok "madrat mainfolder dir created" "$FAKE_HOME/.madrat"
@@ -2839,11 +2971,11 @@ ret_is "second run exits 0" 0
 cnt_is "all steps skip (0 heads-ups)" "installing" "$STATE/screen.txt" 0
 grep_no "handle box not repeated" "$STATE/screen.txt" "NOTE IT DOWN"
 cnt_is "rc lines stay deduped" ".opencode/bin" "$FAKE_HOME/.bashrc" 1
-grep_ok "licence already in place" "$FAKE_HOME/magpie/setup-log.txt" "already in place"
+grep_ok "licence already in place" "$FAKE_HOME/setup-magpie/setup-log.txt" "already in place"
 cnt_is "feed start twice over two runs" "setup: start" "$STATE/feed.log" 2
-grep_ok "second run also finished" "$FAKE_HOME/magpie/setup-log.txt" "magpie: already cloned"
+grep_ok "second run also finished" "$FAKE_HOME/setup-magpie/setup-log.txt" "magpie: already cloned"
 grep_ok "second run checks full run PASS" "$STATE/screen.txt" "PASS full run (output/default_"
-grep_ok "second run skipped the run" "$FAKE_HOME/magpie/setup-log.txt" "full run: marker verified"
+grep_ok "second run skipped the run" "$FAKE_HOME/setup-magpie/setup-log.txt" "full run: marker verified"
 cnt_is "start.R ran once over two runs" "runscripts=default.R" "$STATE/rscript.log" 1
 # A rerun of a finished install must not end in silence (spec 10): the
 # screen file is rewritten per run_e2e, so this line is from run 2 -
@@ -2851,11 +2983,11 @@ cnt_is "start.R ran once over two runs" "runscripts=default.R" "$STATE/rscript.l
 grep_ok "verdict on the rerun path" "$STATE/screen.txt" \
   "SETUP COMPLETE - MAgPIE is installed, checked and working"
 # And it is the log's last line again (log accumulates, tail = run 2).
-if tail -n 1 "$FAKE_HOME/magpie/setup-log.txt" \
+if tail -n 1 "$FAKE_HOME/setup-magpie/setup-log.txt" \
   | grep -q "SETUP COMPLETE - all checks passed, full run output/default_"; then
   ok "log's last line is the verdict (rerun)"
 else
-  no "log's last line is the verdict (rerun) [got: $(tail -n 1 "$FAKE_HOME/magpie/setup-log.txt")]"
+  no "log's last line is the verdict (rerun) [got: $(tail -n 1 "$FAKE_HOME/setup-magpie/setup-log.txt")]"
 fi
 
 # ============================================================
@@ -2916,6 +3048,7 @@ else
 fi
 # The flag is a pure read: entry exits before log, handle, lock or feed.
 nofile_ok "--script-hash creates no ~/magpie" "$FAKE_HOME/magpie"
+nofile_ok "--script-hash creates no work dir" "$FAKE_HOME/setup-magpie"
 nofile_ok "--script-hash posts nothing to the feed" "$STATE/feed.log"
 
 # ============================================================
@@ -2930,7 +3063,7 @@ run_e2e STUB_SUDO_N_OK=0
 ret_is "prompt run exits 0" 0
 grep_ok "blind prompt happened" "$STATE/screen.txt" "Type it blind"
 grep_ok "keep-alive dead at gate (live run)" "$STATE/keepalive_at_gate.txt" "dead"
-nofile_ok "pidfile gone after run" "$FAKE_HOME/magpie/.keepalive.pid"
+nofile_ok "pidfile gone after run" "$FAKE_HOME/setup-magpie/.keepalive.pid"
 # The prompt warmed a credential: it must be gone before gate + full
 # run (gate unit + day-one E2E already cover the silent shape).
 grep_ok "sudo cooled after prompt run" "$STATE/sudo.log" "sudo -k"
@@ -2949,10 +3082,10 @@ grep_ok "screen note" "$STATE/screen.txt" "Full run skipped (MAGPIE_FULL_RUN=0)"
 grep_ok "check SKIP line" "$STATE/screen.txt" "SKIP full run (skipped via MAGPIE_FULL_RUN=0)"
 grep_ok "feed skip note" "$STATE/feed.log" "setup: full run skipped (MAGPIE_FULL_RUN=0)"
 grep_ok "verdict: skipped note" "$STATE/screen.txt" "default run: skipped (MAGPIE_FULL_RUN=0)"
-grep_ok "log verdict: skipped note" "$FAKE_HOME/magpie/setup-log.txt" \
+grep_ok "log verdict: skipped note" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "SETUP COMPLETE - all checks passed, full run skipped (MAGPIE_FULL_RUN=0)"
 grep_ok "still run finished" "$STATE/feed.log" "setup: run finished"
-nofile_ok "no marker written" "$FAKE_HOME/magpie/.setup-fullrun-ok"
+nofile_ok "no marker written" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 grep_no "no start.R invocation" "$STATE/rscript.log" "runscripts=default.R"
 # Placeholder licence (plain script copy): the warning fires once per
 # run on screen and on the feed (setup_path early check + install_licence
@@ -2970,7 +3103,7 @@ new_env
 E2E_SCRIPT="$ENV/magpie_lic.sh"
 run_e2e
 ret_is "green first" 0
-RUNREL=$(sed -n 1p "$FAKE_HOME/magpie/.setup-fullrun-ok")
+RUNREL=$(sed -n 1p "$FAKE_HOME/setup-magpie/.setup-fullrun-ok")
 rm -rf "$FAKE_HOME/magpie/$RUNREL"
 run_e2e
 ret_is "missing artifacts block the rerun" 1
@@ -2978,14 +3111,14 @@ grep_ok "full run FAIL line" "$STATE/screen.txt" "FAIL full run artifacts missin
 grep_ok "failure verdict" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible)"
 grep_ok "FAIL fed" "$STATE/feed.log" "setup: FAIL checks"
 # Recovery: delete the marker, the step redoes the run.
-rm -f "$FAKE_HOME/magpie/.setup-fullrun-ok"
+rm -f "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 run_e2e
 ret_is "heals after marker removal" 0
 grep_no "no full run line before the fresh run" "$STATE/screen.txt" "SKIP full run"
 grep_ok "verdict after healing" "$STATE/screen.txt" \
   "SETUP COMPLETE - MAgPIE is installed, checked and working"
-file_ok "marker rewritten" "$FAKE_HOME/magpie/.setup-fullrun-ok"
-RUNREL=$(sed -n 1p "$FAKE_HOME/magpie/.setup-fullrun-ok")
+file_ok "marker rewritten" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
+RUNREL=$(sed -n 1p "$FAKE_HOME/setup-magpie/.setup-fullrun-ok")
 file_ok "new run folder complete" "$FAKE_HOME/magpie/$RUNREL/report.mif"
 
 # ============================================================
@@ -3001,12 +3134,13 @@ grep_no "no wifi hint text" "$S" "Wi-Fi"
 grep_no "no hint lines in verdict" "$S" "run this file again"
 grep_ok "code name in verdict" "$S" "code name:"
 cnt_is "retry heads-up once per pass" "retrying automatically" "$S" 1
-cnt_is "failing step logged in both passes" "step failed after retries" "$FAKE_HOME/magpie/setup-log.txt" 2
+cnt_is "failing step logged in both passes" "step failed after retries" "$FAKE_HOME/setup-magpie/setup-log.txt" 2
 grep_ok "FAIL line on the feed" "$STATE/feed.log" "setup: FAIL opencode install"
 grep_ok "retry pass 2 announced on feed" "$STATE/feed.log" "setup: retry pass 2 after: opencode install"
 grep_no "run not finished" "$STATE/feed.log" "run finished"
-nofile_ok "no lock left behind" "$FAKE_HOME/magpie/.setup.lock"
-ls "$FAKE_HOME/magpie" | grep -q '^setup-dl-' && no "crash leaves no setup-dl-*" || ok "crash leaves no setup-dl-*"
+nofile_ok "no lock left behind" "$FAKE_HOME/setup-magpie/.setup.lock"
+ls "$FAKE_HOME/setup-magpie" | grep -q '^setup-dl-' \
+  && no "crash leaves no setup-dl-*" || ok "crash leaves no setup-dl-*"
 nofile_ok "no help file written" "$FAKE_HOME/magpie/setup-help.txt"
 new_env
 run_e2e STUB_CURL_DL_FAILS=1
@@ -3075,7 +3209,7 @@ grep_ok "user falls back to unknown" "$STATE/feed.log" "user=unknown"
 
 # Combined FAIL post: block content in the feed, cap cuts deep tail.
 new_env
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 # One awk process (~800 forks saved; bytes identical to the old
 # head|tr loop, verified with cmp).
 awk 'BEGIN{
@@ -3087,7 +3221,7 @@ awk 'BEGIN{
     else if (i == 401) print "LASTLINE short"
     else printf "filler %d %s\n", i, x
   }
-}' > "$FAKE_HOME/magpie/setup-log.txt"
+}' > "$FAKE_HOME/setup-magpie/setup-log.txt"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_fail "cap step"' run_fn
 ret_is "capped fail exits 1" 1
 grep_ok "FAIL header keeps step" "$STATE/feed.log" "vunknown | setup: FAIL cap step"
@@ -3104,8 +3238,8 @@ nofile_ok "no help file written" "$FAKE_HOME/magpie/setup-help.txt"
 # feed pointer line. STATUS_URL is a source-time constant, so FN_BODY
 # clears it after sourcing.
 new_env
-mkdir -p "$FAKE_HOME/magpie"
-printf '[2026-11-17 00:00:00] the real error line\n' > "$FAKE_HOME/magpie/setup-log.txt"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
+printf '[2026-11-17 00:00:00] the real error line\n' > "$FAKE_HOME/setup-magpie/setup-log.txt"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; STATUS_URL=; magpie_fail "offline step"' run_fn
 ret_is "offline fail exits 1" 1
 grep_ok "log tail on screen without a feed" "$STATE/screen.txt" \
@@ -3115,18 +3249,18 @@ nofile_ok "no upload attempted without a feed" "$STATE/curl.log"
 
 # Crash reporting from the EXIT trap.
 new_env
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_log "before the crash"; exit 3' run_fn
 ret_is "body exit 3 propagates" 3
 grep_ok "crash reported" "$STATE/feed.log" "setup: CRASH exit=3"
 grep_ok "crash carries log tail" "$STATE/feed.log" "before the crash"
 new_env
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; false' run_fn
 ret_is "silent exit 1 propagates" 1
 grep_ok "unreported exit 1 is a crash" "$STATE/feed.log" "setup: CRASH exit=1"
 new_env
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_fail "posted step"' run_fn
 ret_is "fail exits 1" 1
 grep_no "no crash line after FAIL post" "$STATE/feed.log" "CRASH"
@@ -3135,7 +3269,7 @@ grep_no "no crash line after FAIL post" "$STATE/feed.log" "CRASH"
 # *instead of* the feed pointer, never alongside it)
 grep_no "log tail stays off screen with a live feed" "$STATE/screen.txt" "--- last 25 log lines ---"
 new_env
-mkdir -p "$FAKE_HOME/magpie"
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; MAGPIE_CHECK_ONLY=1; exit 3' run_fn
 ret_is "check-only exit 3 propagates" 3
 grep_no "no crash line from check-only child" "$STATE/feed.log" "CRASH"

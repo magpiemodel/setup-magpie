@@ -1,7 +1,7 @@
 # setup-magpie.sh - spec (unified day-one course setup)
 
 Status: implemented in setup-magpie.sh (tests: tests/test-setup-magpie.sh,
-806 assertions (807 when shellcheck is present), all green on a Linux
+848 assertions (847 when shellcheck is absent), all green on a Linux
 x86_64 dev host). Date: 2026-11-18.
 
 ## 1. Purpose
@@ -17,7 +17,8 @@ output scripts) INSIDE the course sandbox. Exit 0 guarantees all of it.
 
 It replaces `setup-ubuntu.sh` and `setup-macos.sh` (see 3) and is built
 on the skeleton of `magpie-opencode.sh`: the same helpers, the same
-error model, the same file layout under `~/magpie`. `magpie-opencode.sh`
+error model, the same work-dir layout under `~/setup-magpie`.
+`magpie-opencode.sh`
 stays the daily launcher; the two scripts never clash (see 2).
 
 Support model as in the old course scripts, new transport: students post
@@ -35,31 +36,50 @@ failure the screen names the step, the code name and the path of
   no arrays, no `local`, no `$RANDOM`, no process substitution.
 - The upload feed and the animal code name are KEPT (unlike
   `magpie-opencode.sh`): the teacher reads the posts on course day.
-  The handle is `Animal+3digits` in `~/.magpie-course-handle`, picked
+  The handle is `Animal+3digits` in `~/setup-magpie/.magpie-course-handle`,
+  picked
   from `/dev/urandom` (no `$RANDOM`). First creation is atomic
   (noclobber): two concurrent first runs converge on one name. It is an
   internal per-machine id (feed posts and the username replacement),
   logged by `magpie_greet` but never greeted with on screen: the student
   reads the code name in the `system:` check header and, on a failure,
   in the verdict line. There is no interactive prompt.
-- All state lives under `~/magpie` with EXACTLY the file names
-  `magpie-opencode.sh` expects (`setup-log.txt`, `.setup.lock/`,
-  `.keepalive.pid`, `opencode-dl.tgz`,
-  `opencode-extract/`, `nono-dl.tar.gz`, `nono-extract/`).
-  `setup-help.txt` and `setup-help-profile.json` (the rejected-profile
-  dump) are NOT written any more (the AI help block is gone);
-  the clone guard still allows both names to stand, so a folder left by
-  an older distributed copy never blocks a clone.
-  `.setup-finished` is `magpie-opencode.sh`'s finish marker ONLY -
-  this script never writes it, so running both scripts side by side
-  stays consistent. `.setup-fullrun-ok` (full-run marker, holds the
-  verified run folder path) is THIS script's own file - in the clone
-  guard allowlist, never cleaned.
-- Extra downloads (GAMS, R, gfortran, pandoc) go under `~/magpie` named
-  `setup-dl-*` and are deleted on success AND in the EXIT trap - a
-  crash never leaves foreign files behind. The clone guard's own-file
-  allowlist includes `setup-dl-*`. Leftover or partial magpie RUN
-  folders (`output/default_*`) are NEVER cleaned or touched.
+- All state lives in the work dir `~/setup-magpie` (`MAGPIE_SETUP_DIR`,
+  derived from `$HOME`, so the harness's fake HOME scopes every path):
+  `setup-log.txt`, `.setup.lock/`, `.keepalive.pid`, downloads, the
+  full-run marker `.setup-fullrun-ok` and the handle file
+  `.magpie-course-handle`. `~/magpie` is reserved for the clone plus
+  the repo-native artifacts the repo itself produces (`renv/`,
+  `output/`, ...); only the clone step ever creates it. The SAME file
+  names are used by `magpie-opencode.sh`'s work dir, so both scripts
+  share one layout.
+- `magpie_sweep_legacy` runs at entry (after creating the work dir,
+  before the first step) and migrates machines whose state still sits
+  in the old locations: the old `~/magpie/setup-log.txt` MOVES in (an
+  existing work-dir log gets it APPENDED - history survives), the
+  markers `.setup-finished` and `.setup-fullrun-ok` MOVE unless a
+  work-dir copy already exists (current state wins, the shadowed old
+  file is dropped), and `~/.magpie-course-handle` MOVES to the work dir
+  when no handle exists yet (students keep their code name). The
+  leftover names of dead layouts are deleted (`setup-dl-*`,
+  `opencode-dl.tgz`, `opencode-extract/`, `nono-dl.tar.gz`,
+  `nono-extract/`, `setup-help.txt`, `setup-help-profile.json`,
+  `.keepalive.pid`, `.setup.lock/` under `~/magpie`), and the old
+  relocation folder `~/.magpie-course` is removed (its copy regenerates
+  on demand). `.setup-finished` stays `magpie-opencode.sh`'s finish
+  marker ONLY - this script never writes it (the sweep may move an
+  existing one into the work dir), so running both scripts side by side
+  stays consistent. Every removal is best-effort (`2>/dev/null ||
+  true`) - a machine where one rm fails must still run - and the
+  function always returns 0. The clone guard's allowlist keeps all
+  these names anyway: it is the second line for leftovers the sweep
+  could not remove, and a leftover or foreign-looking file must never
+  block a clone.
+- Extra downloads (GAMS, R, gfortran, pandoc) go under
+  `~/setup-magpie` named `setup-dl-*` and are deleted on success AND in
+  the EXIT trap - a crash never leaves foreign files behind. Leftover
+  or partial magpie RUN folders (`output/default_*`) are NEVER cleaned
+  or touched.
 - No Homebrew anywhere (Homebrew 5 refuses Intel Macs). macOS R /
   gfortran / pandoc / GAMS are pinned `.pkg` downloads, sha256-checked,
   installed with `sudo installer -pkg ... -target /`, each
@@ -183,11 +203,16 @@ keeps exactly one hash across filled copies.
 ## 5. Script skeleton and order of operations
 
 Same scoped-redirect entry as `magpie-opencode.sh`: the real terminal is
-saved on fd 4, the whole main run goes to `~/magpie/setup-log.txt`,
+saved on fd 4, the whole main run goes to `~/setup-magpie/setup-log.txt`,
 screen output only through `magpie_say` (the sandbox-gate child is
-log-only, 6.7). The `--check-only` child (env
-`MAGPIE_CHECK_ONLY=1` or argument) is branched BEFORE the log
-redirect - it writes no log, takes no lock, runs no installs.
+log-only, 6.7). Before the redirect the entry creates the work dir
+(failure verdict: `cannot create ~/setup-magpie`) and runs
+`magpie_sweep_legacy` (2) - the entry NEVER creates `~/magpie`, only
+the clone step does. The `--check-only` child (env
+`MAGPIE_CHECK_ONLY=1` or argument) is branched BEFORE the work dir
+creation and the log
+redirect - it writes no log, takes no lock, runs no installs, creates
+and sweeps nothing.
 `--script-hash` exits even earlier: it prints the build's feed hash
 (9) and leaves - no log, handle, lock, feed or relocation.
 
@@ -389,7 +414,8 @@ name - the bare `"opencode"` fails validation on 0.81.0);
 `meta.description` carries the `MAgPIE course` marker
 plus the `MAGPIE_PROFILE_SCHEMA` version (bumped whenever the generated
 content changes - the marker identifies the file as ours, see below;
-`10` added the modern gfortran tree below).
+`10` added the modern gfortran tree, `11` moved the `read_file`
+script/handle entries into the `~/setup-magpie` work dir below).
 Read list: Linux `$HOME/gams` + `$HOME/.TinyTeX`, plus one extra entry
 when `magpie_gams_sysdir()` reports a GAMS folder OUTSIDE `$HOME/gams`
 (any PATH install); macOS
@@ -496,7 +522,7 @@ cannot enforce there reliably: nono warns for every `/mnt/c` policy
 path and reads may be denied at random. Early in `magpie_entry` (the
 non-check-only branch) `magpie_native_self_copy` checks the
 filesystem type of `$MAGPIE_SELF`: for `v9fs`/`9p` it copies the file
-to `~/.magpie-course/self/setup-magpie.sh` and re-points `MAGPIE_SELF`
+to `~/setup-magpie/self/setup-magpie.sh` and re-points `MAGPIE_SELF`
 there, so every sandboxed step - the `read_file` entry, the gate
 child, the pass-2 re-exec - uses a native path and no Windows
 username ever enters the profile or the feed. The Downloads original
@@ -515,7 +541,7 @@ silent on screen (one log
 line) - the student never sees a 9P warning.
 
 The call runs in a subshell whose combined output is appended to
-`"$HOME/magpie/setup-log.txt"` (`>>` + `2>&1`, exit code checked
+`"$HOME/setup-magpie/setup-log.txt"` (`>>` + `2>&1`, exit code checked
 directly): neither the child's output nor anything nono itself prints
 (its version, pack and capability dump through `Applying sandbox...`)
 reaches the screen - the parent has already printed the check block, so
@@ -526,21 +552,29 @@ pass-2 model, whose failure verdict posts the results + log tail to the
 feed.
 The child: greet + checks only, feed label "sandbox check result",
 exit code = checks result, no lock/sudo/log-file/installs -
-recursion-proof.
+recursion-proof. The work dir is deliberately OUTSIDE the profile, so
+the child cannot read the full-run marker there: the child's checks
+print no full-run line (the parent already verified the marker after
+the gate; the child's marker check stays silent and cannot FAIL on it).
 
 ### 6.8 magpie clone
 
 `magpie_clone_body` / `magpie_clone_ok` / `magpie_clone_magpie` from
 `magpie-opencode.sh` 6.9, incl. foreign-dir / foreign-origin guards and
 the own-file allowlist - now the SAME list in both scripts, since both
-share `~/magpie` and neither may block the other's clone (incl.
-magpie-opencode's `.setup-finished` marker - tolerated, never written
-here - plus this script's `setup-dl-*` downloads, `.setup-fullrun-ok`
-marker and the legacy
+share `~/magpie` and neither may block the other's clone. The entry
+sweep (2) has already moved or removed most legacy names before the
+guard runs; the allowlist stays as the second line for leftovers the
+sweep could not delete, so it still covers magpie-opencode's
+`.setup-finished` marker (tolerated, never written here), the legacy
+`~/magpie` positions of this script's `setup-dl-*` downloads,
+`.setup-fullrun-ok` and `.keepalive.pid`, and
 `setup-help-profile.json`: the rejected-profile dump the 2026-11
 distributed copies left behind - written exactly by the runs that died
 at the profile step, BEFORE the clone, so a machine healing from that
 failure presents it to a clone with no `.git`).
+`magpie_clone_body` itself starts with `mkdir -p "$repo"`: the entry
+creates no `~/magpie`, the clone is the only step that may.
 Origin acceptance (`magpie_clone_url_ok`, keys from `magpie_url_key`):
 a stored origin is normalized - trailing slash(es), trailing `.git`,
 scheme, `user@`, scp-style `host:path` colon -> `/` - and accepted when
@@ -574,8 +608,9 @@ run-folder renv restores (6.10) only copy from the cache.
 
 Runs after the gate, before the verdict. `MAGPIE_FULL_RUN=0`:
 screen + feed note, return 0, no marker. Skip when the marker
-`~/magpie/.setup-fullrun-ok` (contains the run folder path relative to
-`~/magpie`, e.g. `output/default_...`) points at a folder that still
+`~/setup-magpie/.setup-fullrun-ok` (contains the run folder path
+relative to `~/magpie`, e.g. `output/default_...`; the step verifies
+`~/magpie/<that relative path>`) points at a folder that still
 holds all verification artifacts. Otherwise ONE sandboxed attempt
 (macOS wrapped in `caffeinate -is`):
 
@@ -636,8 +671,8 @@ clean).
   lines. On screen, instead: `SETUP FAILED (twice, reproducible):
   <step>`, the check results (check failures only), `  your code name:
   <handle> - tell the TA this`, `  everything else:
-  ~/magpie/setup-log.txt`. No AI prompt, no `##` frame, no
-  `~/magpie/setup-help.txt` - the code name plus the log file are what
+  ~/setup-magpie/setup-log.txt`. No AI prompt, no `##` frame, no
+  `setup-help.txt` - the code name plus the log file are what
   the student hands the TA. Fix hints stay inside the step text itself
   (that is where the Ubuntu/WSL hint already lives). Without a feed
   (`STATUS_URL` empty or no curl - nothing can be uploaded) the last 25
@@ -792,14 +827,14 @@ the output uses them, so the verdict is the only banner, and the old
 
 `default run:` is the marker content, or `skipped (MAGPIE_FULL_RUN=0)`
 when the escape hatch was used (`see above` as the last resort, it
-cannot happen on the green path). Just before it, the green path drops
-`setup-help.txt` and `setup-help-profile.json` if an older copy of this
-script left them behind: nothing writes them any more, and a stale FAIL
-block next to a machine that just passed everything is pure confusion.
-Never on a failing path - whoever is mid-troubleshooting may still be
-reading exactly that file. The same verdict is then the log's last
-line: `magpie_log "SETUP COMPLETE - all checks passed, full run
-<rel>"`, so `tail -n 1 ~/magpie/setup-log.txt` answers "did it work?"
+cannot happen on the green path). Those legacy `setup-help.txt` /
+`setup-help-profile.json` dumps are gone long before the verdict: the
+entry sweep (2) deletes them, green or failing alike - nothing writes
+them any more, and a stale FAIL block next to a machine that just
+passed everything is pure confusion. The same verdict is then the log's
+last line: `magpie_log "SETUP COMPLETE - all checks passed, full run
+<rel>"`, so `tail -n 1 ~/setup-magpie/setup-log.txt` answers "did it
+work?"
 without reading the whole file. Both the fresh-run path and the
 marker-verified short-circuit print it - a rerun of a finished install
 must not end in silence. `magpie-opencode.sh` prints one
@@ -814,8 +849,8 @@ HOME, stub binaries only, real git only against a local origin; PATH is
 a curated minimal bin dir so a host tex/pandoc/Rscript/gams can never
 shadow the stubs; pinned block sedded to 9.9.9/fake shas; scenario
 trees cloned from one template via hardlinks; previous scratch moved
-aside with a detached background rm): 806
-assertions (807 with shellcheck present) - syntax (bash -n, bash32
+aside with a detached background rm): 848
+assertions (847 without shellcheck) - syntax (bash -n, bash32
 guard on script and harness - it flags bash4+ syntax AND the 2's hard
 rules: double bracket, dollar-RANDOM, process substitution - shellcheck
 -s bash where present; a per-idiom fixture self-test pins the guard
@@ -823,8 +858,16 @@ pattern ITSELF, so narrowing it goes red); pin
 placeholder guard;
 disk abort + warn tiers (incl. the raised 9 GB / 18 GB boundaries);
 root guard; entry guard (an
-unwritable HOME: the failure verdict is the only output on screen and
-no log dir is created); lock live/stale (a second window
+unwritable HOME: the failure verdict is the only output on screen, and
+neither the work dir nor `~/magpie` is created); legacy sweep (old log
+MOVED in, APPENDED when a work-dir log exists, markers moved with the
+work-dir copy winning, handle moved unless a new one exists -
+`magpie_greet` keeps a migrated code name and a fresh run without one
+lands the new name in the work dir, `~/.magpie-course` removed, every
+junk name dropped, and a FULL old-layout machine - state in `~/magpie`,
+handle at the old path, junk everywhere - migrates through a green E2E
+run that keeps the code name and verifies the MOVED full-run marker
+against the moved artifacts instead of rerunning); lock live/stale (a second window
 exits quietly and leaves the FIRST run's keep-alive + `setup-dl-*`
 untouched; the stale reclaim is asserted from OUTSIDE the exit code -
 an early `exit 0` inside the lock function (dead pid believed alive)
@@ -882,8 +925,8 @@ verdict block (`SETUP COMPLETE` banner on screen + the same verdict as
 the log's last line, on BOTH the fresh-run and the marker-verified
 rerun path, `skipped (MAGPIE_FULL_RUN=0)` variant; no `##` and no
 failure line anywhere on a green run; no `setup-help.txt` ever
-written, and stale `setup-help.txt`/`setup-help-profile.json` from older
-copies dropped on the green path only);
+written - the stale dumps older copies left behind are deleted by the
+entry sweep, green path or not);
 check-only child isolation; pack pull pin + drift + wrong-version-after-
 pull (a registry handing back a stale pack despite the pinned ref fails
 the step, never a silent pass) + profile build/
@@ -912,9 +955,14 @@ already-populated skip, broken library restored incl. activate.R
 bootstrap, no bootstrap when renv present, persistent failure -> the
 failure verdict, 3 attempts); clone guards (foreign dir,
 foreign origin, ssh/`.git`/trailing-slash/fork origin accepted, removed
-origin proceeds, interrupted heal, `setup-dl-*` leftovers tolerated,
-`.setup-fullrun-ok` marker tolerated by the guard, legacy
-`setup-help.txt`/`setup-help-profile.json` tolerated by the guard,
+origin proceeds, interrupted heal, and every legacy `~/magpie` name
+tolerated by the guard as a UNIT (`magpie_clone_magpie` run with all
+of them present at once - own log, help dumps, markers, `setup-dl-*`,
+dl tarballs, extract dirs, pid + lock - since the real entry flow
+already swept them; this also pins the clone step as the only maker of
+`~/magpie`), one E2E proving the entry sweep moves the markers out of
+`~/magpie` (clone then sees a bare folder, the run FAILs only on the
+migrated stale marker),
 and the two scripts' guard lists compared VERBATIM (comments aside -
 both specs pin one shared list));
 gate (child output and nono's own banner in the
@@ -941,17 +989,20 @@ and as the log's last line, start.R ran once)
 + E2E reproducible failure -> pass 2 -> failure
 verdict + FAIL feed line (step named, code name on screen, no
 `setup-help.txt`). Regression: tests/test-magpie-opencode.sh still
-214/0 (= 197 + 17 verification pins: 4 guard-pattern fixture
+224/0 (pins among them: 4 guard-pattern fixture
 self-tests, the cross-file guard-list identity, the verdict quoting
-the log's last line, the entry guard on an unwritable HOME (3), the
+the log's last line, the entry guard on an unwritable HOME (4), the
 download policy pinned on the source text (3), the non-stacking
-keep-alive restart (2), and the post-pull pack version check (3); 213 without
+keep-alive restart (2), and the post-pull pack version check (3); 223 without
 shellcheck; incl. the cleanup-ownership tests: owner exit stops the
 keep-alive and removes the lock; a non-owner exit leaves both alone;
 the rc-append newline guard: an append to an rc without final
-newline starts its own line; and the launcher clone guard tolerating
-setup-magpie leftovers - `setup-help-profile.json`, `setup-dl-*`,
-`.setup-fullrun-ok`).
+newline starts its own line; the launcher clone guard tolerating the
+whole legacy `~/magpie` set as a unit - `setup-help-profile.json`,
+`setup-dl-*`, `.setup-fullrun-ok`, markers, tarballs, extract dirs -
+and an entry-sweep E2E moving an old-layout machine's state into the
+shared work dir, the migrated finish marker driving the launcher's
+fast path).
 
 Live pending (course day / reference machines): real GAMS download +
 extract, macOS pkg installs incl. Gatekeeper of `sudo installer`

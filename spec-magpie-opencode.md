@@ -23,8 +23,8 @@ Homebrew 5 refuses Intel Macs, which broke one student.
 
 Support model: the student reads the failure verdict aloud (or
 screenshots it) to the TA - step, system, last log line and the path of
-`~/magpie/setup-log.txt`, which holds the rest. No course status feed,
-no code name - nothing is uploaded anywhere.
+`~/setup-magpie/setup-log.txt`, which holds the rest. No course status
+feed, no code name - nothing is uploaded anywhere.
 
 ## 2. Design decisions
 
@@ -62,10 +62,23 @@ no code name - nothing is uploaded anywhere.
   setup-path lock so two windows cannot install at once, `INT`/`TERM`
   traps so Ctrl+C always reaps the keep-alive loop of the owner -
   non-owner exits never touch it.
-- Everything the script writes lives under `~/magpie`, created first.
-  That includes the log, so the magpie clone must cope with a non-empty
-  target: `git init` + fetch + checkout instead of `git clone`
-  (`git clone` refuses a non-empty directory).
+- Everything the script writes lives in the work dir `~/setup-magpie`
+  (`MAGPIE_SETUP_DIR`, derived from `$HOME`), created first at entry:
+  log, lock, keep-alive pidfile, downloads and the finish marker.
+  `~/magpie` is the clone's folder alone - only the clone step creates
+  it, and the clone stays `git init` + fetch + checkout instead of
+  `git clone` (an existing target may legitimately hold clone or
+  legacy leftovers). The SAME file names sit in `setup-magpie.sh`'s
+  work dir, so both course scripts share one layout and one sweep:
+  `magpie_sweep_legacy` runs at entry right after the work-dir mkdir -
+  BEFORE the fast-path check, so an old-layout machine whose state
+  still sits in `~/magpie` has its `.setup-finished`/
+  `.setup-fullrun-ok` markers and its `setup-log.txt` moved in (append
+  on log conflict, work-dir copy wins on marker conflict) and the
+  dead-layout junk deleted (`setup-dl-*`, dl tarballs, extract dirs,
+  help dumps, old lock + pidfile under `~/magpie`) - every removal
+  best-effort, the function always returns 0, and a migrated install
+  lands straight on the fast path.
 - Foolproof against how it is run: shebang `#!/usr/bin/env bash` from
   line 1, run via `bash file` only. Baseline: bash 3.2 (macOS stock
   /bin/bash), enforced by the harness bash32 guard.
@@ -105,7 +118,7 @@ no code name - nothing is uploaded anywhere.
 
 ## 5. Script skeleton
 
-The body runs as one function call, `main >> ~/magpie/setup-log.txt 2>&1`
+The body runs as one function call, `main >> ~/setup-magpie/setup-log.txt 2>&1`
 - a function-scoped redirect, never a global `exec`: when the file is
 pasted into a terminal, the student's shell keeps its own stdout after
 the last line. The real terminal is saved on fd 4 (`exec 4>&1`) at
@@ -113,7 +126,9 @@ entry; `say()` writes to fd 4.
 
 Order of operations:
 
-1. `mkdir -p ~/magpie`. On failure: the failure verdict on fd 4 only (the
+1. `mkdir -p ~/setup-magpie` (the work dir), then `magpie_sweep_legacy`
+   (2) - the entry never creates `~/magpie`, only the clone step does.
+   On mkdir failure: the failure verdict on fd 4 only (the
    file save is impossible here) - nothing else can work.
 2. Detect OS (`uname`): `Darwin` -> mac branch, `Linux` -> ubuntu branch.
    Anything else: failure verdict, exit.
@@ -129,7 +144,7 @@ Order of operations:
 5. Setup path starts: root guard (never run as root - dotfiles and
    configs must stay user-owned), then the placeholder-pin guard (4).
    Then disk check: free
-   GB via `df -Pk ~/magpie`, below 4 the failure verdict aborts with the
+   GB via `df -Pk ~/setup-magpie`, below 4 the failure verdict aborts with the
    per-OS hint ("free space in WINDOWS (C: drive)" / "empty the Trash
    and delete big files"). Then take the lock (below) - only after it is
    held: steps. sudo is asked inside the apt/CLT step bodies only, when
@@ -139,8 +154,8 @@ Order of operations:
 
 Concurrency lock (setup path only):
 
-- `mkdir ~/magpie/.setup.lock` is atomic everywhere (macOS has no
-  flock). On success the pid goes into `~/magpie/.setup.lock/pid`, the
+- `mkdir ~/setup-magpie/.setup.lock` is atomic everywhere (macOS has no
+  flock). On success the pid goes into `~/setup-magpie/.setup.lock/pid`, the
   EXIT trap of the OWNER (trap pid == pidfile pid) removes the dir and
   stops the keep-alive.
 - Lock exists: read the pid.
@@ -190,7 +205,9 @@ Taken when ALL of these pass, and neither `MAGPIE_FORCE_SETUP` nor
 `MAGPIE_REPAIR` is set (a repair must reach the steps, esp. the forced
 re-pull in 6.8):
 
-- `~/magpie/.setup-finished` exists
+- `~/setup-magpie/.setup-finished` exists (a marker migrated from the
+  old `~/magpie` position counts - the entry sweep moved it before
+  this check ran)
 - `~/magpie` is a clone with a resolvable HEAD (`git rev-parse HEAD`,
   with a local `.git` test first so git never walks up into a parent
   repository)
@@ -228,7 +245,7 @@ path (escape hatch for the TA).
   `sudo -v` again. Cap 6 rounds; then the failure verdict.
 - Keep-alive: started only when a sudo ask happened. Background loop
   `sudo -n true` every 60 s, self-exit after 90 iterations. Writes its
-  pid to `~/magpie/.keepalive.pid`; before spawning, a live pid is
+  pid to `~/setup-magpie/.keepalive.pid`; before spawning, a live pid is
   detected with `kill -0` (a second pass must not stack loops). Stopped
   when the lock OWNER exits (the EXIT trap is gated on lock ownership,
   5) and ALWAYS at the start of the launch step (6.11) - the launch
@@ -259,7 +276,7 @@ path (escape hatch for the TA).
   pinned checksum: report "unsupported CPU/libc variant" as an error.
 - Download
   `https://registry.npmjs.org/@opencode%2fcli-<target>/-/cli-<target>-<version>.tgz`
-  with the curl policy (7.1) to a temp file under `~/magpie`.
+  with the curl policy (7.1) to a temp file under `~/setup-magpie`.
 - `sha256()` helper per OS: `sha256sum` (Linux) / `shasum -a 256`
   (macOS) - as `magpie_sha256` in the full scripts. Compare against the
   pinned value for that target. Mismatch: delete the file, retry via
@@ -396,11 +413,16 @@ header block (`NONO_PACK_VERSION`) like the binaries:
   (the setup script's downloads - a hard-killed run skips its EXIT
   cleanup)), error block
   ("folder exists but is not a magpie clone - move it away or delete
-  it"). The check must exclude our own files - the log exists here
-  before this step ever runs, so a plain non-empty test would abort
-  every first run.
-- Clone into the log-holding directory (plain `git clone` refuses
-  non-empty). Every sub-step must survive an interrupted previous
+  it"). Under the work-dir layout a fresh `~/magpie` is empty when the
+  guard runs (the entry sweep has moved or deleted the legacy names,
+  and no own state is written here any more); the allowlist stays as
+  the belt-and-braces line for leftovers the sweep could not remove,
+  and it is pinned directly as a unit (clone run with every name
+  present at once). A foreign file (any other name) still blocks.
+- Clone into a directory that still holds files (sweep-proof leftovers,
+  repo content of a healed clone - plain `git clone` refuses
+  non-empty). `magpie_clone_body` starts with `mkdir -p ~/magpie`: the
+  clone step is the only maker of the folder. Every sub-step must survive an interrupted previous
   attempt (a retry re-enters mid-sequence):
   1. `git init` in `~/magpie` (idempotent)
   2. `git remote get-url origin >/dev/null 2>&1 ||` add origin
@@ -437,7 +459,7 @@ goes to the log.
 
 Wrapped in the retry helper (7.2) and the pass rule (7.3); a reproducible
 failure names the step `sandbox smoke`. Only after it passes: write
-`~/magpie/.setup-finished` (timestamp + versions, content per 6.1).
+`~/setup-magpie/.setup-finished` (timestamp + versions, content per 6.1).
 
 ### 6.11 Launch (both paths)
 
@@ -539,8 +561,8 @@ feed to carry a block anyway):
 SETUP FAILED (twice, reproducible): <step>
   <hint line, when the step passed a hint>
   system: <PRETTY_NAME or sw_vers> | <arch>
-  last log line: <last line of ~/magpie/setup-log.txt>
-  everything else: ~/magpie/setup-log.txt
+  last log line: <last line of ~/setup-magpie/setup-log.txt>
+  everything else: ~/setup-magpie/setup-log.txt
 ```
 
 The marker is not written, so the next run starts on the setup path
@@ -579,7 +601,8 @@ tar/nono/opencode`), like the existing
   fixture self-test pins the guard pattern itself, so narrowing it
   goes red); shellcheck when
   available (bash mode).
-- entry guard: unwritable `$HOME` (cannot create `~/magpie`) -> the
+- entry guard: unwritable `$HOME` (cannot create `~/setup-magpie`, and
+  neither dir is created) -> the
   failure verdict is the only output on screen (fd 4; the log file is
   impossible here) and no log dir is left behind.
 - fast path: table of marker-present/absent x each check present/broken;
@@ -654,9 +677,13 @@ tar/nono/opencode`), like the existing
   nothing else runs; all filled -> no message.
 - heads-up lines: printed exactly once per step that RUNS, zero for
   skipped steps (count equals executed steps).
-- magpie dir: log + marker land under `~/magpie` (no help file any
+- work dir: log + marker land under `~/setup-magpie`; an old-layout
+  machine (state seeded in `~/magpie`, markers only at the old
+  positions) migrates at entry - the moved finish marker drives the
+  fast path, the old log content survives, junk is gone from
+  `~/magpie`. No help file any
   more - the verdict names the log instead of writing a copy, and it
-  quotes the log's last line on screen: `last log line: ...`).
+  quotes the log's last line on screen: `last log line: ...`.
 
 Live tests (must): WSL Ubuntu end to end; Intel Mac + Apple Silicon Mac
 each once (CLT unattended install, Gatekeeper behavior of the curl'd
