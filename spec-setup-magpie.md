@@ -1,7 +1,7 @@
 # setup-magpie.sh - spec (unified day-one course setup)
 
 Status: implemented in setup-magpie.sh (tests: tests/test-setup-magpie.sh,
-766 assertions (767 when shellcheck is present), all green on a Linux
+795 assertions (796 when shellcheck is present), all green on a Linux
 x86_64 dev host). Date: 2026-11-18.
 
 ## 1. Purpose
@@ -150,6 +150,7 @@ any pin is empty or `TBD`.
   - `GFORTRAN_VERSION=14.2`, `GFORTRAN_URL=
     https://mac.r-project.org/tools/gfortran-14.2-universal.pkg`
     (universal), sha256 `ec462d465f093eeee0623d2b5d327bd1038313b985034b766462957e36d7aadd`.
+    Target folder: `/opt/gfortran` = `MAGPIE_GFORTRAN_DIR_NEW` (6.4).
   - `R_VERSION=4.6.2`, per-arch pkgs (no universal pkg is published):
     `R_URL_DARWIN_ARM64=.../sonoma-arm64/base/R-4.6.2-arm64.pkg` sha256
     `a678b4db1fcd71b1b1cc58edcfa4a8d36ee012a02659dde9eab9366e93571157`;
@@ -266,20 +267,51 @@ i.e. Ubuntu 20.04+ = the WSL floor).
 
 ### 6.4 Course tools - macOS
 
-Three pinned-pkg steps, each skip-if-done: gfortran (skip: `gfortran`
-on PATH or `$MAGPIE_GFORTRAN_DIR/bin/gfortran`, default
-`/usr/local/gfortran` - variable so the harness can fake the pkg
-target), R (skip: `Rscript` >= 4.3), pandoc (skip: `pandoc` on PATH).
-The gfortran pkg target is NOT on PATH by default: after skip OR
-install, `magpie_register_gfortran` puts `<dir>/bin` in the rc + this
-run's PATH, or renv restore compiles and the sandboxed children never
-find gfortran. Download `setup-dl-<name>.pkg` -> `magpie_sudo_warm` ->
+Three pinned-pkg steps, each skip-if-done: gfortran (skip: the FC probe
+below), R (skip: `Rscript` >= 4.3), pandoc (skip: `pandoc` on PATH).
+gfortran detection ASKS R, it never guesses an install dir:
+`magpie_r_fc()` runs `R CMD config FC` in one `Rscript` call, keeps the
+first whitespace-separated token, and prints it only when it is
+executable (absolute path: `file.access(p, 1)`; a bare name is resolved
+with `Sys.which` first, same test). `magpie_have_gfortran()` is
+"R's FC resolves" whenever `Rscript` exists - R's own FC is the only
+test that matters, and a PATH-provided gfortran is covered because FC
+then resolves through `Sys.which`. With no `Rscript` yet (this step runs
+BEFORE `magpie_step_r`) it falls back to the plain probes: `gfortran` on
+PATH, `$MAGPIE_GFORTRAN_DIR_NEW/bin/gfortran` (default `/opt/gfortran`)
+or the legacy `$MAGPIE_GFORTRAN_DIR/bin/gfortran` (default
+`/usr/local/gfortran`). Both are variables so the harness can fake the
+pkg dirs - `MAGPIE_GFORTRAN_DIR_NEW` joins `MAGPIE_GFORTRAN_DIR` on the
+harness-overridable constants. Rationale (2026-11, feed `Pangolin317`):
+the step looped on every fresh Mac - `gfortran-14.2-universal.pkg`
+installs into `/opt/gfortran`, the old probe checked PATH and
+`/usr/local/gfortran`, so it reinstalled the same pkg through all three
+attempts of both passes ("The upgrade was successful" every time, never
+detected). Verified since: the 12.2- AND the 14.2-universal pkgs BOTH
+target `/opt/gfortran` (their release notes say so, and enumerating the
+12.2 pkg's payload shows all 1373 paths under `./opt/gfortran/`), while
+`/usr/local/gfortran` is what the superseded 6.x-era pkgs used - so
+there is ONE pinned pkg (14.2, no per-R-version selector) and the legacy
+dir survives only as a probe dir and a profile read entry. The pkg
+target is NOT on PATH by default: after skip OR install,
+`magpie_register_gfortran` puts the FC's own bin dir (`dirname` of the
+resolved FC) in the rc + this run's PATH, falling back to the bin dir
+that actually holds the probed gfortran (`$MAGPIE_PKG_GDIR/bin` - this
+run's pkg target, `$MAGPIE_GFORTRAN_DIR_NEW` - then the legacy tree), or
+renv restore compiles and the sandboxed children never find gfortran.
+Download `setup-dl-<name>.pkg` -> `magpie_sudo_warm` ->
 sha re-check right before `sudo installer -pkg ... -target /` (root
 never reads a file that changed after verification) -> remove the
 download. Checksum mismatch blocks BEFORE any sudo call. GAMS macOS
-uses the same helper. The magpie-profile read list names the gfortran
-folder via `MAGPIE_GFORTRAN_DIR` - default that literal real system
-path, listed once it exists (6.7).
+uses the same helper. Each attempt logs the pkg and its FC target
+(`magpie_log` only); when the installer reports success and the FC still
+does not resolve, the body returns 1 after ONE diagnostic log line
+combining `fc=$(magpie_r_fc)` with one-line `ls` listings of BOTH
+`$MAGPIE_GFORTRAN_DIR_NEW/bin` and `$MAGPIE_GFORTRAN_DIR/bin` - the
+feed's 25-line tail then shows the machine's real state instead of three
+identical `installer:` stanzas. The magpie-profile read list names BOTH
+gfortran folders via those two variables, each listed once it exists
+(6.7).
 
 ### 6.5 TinyTeX + tex PATH
 
@@ -338,18 +370,23 @@ var anywhere.
 name - the bare `"opencode"` fails validation on 0.81.0);
 `meta.description` carries the `MAgPIE course` marker
 plus the `MAGPIE_PROFILE_SCHEMA` version (bumped whenever the generated
-content changes - the marker identifies the file as ours, see below).
+content changes - the marker identifies the file as ours, see below;
+`10` added the modern gfortran tree below).
 Read list: Linux `$HOME/gams` + `$HOME/.TinyTeX`, plus one extra entry
 when `magpie_gams_sysdir()` reports a GAMS folder OUTSIDE `$HOME/gams`
 (any PATH install); macOS
 `/Library/Frameworks/GAMS.framework`, `/Library/Frameworks/
-R.framework`, `/usr/local/gfortran` (via `MAGPIE_GFORTRAN_DIR`, whose
-default is that literal), `$HOME/Library/TinyTeX`,
+R.framework`, BOTH gfortran trees - `$MAGPIE_GFORTRAN_DIR_NEW`
+(`/opt/gfortran`, the target of the pinned pkg and where a modern R's FC
+plus its `f951`/run-time libraries live) and the legacy
+`MAGPIE_GFORTRAN_DIR` (`/usr/local/gfortran`, the 6.x-era tree) - ,
+`$HOME/Library/TinyTeX`,
 `$HOME/.TinyTeX`, the licence dir. An optional read folder is listed
 only when it EXISTS on disk - validation rejects a policy path that is
 missing (`~/.TinyTeX` stays absent when apt provides texlive, the macOS
 licence dir when no licence is embedded, the pkg framework/gfortran
-folders when a tool came from elsewhere). Only
+folders when a tool came from elsewhere or is a generation older than
+the other tree). Only
 `/Library/Frameworks/GAMS.framework` is literal: `magpie_install_gams`
 on macOS succeeds only with that folder present. R must be VISIBLE in
 the sandbox, not only executable: apt R keeps `Renviron` and the base
@@ -759,8 +796,8 @@ HOME, stub binaries only, real git only against a local origin; PATH is
 a curated minimal bin dir so a host tex/pandoc/Rscript/gams can never
 shadow the stubs; pinned block sedded to 9.9.9/fake shas; scenario
 trees cloned from one template via hardlinks; previous scratch moved
-aside with a detached background rm): 766
-assertions (767 with shellcheck present) - syntax (bash -n, bash32
+aside with a detached background rm): 795
+assertions (796 with shellcheck present) - syntax (bash -n, bash32
 guard on script and harness - it flags bash4+ syntax AND the 2's hard
 rules: double bracket, dollar-RANDOM, process substitution - shellcheck
 -s bash where present; a per-idiom fixture self-test pins the guard

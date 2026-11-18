@@ -34,6 +34,10 @@ GAMS_SHA256_DARWIN_X64="f02a339236ad969abe6e161eda0ee39422360d33249ab9d15fa667ce
 
 # macOS-only pinned installers (no Homebrew). Re-pin: pick the current
 # release at the URL, then curl -fsSL <url> | shasum -a 256.
+# The gfortran pkg installs into MAGPIE_GFORTRAN_DIR_NEW (/opt/gfortran):
+# both the 12.2- and the 14.2-universal pkgs target that folder (R-macos
+# release notes; confirmed by enumerating the 12.2 pkg payload). Only the
+# long-superseded 6.x-era pkgs used /usr/local/gfortran.
 GFORTRAN_VERSION="14.2"
 GFORTRAN_URL="https://mac.r-project.org/tools/gfortran-14.2-universal.pkg"
 GFORTRAN_SHA256="ec462d465f093eeee0623d2b5d327bd1038313b985034b766462957e36d7aadd"
@@ -103,8 +107,14 @@ MAGPIE_SUDO_RETRY_SECS="${MAGPIE_SUDO_RETRY_SECS:-2}"
 # it at a local repository.
 MAGPIE_MAGPIE_URL="${MAGPIE_MAGPIE_URL:-https://github.com/magpiemodel/magpie.git}"
 
-# gfortran pkg target (macOS). Variable only so the offline test
-# harness can fake the pkg install dir.
+# gfortran pkg target (macOS): the folder the 12.2- AND 14.2-universal
+# pkgs install into, and where a modern R's FC lives. Variables only so
+# the offline test harness can fake the pkg install dirs.
+MAGPIE_GFORTRAN_DIR_NEW="${MAGPIE_GFORTRAN_DIR_NEW:-/opt/gfortran}"
+
+# Legacy gfortran tree: target of the long-superseded 6.x-era pkgs.
+# Probe dir and profile read entry only - this script never installs
+# there; a machine that already has it has a usable gfortran.
 MAGPIE_GFORTRAN_DIR="${MAGPIE_GFORTRAN_DIR:-/usr/local/gfortran}"
 
 # Compiler trees the sandboxed renv builds need readable+executable:
@@ -127,7 +137,7 @@ MAGPIE_HANDLE_FILE="$HOME/.magpie-course-handle"
 # Bump when the generated magpie-profile content changes: profiles
 # written by an older script version are detected by the marker in
 # meta.description and regenerated (old copy kept as .bak).
-MAGPIE_PROFILE_SCHEMA="9"
+MAGPIE_PROFILE_SCHEMA="10"
 
 # Deterministic madrat mainfolder + renv cache folder. The nono profile
 # allows writes in them and the sandboxed children get them passed in,
@@ -1062,17 +1072,65 @@ magpie_have_r() {
     Rscript --vanilla -e 'quit(status = if (getRversion() >= "4.3") 0 else 1)' 2>/dev/null
 }
 
+# R's own Fortran compiler, printed only when it really is executable;
+# empty otherwise. Ask R, never guess the path: `R CMD config FC` reports
+# the compiler R was configured with (plus -arch flags after it), so it is
+# the only probe that can tell a usable compiler from a folder that merely
+# exists. Absolute FC entries are access-checked directly, bare ones
+# (e.g. plain "gfortran") go through Sys.which first. Never fails the
+# caller: an R without a Fortran, a broken FC string or a failing Rscript
+# all come back empty.
+magpie_r_fc() {
+  fc=$(Rscript --vanilla -e 'fc <- suppressWarnings(system("R CMD config FC 2>/dev/null", intern = TRUE))
+w <- scan(text = paste(fc, collapse = " "), what = "", quiet = TRUE)
+if (!length(w)) quit(status = 1)
+p <- w[1]
+if (!grepl("/", p)) { s <- Sys.which(p); if (!nzchar(s[1])) quit(status = 1); p <- s[1] }
+if (file.access(p, 1) == 0) cat(p)' 2>/dev/null) || fc=""
+  printf '%s\n' "$fc"
+}
+
+# Is a usable gfortran there? With R installed, R's own FC is the only
+# test that matters (a PATH-provided gfortran is covered: FC then resolves
+# through Sys.which). Without R (this step runs BEFORE magpie_step_r on a
+# fresh machine) fall back to the plain probes: PATH, then the modern pkg
+# target, then the legacy 6.x-era tree. The 2026-11 loop was exactly this
+# probe missing /opt: the 14.2 pkg installed fine, the check looked at
+# /usr/local and reinstalled it until the step failed.
 magpie_have_gfortran() {
+  if command -v Rscript >/dev/null 2>&1; then
+    if [ -n "$(magpie_r_fc)" ]; then
+      return 0
+    fi
+    return 1
+  fi
   command -v gfortran >/dev/null 2>&1 \
+    || [ -x "$MAGPIE_GFORTRAN_DIR_NEW/bin/gfortran" ] \
     || [ -x "$MAGPIE_GFORTRAN_DIR/bin/gfortran" ]
 }
 
-# The pkg target is not on PATH: register it for this run + the rc, or
-# renv restore compiles and the sandboxed children never find gfortran.
-# Reached only when magpie_have_gfortran was true.
+# gfortran is usually NOT on PATH: register the bin dir holding it for
+# this run + the rc, or renv restore compiles and the sandboxed children
+# never find a Fortran compiler. R's FC dir wins when FC resolved; else
+# the dir the fallback probe actually found a gfortran in (modern pkg
+# target first, legacy tree next), so the registered dir is never one
+# that holds nothing. Reached only when magpie_have_gfortran was true.
 magpie_register_gfortran() {
-  if ! command -v gfortran >/dev/null 2>&1 \
-    && magpie_rc_add_path "$MAGPIE_RC" "$MAGPIE_GFORTRAN_DIR/bin"; then
+  if command -v gfortran >/dev/null 2>&1; then
+    return 0
+  fi
+  gdir=${MAGPIE_PKG_GDIR:-$MAGPIE_GFORTRAN_DIR_NEW}
+  fc=$(magpie_r_fc)
+  if [ -n "$fc" ]; then
+    bin=$(dirname "$fc")
+  elif [ -x "$gdir/bin/gfortran" ]; then
+    bin="$gdir/bin"
+  elif [ -x "$MAGPIE_GFORTRAN_DIR/bin/gfortran" ]; then
+    bin="$MAGPIE_GFORTRAN_DIR/bin"
+  else
+    bin="$gdir/bin"
+  fi
+  if magpie_rc_add_path "$MAGPIE_RC" "$bin"; then
     magpie_log "gfortran registered in $MAGPIE_RC + this run"
   fi
 }
@@ -1157,13 +1215,16 @@ magpie_step_apt_tools() {
 
 # macOS: three pinned .pkg steps, each skip-if-done. No Homebrew.
 magpie_step_gfortran() {
+  # This run's pkg target: what the pinned pkg installs into and what
+  # magpie_register_gfortran falls back to when R has no FC to ask.
+  MAGPIE_PKG_GDIR=$MAGPIE_GFORTRAN_DIR_NEW
+  MAGPIE_PKG_URL=$GFORTRAN_URL
+  MAGPIE_PKG_SHA=$GFORTRAN_SHA256
   if magpie_have_gfortran; then
     magpie_log "gfortran: present"
     magpie_register_gfortran
     return 0
   fi
-  MAGPIE_PKG_URL=$GFORTRAN_URL
-  MAGPIE_PKG_SHA=$GFORTRAN_SHA256
   magpie_say_progress "gfortran $GFORTRAN_VERSION" "about 2-5 min"
   if ! magpie_retry 3 magpie_gfortran_body; then
     magpie_step_failed "gfortran install"
@@ -1173,8 +1234,25 @@ magpie_step_gfortran() {
 }
 
 magpie_gfortran_body() {
+  # ${...:-} so a standalone body call (harness, reruns) stays sane
+  # under set -u when the step did not set the target.
+  magpie_log "gfortran install attempt: gfortran-$GFORTRAN_VERSION-universal.pkg, FC target ${MAGPIE_PKG_GDIR:-$MAGPIE_GFORTRAN_DIR_NEW}/bin"
   magpie_install_pkg gfortran "$MAGPIE_PKG_URL" "$MAGPIE_PKG_SHA" || return 1
-  magpie_have_gfortran
+  if magpie_have_gfortran; then
+    return 0
+  fi
+  # The installer reported success and R still has no usable Fortran
+  # compiler: one line of real state (what FC resolves to + what the two
+  # pkg targets actually hold) belongs in the log, or the feed's 25-line
+  # tail shows nothing but repeated identical `installer:` stanzas - that
+  # is how the 2026-11 loop stayed unreadable. Listing failures never
+  # change the verdict: the pipelines end in tr, and 1 is returned here.
+  # shellcheck disable=SC2012  # one-line listing for a log line, not parsing.
+  ls_new=$(ls "$MAGPIE_GFORTRAN_DIR_NEW/bin" 2>/dev/null | tr '\n' ' ')
+  # shellcheck disable=SC2012
+  ls_old=$(ls "$MAGPIE_GFORTRAN_DIR/bin" 2>/dev/null | tr '\n' ' ')
+  magpie_log "gfortran pkg installed, no usable FC: fc=$(magpie_r_fc) | new $MAGPIE_GFORTRAN_DIR_NEW/bin: ($ls_new) | legacy $MAGPIE_GFORTRAN_DIR/bin: ($ls_old)"
+  return 1
 }
 
 magpie_step_r() {
@@ -1603,6 +1681,7 @@ magpie_build_nono_profile() {
   MAGPIE_READ_DIRS=""
   if [ "$MAGPIE_OS" = "darwin" ]; then
     magpie_add_read_dir "/Library/Frameworks/R.framework"
+    magpie_add_read_dir "$MAGPIE_GFORTRAN_DIR_NEW"
     magpie_add_read_dir "$MAGPIE_GFORTRAN_DIR"
     magpie_add_read_dir "$HOME/Library/TinyTeX"
     magpie_add_read_dir "$HOME/.TinyTeX"

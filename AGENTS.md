@@ -68,8 +68,9 @@ On Linux, silence it by unpacking the static GitHub-release binary to
   ret_is/cnt_is/file_ok/nofile_ok/mode_is`, `sec` for section headers.
 - `run_fn` exports `VAR=value` args **before** sourcing (source-time
   defaults honor them); assignments inside `FN_BODY` override afterwards.
-  Harness-overridable constants: `MAGPIE_MAGPIE_URL`, `MAGPIE_GFORTRAN_DIR`,
-  `MAGPIE_TOOLCHAIN_DIRS(_DARWIN)`, `MAGPIE_DPKG_DIRS`, `MAGPIE_OS_RELEASE`.
+  Harness-overridable constants: `MAGPIE_MAGPIE_URL`,
+  `MAGPIE_GFORTRAN_DIR(_NEW)`, `MAGPIE_TOOLCHAIN_DIRS(_DARWIN)`,
+  `MAGPIE_DPKG_DIRS`, `MAGPIE_OS_RELEASE`.
 - git is made hermetic (`GIT_CONFIG_GLOBAL=/dev/null`) — never rely on host
   git config in scenarios.
 

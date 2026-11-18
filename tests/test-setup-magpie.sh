@@ -256,6 +256,17 @@ case "$*" in
     if [ "${STUB_R_OLD:-0}" = "1" ]; then exit 1; fi
     exit 0
     ;;
+  *"R CMD config FC"*)
+    # magpie_r_fc's probe (R CMD config FC inside an Rscript -e snippet).
+    # The stub IS R here, so it answers what that whole snippet would
+    # print: the resolved FC path, and only when it is executable (the
+    # file.access(p, 1) == 0 gate). STUB_FC_PATH unset/empty or not
+    # executable = R has no usable Fortran compiler.
+    if [ -n "${STUB_FC_PATH:-}" ] && [ -x "${STUB_FC_PATH}" ]; then
+      printf '%s' "$STUB_FC_PATH"
+    fi
+    exit 0
+    ;;
   *install_tinytex*)
     # Default mimics Linux (~/.TinyTeX); macOS tests point this at
     # $HOME/Library/TinyTeX (what tinytex::install_tinytex really uses).
@@ -1762,9 +1773,10 @@ new_env
 put_nono
 FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1
 MAGPIE_GFORTRAN_DIR="$HOME/gfortran"
+MAGPIE_GFORTRAN_DIR_NEW="$HOME/opt-gfortran"
 MAGPIE_TOOLCHAIN_DIRS_DARWIN="$HOME/fakeclt"
-mkdir -p "$HOME/gfortran" "$HOME/.TinyTeX" "$HOME/Library/TinyTeX" \
-  "$HOME/Library/Application Support/GAMS" "$HOME/fakeclt"
+mkdir -p "$HOME/gfortran" "$HOME/opt-gfortran" "$HOME/.TinyTeX" \
+  "$HOME/Library/TinyTeX" "$HOME/Library/Application Support/GAMS" "$HOME/fakeclt"
 magpie_register_caches; magpie_step_magpie_profile' run_fn
 ret_is "darwin profile built" 0
 PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
@@ -1774,7 +1786,12 @@ grep_ok "darwin write holds R user dirs" "$PJSON" "org.R-project.R"
 sed -n '/"read": \[/,/\]/p' "$PJSON" > "$STATE/read-block.txt"
 grep_ok "darwin reads the R data dir" "$STATE/read-block.txt" \
   '"'"$FAKE_HOME"'/Library/Application Support/org.R-project.R"'
+# Both gfortran trees, each listed only when it exists: /opt/gfortran is
+# what the 12.2- AND 14.2-universal pkgs install into (a modern R's FC and
+# its f951 live there), /usr/local/gfortran is the 6.x-era legacy tree.
 grep_ok "darwin reads gfortran dir" "$PJSON" "$FAKE_HOME/gfortran"
+grep_ok "darwin reads the modern gfortran tree" "$STATE/read-block.txt" \
+  '"'"$FAKE_HOME"'/opt-gfortran"'
 grep_ok "darwin reads Library/TinyTeX" "$PJSON" "$FAKE_HOME/Library/TinyTeX"
 grep_ok "darwin reads .TinyTeX too" "$PJSON" "$FAKE_HOME/.TinyTeX"
 grep_ok "darwin reads licence folder" "$PJSON" "Application Support/GAMS"
@@ -1782,11 +1799,27 @@ grep_no "darwin omits R.framework when absent" "$PJSON" "R.framework"
 grep_ok "darwin write section present" "$PJSON" '"write"'
 grep_ok "darwin write holds madrat" "$PJSON" "$FAKE_HOME/.madrat"
 grep_ok "darwin write holds renv cache" "$PJSON" ".cache/R/renv"
+# Only one of the two gfortran trees exists: the other stays out (the
+# validator rejects a policy path missing on disk).
+new_env
+put_nono
+mkdir -p "$FAKE_HOME/opt-gfortran"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1
+MAGPIE_GFORTRAN_DIR="$HOME/legacy-gfortran"
+MAGPIE_GFORTRAN_DIR_NEW="$HOME/opt-gfortran"
+magpie_step_magpie_profile' run_fn
+ret_is "darwin profile with one gfortran tree" 0
+PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+grep_ok "present gfortran tree listed" "$PJSON" '"'"$FAKE_HOME"'/opt-gfortran"'
+grep_no "absent gfortran tree omitted" "$PJSON" "legacy-gfortran"
 # Bare macOS machine (no TinyTeX/licence/pkg folders yet): only the
 # guaranteed entries may appear in the policy.
 new_env
 put_nono
-FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1
+MAGPIE_GFORTRAN_DIR="$HOME/no-legacy-gfortran"
+MAGPIE_GFORTRAN_DIR_NEW="$HOME/no-opt-gfortran"
+magpie_step_magpie_profile' run_fn
 ret_is "darwin profile without optional dirs" 0
 PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
 grep_ok "gams framework entry is literal" "$PJSON" "/Library/Frameworks/GAMS.framework"
@@ -1819,7 +1852,7 @@ OFP
 put_nono
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
 ret_is "stale generated profile regenerated" 0
-grep_ok "regenerated content current" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json" "(setup v9)"
+grep_ok "regenerated content current" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json" "(setup v10)"
 grep_ok "stale copy kept as bak" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json.bak" "/stale/old/path"
 grep_ok "regeneration logged" "$FAKE_HOME/magpie/setup-log.txt" "regenerated"
 # Rerun right after regeneration: content is current now, so the cmp
@@ -1988,13 +2021,24 @@ ret_is "CLT skip when present" 0
 grep_no "no heads-up when skipped" "$STATE/screen.txt" "installing"
 new_env
 cp "$STATE/binlib/gfortran" "$FAKE_BIN/gfortran"
-FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_gfortran' run_fn
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_gfortran' \
+  run_fn MAGPIE_GFORTRAN_DIR="$FAKE_HOME/no-legacy-gf" \
+    MAGPIE_GFORTRAN_DIR_NEW="$FAKE_HOME/no-opt-gf"
 ret_is "gfortran skip when present" 0
 nofile_ok "no pkg download" "$STATE/curl.log"
 grep_no "no installer call" "$STATE/installer.log" "installer"
+# Nothing on the machine and no R to ask yet (this step runs BEFORE the
+# R step): the fallback probes decide, and the single pinned 14.2 pkg is
+# what gets downloaded - both probe dirs are pinned to absent fake dirs so
+# no scenario depends on the host's /opt or /usr/local.
 new_env
-FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_gfortran' run_fn
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_gfortran' \
+  run_fn MAGPIE_GFORTRAN_DIR="$FAKE_HOME/no-legacy-gf" \
+    MAGPIE_GFORTRAN_DIR_NEW="$FAKE_HOME/no-opt-gf"
 ret_is "gfortran pkg installs" 0
+grep_ok "14.2 pkg is the one downloaded" "$STATE/curl.log" "gfortran-14.2-universal.pkg"
+grep_ok "attempt logs pkg + FC target" "$FAKE_HOME/magpie/setup-log.txt" \
+  "gfortran install attempt: gfortran-14.2-universal.pkg, FC target $FAKE_HOME/no-opt-gf/bin"
 grep_ok "installer -pkg called" "$STATE/installer.log" "installer -pkg"
 grep_ok "gfortran pkg name" "$STATE/installer.log" "setup-dl-gfortran.pkg"
 grep_ok "installer via sudo" "$STATE/sudo.log" "sudo installer -pkg"
@@ -2009,24 +2053,85 @@ ret_is "gfortran checksum mismatch blocks" 1
 nofile_ok "installer never called" "$STATE/installer.log"
 nofile_ok "no sudo before verify" "$STATE/sudo.log"
 nofile_ok "no pkg left behind" "$FAKE_HOME/magpie/setup-dl-gfortran.pkg"
+# The 2026-11 Pangolin317 loop, machine-checked: detection asks R (R CMD
+# config FC), it never guesses an install dir. An FC that resolves to an
+# executable IS the present verdict - and that bin dir is what the rc
+# must gain, or the compiles and sandboxed children still find nothing.
+new_env
+cp "$STATE/binlib/Rscript" "$FAKE_BIN/Rscript"
+mkdir -p "$FAKE_HOME/opt-gf/bin"
+cp "$STATE/binlib/gfortran" "$FAKE_HOME/opt-gf/bin/gfortran"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_gfortran' \
+  run_fn MAGPIE_GFORTRAN_DIR_NEW="$FAKE_HOME/opt-gf" \
+    STUB_FC_PATH="$FAKE_HOME/opt-gf/bin/gfortran"
+ret_is "r fc resolves - step skips" 0
+nofile_ok "no pkg download (fc present)" "$STATE/curl.log"
+grep_ok "present verdict logged" "$FAKE_HOME/magpie/setup-log.txt" "gfortran: present"
+grep_ok "rc gains the FC bin dir" "$FAKE_HOME/.zshrc" "$FAKE_HOME/opt-gf/bin"
+grep_ok "gfortran registered log" "$FAKE_HOME/magpie/setup-log.txt" "gfortran registered"
+# Installer success alone must never read as present: R is there, its FC
+# is not, so the step keeps the retry model and fails - after having
+# downloaded exactly the one pinned pkg.
+new_env
+cp "$STATE/binlib/Rscript" "$FAKE_BIN/Rscript"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_gfortran' \
+  run_fn MAGPIE_GFORTRAN_DIR="$FAKE_HOME/no-legacy-gf" \
+    MAGPIE_GFORTRAN_DIR_NEW="$FAKE_HOME/no-opt-gf"
+ret_is "fc unresolved - step fails after the retries" 1
+grep_ok "14.2 pkg url (fc unresolved)" "$STATE/curl.log" "gfortran-14.2-universal.pkg"
+grep_ok "installer ran (fc unresolved)" "$STATE/installer.log" "installer -pkg"
+grep_ok "step failed verdict logged" "$FAKE_HOME/magpie/setup-log.txt" \
+  "step failed after retries: gfortran install"
+# What the feed's 25-line tail must show instead of three identical
+# `installer:` stanzas: FC plus a one-line listing of BOTH pkg targets.
+new_env
+cp "$STATE/binlib/Rscript" "$FAKE_BIN/Rscript"
+mkdir -p "$FAKE_HOME/legacy-gf/bin"
+cp "$STATE/binlib/gfortran" "$FAKE_HOME/legacy-gf/bin/gfortran-6"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_HANDLE=T1
+MAGPIE_PKG_URL=$GFORTRAN_URL; MAGPIE_PKG_SHA=$GFORTRAN_SHA256
+MAGPIE_GFORTRAN_DIR="$HOME/legacy-gf"; MAGPIE_GFORTRAN_DIR_NEW="$HOME/opt-gf"
+magpie_gfortran_body' \
+  run_fn STUB_GF_TARGET="$FAKE_HOME/opt-gf/bin"
+ret_is "installed but fc unresolved fails the body" 1
+grep_ok "fc diagnostic line" "$FAKE_HOME/magpie/setup-log.txt" "no usable FC: fc= |"
+grep_ok "diagnostic lists the new pkg tree" "$FAKE_HOME/magpie/setup-log.txt" \
+  "new $FAKE_HOME/opt-gf/bin: (gfortran"
+grep_ok "diagnostic lists the legacy tree" "$FAKE_HOME/magpie/setup-log.txt" \
+  "legacy $FAKE_HOME/legacy-gf/bin: (gfortran-6"
 # Off-PATH pkg target: the dir must land in rc + this run's PATH, or
 # renv restore compiles fail and sandboxed children never see gfortran.
+# No R yet here, so the pkg-target probe decides.
 new_env
-mkdir -p "$FAKE_HOME/local/bin"
-cp "$STATE/binlib/gfortran" "$FAKE_HOME/local/bin/gfortran"
+mkdir -p "$FAKE_HOME/opt-gf/bin"
+cp "$STATE/binlib/gfortran" "$FAKE_HOME/opt-gf/bin/gfortran"
 FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_gfortran' \
-  run_fn MAGPIE_GFORTRAN_DIR="$FAKE_HOME/local"
+  run_fn MAGPIE_GFORTRAN_DIR="$FAKE_HOME/no-legacy-gf" \
+    MAGPIE_GFORTRAN_DIR_NEW="$FAKE_HOME/opt-gf"
 ret_is "gfortran off-PATH present skips + registers" 0
 nofile_ok "no pkg download" "$STATE/curl.log"
-grep_ok "rc gfortran dir line" "$FAKE_HOME/.zshrc" "$FAKE_HOME/local/bin"
+grep_ok "rc gfortran dir line" "$FAKE_HOME/.zshrc" "$FAKE_HOME/opt-gf/bin"
 grep_ok "gfortran registered log" "$FAKE_HOME/magpie/setup-log.txt" "gfortran registered"
+# The legacy 6.x-era tree (/usr/local/gfortran, what this script never
+# installs): a usable gfortran is a usable gfortran - skip, register
+# THAT dir.
+new_env
+mkdir -p "$FAKE_HOME/legacy-gf/bin"
+cp "$STATE/binlib/gfortran" "$FAKE_HOME/legacy-gf/bin/gfortran"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_gfortran' \
+  run_fn MAGPIE_GFORTRAN_DIR="$FAKE_HOME/legacy-gf" \
+    MAGPIE_GFORTRAN_DIR_NEW="$FAKE_HOME/no-opt-gf"
+ret_is "legacy gfortran tree skips + registers its dir" 0
+nofile_ok "no pkg download (legacy tree)" "$STATE/curl.log"
+grep_ok "rc legacy gfortran dir line" "$FAKE_HOME/.zshrc" "$FAKE_HOME/legacy-gf/bin"
 new_env
 FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_gfortran' \
-  run_fn MAGPIE_GFORTRAN_DIR="$FAKE_HOME/local" STUB_GF_TARGET="$FAKE_HOME/local/bin"
+  run_fn MAGPIE_GFORTRAN_DIR="$FAKE_HOME/no-legacy-gf" \
+    MAGPIE_GFORTRAN_DIR_NEW="$FAKE_HOME/opt-gf" STUB_GF_TARGET="$FAKE_HOME/opt-gf/bin"
 ret_is "gfortran pkg install registers off-PATH dir" 0
 grep_ok "installer -pkg called" "$STATE/installer.log" "installer -pkg"
 grep_ok "OK: gfortran installed" "$STATE/screen.txt" "OK: gfortran installed"
-grep_ok "rc gfortran dir line (install)" "$FAKE_HOME/.zshrc" "$FAKE_HOME/local/bin"
+grep_ok "rc gfortran dir line (install)" "$FAKE_HOME/.zshrc" "$FAKE_HOME/opt-gf/bin"
 new_env
 FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_r' run_fn
 ret_is "R pkg installs" 0
