@@ -1221,7 +1221,8 @@ magpie_apt_tools_install() {
 }
 
 # Ubuntu ships an R too old for magpie before 24.04 (22.04: 4.1.x) -
-# say so up front instead of failing at the checks much later.
+# say so up front instead of failing at the checks much later. The hint
+# points blocked users at the current LTS, 26.04 (course-tested).
 magpie_ubuntu_floor() {
   rel="${MAGPIE_OS_RELEASE:-/etc/os-release}"
   id=$(sed -n 's/^ID=//p' "$rel" 2>/dev/null | tr -d '"')
@@ -1232,7 +1233,7 @@ magpie_ubuntu_floor() {
     ""|*[!0-9]*) return 0 ;;
   esac
   if [ "$major" -lt 24 ]; then
-    magpie_fail "Ubuntu $ver ships an R older than 4.3 - use Ubuntu 24.04+ (in WSL: wsl --install -d Ubuntu-24.04)"
+    magpie_fail "Ubuntu $ver ships an R older than 4.3 - use Ubuntu 24.04+ (in WSL: wsl --install -d Ubuntu-26.04)"
   fi
 }
 

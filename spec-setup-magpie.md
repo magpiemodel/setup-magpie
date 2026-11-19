@@ -288,8 +288,10 @@ helper). The body then verifies the result: `pandoc` on PATH AND
 `magpie_have_r` (Rscript >= 4.3) - an apt `r-base` older than 4.3 must
 not read as success here. Up front, `magpie_ubuntu_floor` rejects
 Ubuntu < 24.04 (its `r-base` is older than 4.3): `magpie_fail` names
-the fix (`wsl --install -d Ubuntu-24.04`) instead of letting the checks
-fail much later; it reads `/etc/os-release`, env-overridable via
+the fix - `wsl --install -d Ubuntu-26.04`, the current LTS (course-
+tested), while the floor itself stays 24.04 so existing 24.04 installs
+are untouched - instead of letting the checks fail much later; it reads
+`/etc/os-release`, env-overridable via
 `MAGPIE_OS_RELEASE`. Skipped when R >= 4.3, pandoc AND the build
 libraries are all present (`magpie_apt_have_devlibs`: `dpkg -s` on nine
 representative packages, status `install ok installed` required). All

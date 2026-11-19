@@ -1224,7 +1224,7 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; MAGPIE_PA
   run_fn "MAGPIE_OS_RELEASE=$ENV/os22"
 ret_is "ubuntu 22.04 blocked early" 1
 grep_ok "floor message" "$STATE/screen.txt" "Ubuntu 22.04 ships an R older than 4.3"
-grep_ok "wsl hint in verdict" "$STATE/screen.txt" "wsl --install -d Ubuntu-24.04"
+grep_ok "wsl hint in verdict" "$STATE/screen.txt" "wsl --install -d Ubuntu-26.04"
 grep_no "no apt call" "$STATE/apt.log" "apt-get"
 # Other distros are not blocked by the ubuntu floor.
 new_env
