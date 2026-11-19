@@ -84,8 +84,11 @@ failure the screen names the step, the code name and the path of
   gfortran / pandoc / GAMS are pinned `.pkg` downloads, sha256-checked,
   installed with `sudo installer -pkg ... -target /`, each
   skip-if-done. Xcode CLT installs unattended via `softwareupdate`.
-- Sudo is asked only inside steps that actually run, through the
-  `magpie-opencode.sh` warm loop + keep-alive. The keep-alive stops
+- Sudo is asked once, first, right after the lock - the student types
+  the password while paying attention, then sees
+  `OK: password accepted - please wait` (through the
+  `magpie-opencode.sh` warm loop + keep-alive). The in-step warm calls
+  remain as a timestamp-expiry fallback. The keep-alive stops
   right after the licence step - no later step touches sudo - and
   again BEFORE the sandbox gate; `magpie_stop_keepalive` also runs
   `sudo -k`, so no warm sudo credential may exist while a sandboxed
@@ -222,7 +225,9 @@ greet + feed "setup: start" -> root guard -> pin placeholder guard -> disk
 check (two tiers) -> licence placeholder check (warn early, reaches the
 feed before the long installs) -> take the mkdir lock (+ traps; the lock
 OWNER's EXIT cleanup also removes `setup-dl-*` - a second window that
-exits with "already running" never touches the first run's state) -> `step_os_base` (apt git/curl only
+exits with "already running" never touches the first run's state) -> sudo prompt
+first (warm loop + keep-alive, echo `OK: password accepted - please
+wait`; silent when the timestamp is already warm) -> `step_os_base` (apt git/curl only
 if missing; CLT unattended on macOS) -> opencode install (pinned npm
 tgz, AVX2/musl checks) -> nono install (pinned GitHub tarball to
 `~/.nono/bin`) -> PATH fixes -> opencode config -> HU key rc line ->

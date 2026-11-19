@@ -2419,6 +2419,14 @@ magpie_setup_path() {
   magpie_licence_available || true
   magpie_take_lock
 
+  # Password once, FIRST: no long install ever starts with an
+  # unanswered prompt going silent right behind it. The sudo -n guard
+  # only exists so the echo never shows when nothing was asked.
+  if ! sudo -n true 2>/dev/null; then
+    magpie_sudo_warm
+    magpie_say "OK: password accepted - please wait"
+  fi
+
   magpie_step_os_base
   magpie_install_opencode
   magpie_install_nono
