@@ -66,7 +66,7 @@ On Linux, silence it by unpacking the static GitHub-release binary to
     USER MESSAGE releases it.
   - No keystroke rituals ("switch agents and I'll implement") — they turn any
     later switch into false consent. Nothing released it → stop and ask.
-- Commit style: short, lowercase, one-line what-fixed (see `git log`).
+- Commit style: short, lowercase, one-line what-fixed (see `git log`). Commit only when explicitly told to.
 
 ## Harness idioms (setup-magpie suite)
 
