@@ -317,6 +317,16 @@ case "$*" in
     name=$(date -d "@$(( $(date +%s) + n ))" +%Y-%m-%d_%H.%M.%S 2>/dev/null) \
       || name=$(date +%Y-%m-%d_%H.%M.%S)
     d="$HOME/magpie/output/default_$name"
+    # piamenv::stopIfLoaded stop (start.R answered y to "Update now?"
+    # and the loaded gms got updated): STUB_FULLRUN_RESTART=1 stops on
+    # the FIRST call only (the fresh second session runs normally),
+    # =2 stops on EVERY call (proves the step's retry is capped).
+    if [ "${STUB_FULLRUN_RESTART:-0}" = 2 ] \
+    || { [ "${STUB_FULLRUN_RESTART:-0}" = 1 ] && [ "$n" = 1 ]; }; then
+      echo "Error in piamenv::stopIfLoaded():"
+      echo "  Please restart R."
+      exit 1
+    fi
     if [ "${STUB_FULLRUN_NOTHING:-0}" = "1" ]; then exit 0; fi
     mkdir -p "$d"
     touch "$d/fulldata.gdx" "$d/full.lst"
@@ -2562,7 +2572,7 @@ grep_ok "default run script selected" "$STATE/nono.log" "runscripts=default.R su
 grep_ok "full run sandboxed with allow-cwd" "$STATE/nono.log" "--allow-cwd"
 grep_ok "R script invoked" "$STATE/rscript.log" "start.R runscripts=default.R submit=direct"
 grep_ok "keep-alive dead at full run" "$STATE/keepalive_at_gate.txt" "dead"
-grep_ok "40 min heads-up" "$STATE/screen.txt" "full magpie run, about 40 min"
+grep_ok "hour heads-up" "$STATE/screen.txt" "full magpie run, about an hour"
 grep_ok "OK line" "$STATE/screen.txt" "OK: full magpie run finished"
 grep_ok "feed start" "$STATE/feed.log" "setup: full run start"
 grep_ok "feed finished" "$STATE/feed.log" "setup: full run finished"
@@ -2572,9 +2582,11 @@ grep_ok "marker names run folder" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok" \
 RUNDIR=$(sed -n 1p "$FAKE_HOME/setup-magpie/.setup-fullrun-ok")
 file_ok "fulldata.gdx present" "$FAKE_HOME/magpie/$RUNDIR/fulldata.gdx"
 file_ok "report.rds present" "$FAKE_HOME/magpie/$RUNDIR/report.rds"
-# Without renv.lock start.R asks "Try to fix automatically? (Y/n)"
-# for its requirements - the piped answer must be y, or the whole
-# dependency stack stays uninstalled (2026-11 course failure).
+# Both prompts start.R's top block can ask ("Update now?" + fixDeps)
+# read the piped line, treat an empty one as YES - and WANT yes: a
+# skipped bound fix kills the run mid-way, and an update that stops the
+# loaded session is healed by the step's fresh-R retry. So the pipe is
+# two y lines, prompt-count-independent.
 new_env
 make_tools
 put_nono
@@ -2582,10 +2594,11 @@ mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' \
   run_fn STUB_FULLRUN_CAPTURE=1
 ret_is "prompt-fed run completes" 0
-cnt_is "y answer reaches Rscript" "^y$" "$STATE/fullrun_stdin" 1
-cnt_is "no n answer without lockfile" "^n$" "$STATE/fullrun_stdin" 0
-# With renv.lock the prompts are "Update now?" + fixDeps: two n lines
-# keep the restored versions untouched.
+cnt_is "two y answers reach Rscript" "^y$" "$STATE/fullrun_stdin" 2
+cnt_is "no n answer is ever piped" "^n$" "$STATE/fullrun_stdin" 0
+# A root renv.lock (hand-built teacher tree) changes NOTHING: the same
+# two y lines - no branch may key on a lock that never exists in
+# course clones (start.R snapshots into renv/archive only).
 new_env
 make_tools
 put_nono
@@ -2593,8 +2606,8 @@ mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 : > "$FAKE_HOME/magpie/renv.lock"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' \
   run_fn STUB_FULLRUN_CAPTURE=1
-ret_is "lockfile run completes" 0
-cnt_is "two n answers reach Rscript" "^n$" "$STATE/fullrun_stdin" 2
+ret_is "lockfile run gets the same answers" 0
+cnt_is "lockfile changes no answer" "^y$" "$STATE/fullrun_stdin" 2
 # Verified marker: rerun skips without touching the sandbox.
 new_env
 make_tools
@@ -2611,7 +2624,7 @@ ret_is "verified marker skips the run" 0
 grep_no "no sandbox run" "$STATE/nono.log" "runscripts=default.R"
 grep_no "no R run" "$STATE/rscript.log" "start.R"
 grep_ok "skip logged" "$FAKE_HOME/setup-magpie/setup-log.txt" "full run: marker verified"
-grep_no "no heads-up on skip" "$STATE/screen.txt" "40 min"
+grep_no "no heads-up on skip" "$STATE/screen.txt" "full magpie run, about an hour"
 # Non-zero sandbox exit: straight to the failure verdict, no marker.
 new_env
 make_tools
@@ -2623,7 +2636,35 @@ ret_is "non-zero sandbox exit fails" 1
 grep_ok "failure verdict" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible)"
 grep_ok "step named" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
 grep_ok "FAIL fed" "$STATE/feed.log" "setup: FAIL full magpie run"
+cnt_is "no retry without the restart signature" "runscripts=default.R" "$STATE/nono.log" 1
 nofile_ok "no marker on failure" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
+# The piped y may let "Update now?" update the already-loaded gms:
+# piamenv::stopIfLoaded stops the session ("Please restart R") AFTER
+# the renv writes landed - so this ONE exit code earns a fresh R
+# session, where the prompts are silent and the model runs.
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' \
+  run_fn STUB_FULLRUN_RESTART=1
+ret_is "restart signature earns one fresh R session" 0
+cnt_is "R ran exactly twice" "start.R runscripts=default.R submit=direct" "$STATE/rscript.log" 2
+grep_ok "restart note on screen" "$STATE/screen.txt" "package update restarted R, model run starts now"
+grep_ok "restart logged" "$FAKE_HOME/setup-magpie/setup-log.txt" "R stopped after updating loaded packages"
+file_ok "marker written (after restart)" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
+grep_ok "finished fed (after restart)" "$STATE/feed.log" "setup: full run finished"
+# Two such stops: the retry is capped at ONE - verdict on the second.
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_PASS=2 magpie_step_full_run' run_fn STUB_FULLRUN_RESTART=2
+ret_is "restart retry is capped at one" 1
+cnt_is "capped at two sessions" "start.R runscripts=default.R submit=direct" "$STATE/rscript.log" 2
+grep_ok "capped failure verdict" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
+nofile_ok "no marker after capped retries" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 # Exit 0 but swallowed run error (no output artifacts): artifacts fail it.
 new_env
 make_tools
@@ -2702,7 +2743,7 @@ FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_st
 ret_is "darwin full run through caffeinate" 0
 grep_ok "caffeinate wraps the call" "$STATE/caffeinate.log" "caffeinate -is nono run --profile magpie-profile"
 file_ok "marker written (darwin)" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
-cnt_is "prompt answers survive caffeinate" "^n$" "$STATE/fullrun_stdin" 2
+cnt_is "prompt answers survive caffeinate" "^y$" "$STATE/fullrun_stdin" 2
 
 # ============================================================
 sec "full run check line"
@@ -2907,8 +2948,8 @@ grep_ok "existing clone recognized" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "magpie: already cloned"
 grep_ok "migrated marker verified, no rerun" \
   "$FAKE_HOME/setup-magpie/setup-log.txt" "full run: marker verified"
-grep_no "no fresh 40-min run on a migrated marker" "$STATE/screen.txt" \
-  "full magpie run, about 40 min"
+grep_no "no fresh hour-long run on a migrated marker" "$STATE/screen.txt" \
+  "full magpie run, about an hour"
 grep_ok "migrated marker intact" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok" \
   "output/default_2026-01-01_00.00.00"
 grep_ok "old log content moved into the work dir log" \
@@ -2962,7 +3003,7 @@ grep_ok "all checks PASS" "$S" "PASS gams"
 grep_ok "check block names the code name" "$S" "code name: "
 grep_ok "renv PASS (lock in clone, loads)" "$S" "PASS renv R library"
 grep_no "no full run line before the marker" "$S" "SKIP full run"
-grep_ok "full run heads-up" "$S" "full magpie run, about 40 min"
+grep_ok "full run heads-up" "$S" "full magpie run, about an hour"
 grep_ok "full run OK line" "$S" "OK: full magpie run finished"
 grep_ok "verdict block" "$S" "SETUP COMPLETE - MAgPIE is installed, checked and working"
 grep_ok "verdict names the run folder" "$S" "default run: output/default_"

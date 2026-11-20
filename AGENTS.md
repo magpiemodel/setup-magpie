@@ -100,6 +100,15 @@ that checks the JSON paths exist.
   `ggiraph`): R user dirs are registered caches AND profile write entries.
 - On WSL2 nono prints "No path denials were observed" even when Landlock
   denied reads — trust the failing command's output, not that line.
-- Piped stdin into `start.R` is flow-dependent: no `~/magpie/renv.lock` →
-  pipe `y` (requirements "Try to fix automatically?"); with a lockfile →
-  `n\nn` (keep pinned versions). An EOF stdin crashes `gms::getLine`.
+- Piped stdin into `start.R`: its top block can ask exactly two
+  questions, both reading `gms::getLine`, both treating an empty line
+  as YES and crashing at EOF (`character(0)` through the `&&`):
+  "Update now?" (near-certain first run - hydrate installs
+  graph-resolved versions, not feed-latest) and fixDeps "Try to fix
+  automatically?". Both want `y`, so pipe `y\ny` unconditionally -
+  prompt-count-independent. A yes-to-updates may stop the session via
+  `piamenv::stopIfLoaded` (gms is loaded by the ask itself) AFTER the
+  renv writes land; the step retries once on that signature. Never
+  branch on `~/magpie/renv.lock`: a root lock never exists (start.R
+  snapshots into `renv/archive/` only; magpie gitignores the root
+  lock), and `</dev/null` crashes `gms::getLine`.

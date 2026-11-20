@@ -2065,6 +2065,9 @@ magpie_renv_restore_body() {
 }
 
 # Fill the renv library the clone ships, so checks and runs use it.
+# The root renv.lock never exists in course clones (start.R snapshots
+# into renv/archive only, and magpie gitignores a root lock), so this
+# step only fires on hand-built teacher/dev trees that copy one in.
 magpie_step_renv_restore() {
   if [ ! -f "$HOME/magpie/renv.lock" ]; then
     magpie_log "renv restore: no renv.lock - skipped"
@@ -2303,21 +2306,25 @@ magpie_latest_full_run() {
 
 # $1: PATH for the sandboxed child (tex + GAMS dirs included).
 magpie_full_run_body() {
-  # The answers start.R gets on stdin depend on its flow, which
-  # depends on renv.lock: WITHOUT a lockfile (every first full run)
-  # the prompt is the requirements check "Try to fix automatically?
-  # (Y/n)" - answering n there skips installing the whole dependency
-  # stack (that is how the 2026-11 course runs halted on "no package
-  # called 'lucode2'"). WITH a lockfile the prompts are "Update now?"
-  # and fixDeps - both answered n so the restored versions stay.
-  # Not </dev/null - EOF makes gms::getLine return character(0),
-  # which crashes the &&. --allow-cwd is mandatory here: without it
-  # the piped answers would hit nono's cwd prompt instead of start.R.
-  if [ -f "$HOME/magpie/renv.lock" ]; then
-    MAGPIE_FULL_RUN_ANSWERS=$(printf 'n\nn')
-  else
-    MAGPIE_FULL_RUN_ANSWERS=$(printf 'y')
-  fi
+  # start.R's top block (renv active: every course machine) can ask
+  # exactly two questions, in this order: "Update now? (Y/n)" when
+  # the live feed is ahead of the installed set - near-certain on a
+  # first run, because the .Rprofile bootstrap hydrates graph-resolved
+  # versions, not feed-latest - and "Try to fix automatically? (Y/n)"
+  # when DESCRIPTION bounds are unmet. Both read gms::getLine, both
+  # treat an empty line as YES and crash at EOF (character(0) through
+  # the &&), and both WANT yes: skipping a bound fix is how runs die
+  # mid-way (the 2026-11 "no package called 'lucode2'" halts), and an
+  # update that stops the session (piamenv::stopIfLoaded - gms is
+  # loaded by the ask itself) lands its renv writes on disk first and
+  # is healed by the fresh R session in magpie_step_full_run. Piping
+  # y to BOTH therefore stays prompt-count-independent - no branch on
+  # renv.lock, which never exists at the repo root by design (start.R
+  # snapshots into renv/archive only; magpie's own .Rprofile says so).
+  # Not </dev/null - EOF crashes the && in either prompt.
+  # --allow-cwd is mandatory here: without it the piped answers would
+  # hit nono's cwd prompt instead of start.R.
+  MAGPIE_FULL_RUN_ANSWERS=$(printf 'y\ny')
   if [ "$MAGPIE_OS" = "darwin" ]; then
     # shellcheck disable=SC2016  # $HOME expands in the sandbox child, not here.
     printf '%s\n' "$MAGPIE_FULL_RUN_ANSWERS" | ( cd "$HOME/magpie" && caffeinate -is nono run --profile magpie-profile --allow-cwd -- \
@@ -2333,9 +2340,17 @@ magpie_full_run_body() {
   fi
 }
 
-# One full default run inside the course sandbox. ONE attempt - start.R
-# swallows run errors, so a NEW complete run folder decides, not the
-# exit code. Any failure goes straight to the failure verdict.
+# One full default run inside the course sandbox. start.R swallows run
+# errors, so a NEW complete run folder decides, not the exit code -
+# with ONE sanctioned exception: the piped y may let "Update now?"
+# update packages that are already loaded, and piamenv then stops the
+# session ("Please restart R") AFTER the renv writes landed on disk.
+# That signature exit earns exactly one fresh-R retry, where the
+# prompts are silent and the model runs. Any other non-zero exit is a
+# real failure -> straight to the verdict, no second pass. The child
+# output streams through tee into a work-dir child log (still exactly
+# once in the run log, nothing on screen), so the signature is
+# greppable without log-offset arithmetic.
 magpie_step_full_run() {
   marker="$MAGPIE_SETUP_DIR/.setup-fullrun-ok"
   if [ "${MAGPIE_FULL_RUN:-1}" = "0" ]; then
@@ -2358,10 +2373,19 @@ magpie_step_full_run() {
   elif [ -d "/Library/Frameworks/GAMS.framework/Resources" ]; then
     runpath="/Library/Frameworks/GAMS.framework/Resources:$runpath"
   fi
-  magpie_say "[$(magpie_now)] - full magpie run, about 40 min, keep the laptop plugged in and awake"
+  magpie_say "[$(magpie_now)] - full magpie run, about an hour, keep the laptop plugged in and awake"
   magpie_report "setup: full run start"
   before=$(magpie_latest_full_run)
-  if ! magpie_full_run_body "$runpath"; then
+  childlog="$MAGPIE_SETUP_DIR/.setup-fullrun-child.log"
+  magpie_full_run_body "$runpath" 2>&1 | tee "$childlog"
+  rc=${PIPESTATUS[0]}
+  if [ "$rc" -ne 0 ] && grep -q 'Please restart R' "$childlog"; then
+    magpie_log "full run: R stopped after updating loaded packages - one fresh R session"
+    magpie_say "[$(magpie_now)] - package update restarted R, model run starts now (still about an hour)"
+    magpie_full_run_body "$runpath" 2>&1 | tee "$childlog"
+    rc=${PIPESTATUS[0]}
+  fi
+  if [ "$rc" -ne 0 ]; then
     magpie_fail "full magpie run (check the run folder under ~/magpie)"
   fi
   after=$(magpie_latest_full_run)

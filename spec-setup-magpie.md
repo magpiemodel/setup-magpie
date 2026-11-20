@@ -47,7 +47,9 @@ failure the screen names the step, the code name and the path of
 - All state lives in the work dir `~/setup-magpie` (`MAGPIE_SETUP_DIR`,
   derived from `$HOME`, so the harness's fake HOME scopes every path):
   `setup-log.txt`, `.setup.lock/`, `.keepalive.pid`, downloads, the
-  full-run marker `.setup-fullrun-ok` and the handle file
+  full-run marker `.setup-fullrun-ok`, the full-run child log
+  `.setup-fullrun-child.log` (restart-signature probe input, overwritten
+  per attempt) and the handle file
   `.magpie-course-handle`. `~/magpie` is reserved for the clone plus
   the repo-native artifacts the repo itself produces (`renv/`,
   `output/`, ...); only the clone step ever creates it. The SAME file
@@ -106,12 +108,14 @@ failure the screen names the step, the code name and the path of
   exit 0.
   Any FAIL (step-level, check, or gate): feed the FAIL line(s), print
   the failure verdict (step, code name, log path), exit 1.
-- The full default run (about 40 min on the students' machines) is part
-  of the exit-0 guarantee. Escape hatch: env `MAGPIE_FULL_RUN=0` skips
-  it (screen + feed note, checks line SKIP, no marker - setup still
-  exits 0). The run gets ONE attempt: no step retries, no second pass;
-  any failure goes straight to the failure verdict, exit 1 - the next
-  manual rerun redoes it (the marker stays unwritten until verified).
+- The full default run (about an hour on the students' machines, since
+  a first run restarts R once) is part of the exit-0 guarantee. Escape
+  hatch: env `MAGPIE_FULL_RUN=0` skips it (screen + feed note, checks
+  line SKIP, no marker - setup still exits 0). The run gets ONE attempt
+  plus one sanctioned fresh-R retry, keyed solely to the `Please restart
+  R` signature (6.10); any other failure goes straight to the failure
+  verdict, exit 1 - the next manual rerun redoes it (the marker stays
+  unwritten until verified).
 - Deterministic data folders: `MADRAT_MAINFOLDER=$HOME/.madrat`
   (madrat mainfolder, cache lives under it) and
   `RENV_PATHS_CACHE=$HOME/.cache/R/renv` are fixed (not
@@ -599,7 +603,9 @@ Any other origin: foreign-origin failure.
 ### 6.9 renv library restore
 
 Runs right after the clone. Skips (log only) when `~/magpie/renv.lock`
-is missing or when the library already loads - the load test is
+is missing - the normal course state, since the root lock never exists
+in a clone (6.10) and this step only fires on hand-built teacher/dev
+trees that copy one in - or when the library already loads; the load test is
 exactly the checks' one (`cd ~/magpie` subshell,
 `Rscript -e 'suppressMessages(library(lucode2));
 suppressMessages(library(gms))'`, helper `magpie_renv_lib_ok`).
@@ -621,8 +627,8 @@ screen + feed note, return 0, no marker. Skip when the marker
 `~/setup-magpie/.setup-fullrun-ok` (contains the run folder path
 relative to `~/magpie`, e.g. `output/default_...`; the step verifies
 `~/magpie/<that relative path>`) points at a folder that still
-holds all verification artifacts. Otherwise ONE sandboxed attempt
-(macOS wrapped in `caffeinate -is`):
+holds all verification artifacts. Otherwise a sandboxed attempt (macOS
+wrapped in `caffeinate -is`; one sanctioned fresh-R retry below):
 
 ```
 (cd ~/magpie && nono run --profile magpie-profile --allow-cwd -- \
@@ -632,21 +638,53 @@ holds all verification artifacts. Otherwise ONE sandboxed attempt
            Rscript start.R runscripts=default.R submit=direct')
 ```
 
-Feed "setup: full run start" before, heads-up "about 40 min, keep the
-laptop plugged in and awake". The run's own output goes to the log only
-(no tee, like the gate) - the R noise stays off the screen. The
-command's stdin gets flow-matched answers: WITH a `renv.lock` two `n`
-lines answer `start.R`'s "Update now?" and `fixDeps` prompts (auto-
-updating would drift from the restored lockfile); WITHOUT one (every
-first full run) the prompt is the requirements check "Try to fix
-automatically? (Y/n)" and the answer is `y` - answering no there
-skips the entire dependency stack (the 2026-11 course runs halted on
-"no package called 'lucode2'"). An EOF stdin would crash
-`gms::getLine` (empty `readLines` -> `logical(0)` in `&&`), so the
-answers are always piped. ONE attempt - no retry, no pass 2.
-`start.R` runs the selected script through `sys.source` + `try` (a
-failing run is only a warning, exit code stays 0), so SUCCESS IS
-DECIDED BY ARTIFACTS: a NEW `~/magpie/output/default_<timestamp>`
+Feed "setup: full run start" before, heads-up "about an hour, keep the
+laptop plugged in and awake" (a first run restarts R once - see below).
+The run's own output goes to the log only - the R noise stays off the
+screen - but it is `tee`d into the work dir child log
+`~/setup-magpie/.setup-fullrun-child.log` so the step can grep its own
+child output for the restart signature without log-offset arithmetic.
+(Unlike the gate, which appends once with no tee: the full run needs
+the searchable copy, and it never lands on screen either way.)
+**The two prompts.** With renv active (every course machine) `start.R`'s
+top block can ask exactly two questions, in this order, and nothing else
+in the whole run reads stdin (the bootstrap hydrate is `prompt = FALSE`
+throughout, the `default.R` chain has no prompt, and `runscripts` +
+`submit` are on the command line so the script/submission menus stay
+closed): `Update now? (Y/n)` when the live feed is ahead of the
+installed set, and `Try to fix automatically? (Y/n)` when
+`DESCRIPTION` version bounds are unmet. The update prompt is
+**near-certain on a first run**: magpie's own `.Rprofile` bootstraps the
+library with `renv::hydrate`, which installs graph-resolved versions,
+not feed-latest (observed: `gms` 0.31.2 installed while the feed had
+0.35.1 for three weeks, and magpie's own release lock pins 0.35.0 -
+three different sets in play), so the feed is ahead the moment the
+bootstrap finishes. **Both prompts answer YES to an empty line** and
+both **crash at EOF** (`gms::getLine` returns `character(0)`, which
+breaks the caller's `&&`/`if` with `logical(0)`) - so the answers are
+always piped, never `</dev/null`.
+**Answer `y` to both** - two piped `y` lines, and no branch on any
+condition. Both prompts want yes: skipping the requirements fix is how
+runs die mid-way on unmet bounds (the 2026-11 "no package called
+'lucode2'" halts), and a yes to `Update now?` may stop the session -
+`piamenv::stopIfLoaded` fires because `ask()` has itself loaded `gms`,
+so updating `gms` updates a loaded namespace - but that stop happens
+*after* `updateRenv()` has written to disk, which is what makes the
+retry below converge. Because both prompts want the same answer, the
+pipe is **prompt-count-independent**: whether zero, one or two fire,
+every live prompt gets `y` and the run converges in at most one
+restart. A `renv.lock` at the repo root **never exists in course
+clones by design** (`start.R` snapshots into `renv/archive` only, and
+magpie gitignores a root lock - its own `.Rprofile` disables the sync
+check for exactly this reason), so any branch keyed on one is a
+guaranteed false path; the shipped `renv/archive/*_renv.lock` files are
+inert release artifacts that nothing at runtime reads. `autoRenvUpdates`
+must never be set: it would run the update unasked. The `git config
+--global credential.helper cache` "Permission denied" line the bootstrap
+emits inside the sandbox is expected and benign (the profile does not
+cover `~/.gitconfig`; `gert` carries on).
+**ONE retry, on one signature.** start.R swallows run errors, so SUCCESS
+IS DECIDED BY ARTIFACTS: a NEW `~/magpie/output/default_<timestamp>`
 folder (pattern pinned from magpie master: `cfg$results_folder <-
 "output/:title::date:"` with `:date:` = `_%Y-%m-%d_%H.%M.%S`, title =
 `default`), different from the newest complete folder that existed
@@ -657,12 +695,21 @@ before the run, containing `fulldata.gdx` + `full.lst` (the run-folder
 script of the default postprocessing `cfg$output <- c("output_check",
 "extra/disaggregation", "rds_report")`, which the run-folder
 `submit.R` runs automatically via `sys.source("output.R")` - no extra
-`output.R` call needed). Non-zero sandbox exit fails regardless of
-artifacts. Any failure: `magpie_fail "full magpie run (check the run
-folder under ~/magpie)"`, exit 1. Verified success writes the
-marker, prints the OK line and feeds "setup: full run finished".
-Partial/failed run folders stay where they are (decision: never
-clean).
+`output.R` call needed). A non-zero child exit normally fails
+regardless of artifacts - with ONE exception: if the child log contains
+`Please restart R`, the update-to-latest stopped a loaded namespace as
+described above, and the step runs ONE fresh R session (screen line
+"package update restarted R, model run starts now"). In that second
+session the prompts are silent (versions now current) and the model
+runs. The retry is capped at one and keyed to that signature only: an
+`updateRenv()` that dies on a download/build error has no signature and
+is a real failure, and retrying a swallowed model error would burn an
+hour to reproduce it. After the retry, a non-zero exit or a missing
+new complete folder fails the step. Any failure:
+`magpie_fail "full magpie run (check the run folder under ~/magpie)"`,
+exit 1. Verified success writes the marker, prints the OK line and
+feeds "setup: full run finished".
+Partial/failed run folders stay where they are (decision: never clean).
 
 ## 7. Error handling (from `magpie-opencode.sh`)
 
@@ -719,8 +766,8 @@ where a not-yet-bootstrapped renv would otherwise fail the probe),
 `cd ~/magpie` subshell - the load test is what `start.R` needs): with
 `~/magpie/renv.lock` it always runs (`PASS renv R library` / FAIL
 "renv R library incomplete ... renv::restore()"); WITHOUT a lockfile -
-every course machine, because `start.R` snapshots into the RUN folder,
-never into the repo root - it runs from the full-run marker onwards as
+every course machine, because `start.R` snapshots into `renv/archive/`
+only and a root lock never exists by design (6.10) - it runs from the full-run marker onwards as
 `R libraries (lucode2, gms load)`, and a failure says "in ~/magpie run:
 Rscript start.R once". Nothing is printed before the marker exists:
 there is no library to test yet, and a SKIP line announcing that is
@@ -1003,7 +1050,9 @@ log exactly once and NOT on screen, parent prints the sandbox OK line,
 child exit code wins, sudo cooled at that instant), full run
 step (sandbox command shape, caches + PATH passed, marker +
 artifacts written, keep-alive dead + sudo cooled, verified marker skips, non-zero
-exit -> failure verdict (also with complete artifacts), swallowed run error
+exit -> failure verdict (also with complete artifacts), a `Please
+restart R` signature exit earns exactly one fresh-R retry (second
+session lands the marker; two such exits = capped, verdict), swallowed run error
 caught by missing artifacts, old folder not accepted as new, newest of
 two complete folders wins into the marker, escape hatch, caffeinate
 wrap on darwin);
@@ -1012,8 +1061,8 @@ written, clone checked out, no `.setup-finished`, `setup-dl-*` cleaned,
 full run marker + artifacts,
 profile write-list, cache rc lines, greet line in the log and off
 screen, plain `PASS gams (course licence found)` with no to-do note;
-the flow-matched prompt answers - `y` without `renv.lock`, two `n`
-with - are proven in the adjacent unit scenarios, incl. caffeinate on
+the two piped `y` answers (lock-file-independent, every prompt wants
+yes) are proven in the adjacent unit scenarios, incl. caffeinate on
 darwin)
 + second run all-skip (full run PASS line, verdict banner on screen
 and as the log's last line, start.R ran once)
