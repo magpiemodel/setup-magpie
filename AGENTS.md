@@ -49,7 +49,7 @@ On Linux, silence it by unpacking the static GitHub-release binary to
   marker in `meta.description`.
 - **GAMS licence:** the repo copy must keep the
   `__PASTE_CONTENTS_OF_gamslice.txt_HERE__` placeholder. Teachers paste the
-  real slice into their distributed copy; never commit a filled script
+  real gamslice into their distributed copy; never commit a filled script
   (public repo, licence would leak).
 - **Feed version hash masks the teacher fill-ins** (`STATUS_URL=` line and
   the `COURSE_GAMSLICE` heredoc body, in `magpie_setup_version`): one build
@@ -77,7 +77,7 @@ On Linux, silence it by unpacking the static GitHub-release binary to
   defaults honor them); assignments inside `FN_BODY` override afterwards.
   Harness-overridable constants: `MAGPIE_MAGPIE_URL`,
   `MAGPIE_GFORTRAN_DIR(_NEW)`, `MAGPIE_TOOLCHAIN_DIRS(_DARWIN)`,
-  `MAGPIE_DPKG_DIRS`, `MAGPIE_OS_RELEASE`.
+  `MAGPIE_DPKG_DIRS`, `MAGPIE_OS_RELEASE`, `MAGPIE_GAMS_FRAMEWORK_DIR`.
 - git is made hermetic (`GIT_CONFIG_GLOBAL=/dev/null`) — never rely on host
   git config in scenarios.
 

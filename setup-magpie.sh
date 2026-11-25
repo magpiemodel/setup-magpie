@@ -3,7 +3,7 @@
 # One file, run with: bash setup-magpie.sh. Safe to rerun.
 # Installs: git/curl (or Xcode CLT), opencode, nono, HU config, course tools
 # (apt libs | pinned pkgs), TinyTeX, GAMS + licence, nono profile, magpie
-# clone, renv restore. Then checks (unsandboxed + sandbox gate), one full
+# clone. Then checks (unsandboxed + sandbox gate), one full
 # default run inside the sandbox, and a final SETUP COMPLETE verdict.
 # Bash - baseline macOS stock /bin/bash 3.2, no bash4+ constructs.
 
@@ -117,6 +117,11 @@ MAGPIE_GFORTRAN_DIR_NEW="${MAGPIE_GFORTRAN_DIR_NEW:-/opt/gfortran}"
 # there; a machine that already has it has a usable gfortran.
 MAGPIE_GFORTRAN_DIR="${MAGPIE_GFORTRAN_DIR:-/usr/local/gfortran}"
 
+# macOS pkg framework resources folder: the GAMS binaries and - when
+# a gamslice.txt sits there - the gamslice GAMS reads there first
+# (spec 6.6). Variable only so the offline harness can fake the tree.
+MAGPIE_GAMS_FRAMEWORK_DIR="${MAGPIE_GAMS_FRAMEWORK_DIR:-/Library/Frameworks/GAMS.framework/Resources}"
+
 # Compiler trees the sandboxed renv builds need readable+executable:
 # the gcc drivers in /usr/bin are covered by nono's system groups,
 # but they posix_spawn cc1/cc1plus/f951 from /usr/libexec/gcc and
@@ -145,8 +150,9 @@ MAGPIE_HANDLE_FILE="$MAGPIE_SETUP_DIR/.magpie-course-handle"
 # written by an older script version are detected by the marker in
 # meta.description and regenerated (old copy kept as .bak). 11 moved
 # the read_file entries (relocated script copy + handle file) into
-# $MAGPIE_SETUP_DIR.
-MAGPIE_PROFILE_SCHEMA="11"
+# $MAGPIE_SETUP_DIR. 12 resolves the GAMS sysdir like the licence
+# step does (symlink followed) and grants it on macOS as well.
+MAGPIE_PROFILE_SCHEMA="12"
 
 # Deterministic madrat mainfolder + renv cache folder. The nono profile
 # allows writes in them and the sandboxed children get them passed in,
@@ -379,6 +385,20 @@ magpie_fail() {
   step=$1
   results=${2:-}
   MAGPIE_FAIL_POSTED=1
+  # What the verdict may claim about passes: "(twice, reproducible)" is
+  # honest ONLY when the same step already failed pass 1 (the name
+  # arrives through MAGPIE_PASS1_STEP); any other pass-2 failure says
+  # what the retry was after, a first-pass failure says nothing.
+  repro=""
+  if [ "${MAGPIE_PASS:-1}" = "2" ]; then
+    if [ -n "$step" ] && [ "$step" = "${MAGPIE_PASS1_STEP:-}" ]; then
+      repro=" (twice, reproducible)"
+    elif [ -n "${MAGPIE_PASS1_STEP:-}" ]; then
+      repro=" (pass 2, after: $MAGPIE_PASS1_STEP)"
+    else
+      repro=" (pass 2)"
+    fi
+  fi
   logfile="$MAGPIE_SETUP_DIR/setup-log.txt"
   # The log tail rides along (capped): whoever reads the feed needs the
   # context, not just the step name.
@@ -390,8 +410,8 @@ magpie_fail() {
         printf 'CHECK RESULTS:\n'
         printf '%s\n' "$results"
       else
-        printf 'FAILED STEP (twice, reproducible): %s | %s\n' \
-          "$step" "$(tail -n 1 "$logfile" 2>/dev/null)"
+        printf 'FAILED STEP%s: %s | %s\n' \
+          "$repro" "$step" "$(tail -n 1 "$logfile" 2>/dev/null)"
       fi
       printf -- '--- last 25 log lines ---\n'
       tail -n 25 "$logfile" 2>/dev/null
@@ -400,7 +420,7 @@ magpie_fail() {
   magpie_report "setup: FAIL $step
 $detail"
   magpie_say ""
-  magpie_say "SETUP FAILED (twice, reproducible): $step"
+  magpie_say "SETUP FAILED${repro}: $step"
   if [ -n "$results" ]; then
     printf '%s\n' "$results" >&4
   fi
@@ -429,11 +449,16 @@ magpie_step_failed() {
   if [ -n "${MAGPIE_SELF:-}" ]; then
     MAGPIE_PASS=2
     export MAGPIE_PASS
+    # Pass 2 must know WHICH step sent it here: that is what lets the
+    # verdict tell "the same step again" from "something else now".
+    MAGPIE_PASS1_STEP="$step"
+    export MAGPIE_PASS1_STEP
     # The new process must start with the real terminal, not the log.
     exec 1>&4 2>&4
     exec bash "$MAGPIE_SELF"
   fi
   MAGPIE_PASS=2
+  MAGPIE_PASS1_STEP="$step"
   magpie_setup_path
   exit 1
 }
@@ -1182,7 +1207,7 @@ magpie_have_gfortran() {
 }
 
 # gfortran is usually NOT on PATH: register the bin dir holding it for
-# this run + the rc, or renv restore compiles and the sandboxed children
+# this run + the rc, or renv compiles and the sandboxed children
 # never find a Fortran compiler. R's FC dir wins when FC resolved; else
 # the dir the fallback probe actually found a gfortran in (modern pkg
 # target first, legacy tree next), so the registered dir is never one
@@ -1472,29 +1497,61 @@ magpie_find_gams_dir() {
   return 1
 }
 
-# The GAMS system folder: holds the gams binary and is where GAMS
-# reads gamslice.txt. On Linux: the ~/gams sfx folder, else the folder
-# of any gams found on PATH (e.g. /opt/gams). On macOS: the pkg
-# framework folder.
+# The GAMS system folder: home of the RESOLVED gams binary, where
+# GAMS reads gamslice.txt. Resolution is magpie_find_gams itself
+# (PATH first, symlink followed on EITHER OS) so the probe, the licence
+# write and the sandbox run-path never see different binaries.
+# Without a resolvable binary: the ~/gams install folder (Linux) or
+# the pkg framework folder (macOS).
 magpie_gams_sysdir() {
+  gbin=$(magpie_find_gams) && {
+    printf '%s\n' "$(dirname "$gbin")"
+    return 0
+  }
   if [ "$MAGPIE_OS" != "linux" ]; then
-    if [ -x "/Library/Frameworks/GAMS.framework/Resources/gams" ]; then
-      printf '%s\n' "/Library/Frameworks/GAMS.framework/Resources"
+    if [ -d "$MAGPIE_GAMS_FRAMEWORK_DIR" ]; then
+      printf '%s\n' "$MAGPIE_GAMS_FRAMEWORK_DIR"
       return 0
     fi
     return 1
   fi
-  d=$(magpie_find_gams_dir) && {
-    printf '%s\n' "$d"
-    return 0
-  }
-  gbin=$(command -v gams 2>/dev/null) || return 1
-  printf '%s\n' "$(dirname "$gbin")"
+  magpie_find_gams_dir
+}
+
+# Absolute, symlink-free path of $1. macOS has no readlink -f before
+# 12.3, so follow the links one by one (a relative target resolves
+# against the link's own folder) and take the parent's physical folder.
+magpie_realpath() {
+  rp=$1
+  hops=0
+  while [ -L "$rp" ]; do
+    hops=$((hops + 1))
+    if [ "$hops" -gt 20 ]; then
+      return 1
+    fi
+    tgt=$(readlink "$rp") || return 1
+    case $tgt in
+      /*) rp=$tgt ;;
+      *) rp=$(dirname "$rp")/$tgt ;;
+    esac
+  done
+  rdir=$(dirname "$rp")
+  case $rdir in
+    /*) ;;
+    *) rdir=$PWD/$rdir ;;
+  esac
+  phys=$(cd -P "$rdir" 2>/dev/null && pwd -P) || return 1
+  printf '%s\n' "$phys/$(basename "$rp")"
 }
 
 magpie_find_gams() {
   if command -v gams >/dev/null 2>&1; then
-    command -v gams
+    gpath=$(command -v gams)
+    # A symlinked gams must map to its real binary on EITHER OS: the
+    # folder it truly lives in is where GAMS reads its gamslice (and
+    # what the sandbox profile has to grant).
+    real=$(magpie_realpath "$gpath") && [ -n "$real" ] && gpath="$real"
+    printf '%s\n' "$gpath"
     return 0
   fi
   if [ "$MAGPIE_OS" = "linux" ]; then
@@ -1505,11 +1562,27 @@ magpie_find_gams() {
     fi
     return 1
   fi
-  if [ -x "/Library/Frameworks/GAMS.framework/Resources/gams" ]; then
-    printf '%s\n' "/Library/Frameworks/GAMS.framework/Resources/gams"
+  if [ -x "$MAGPIE_GAMS_FRAMEWORK_DIR/gams" ]; then
+    printf '%s\n' "$MAGPIE_GAMS_FRAMEWORK_DIR/gams"
     return 0
   fi
   return 1
+}
+
+# The gams banner as the RESOLVED binary sees it. One shared probe,
+# one binary, for the licence step and the check ladder. GAMS writes
+# into its work folder: run only inside a scratch dir (removed),
+# never where the script happens to stand.
+# Exit codes: 0 banner on stdout (may be empty); 1 no gams binary;
+# 2 no scratch dir.
+magpie_probe_gams_banner() {
+  gbin=$(magpie_find_gams) || return 1
+  gtmp=$(mktemp -d 2>/dev/null) || return 2
+  gout=""
+  # shellcheck disable=SC2015  # any failure must still yield output, not abort.
+  gout=$( cd "$gtmp" && "$gbin" 2>&1 || true )
+  rm -rf "$gtmp"
+  printf '%s\n' "$gout"
 }
 
 # Linux: run the pinned self-extractor inside ~/gams. The checksum is
@@ -1579,19 +1652,25 @@ magpie_register_gams() {
     return 0
   fi
   if ! command -v gams >/dev/null 2>&1 \
-    && [ -d "/Library/Frameworks/GAMS.framework/Resources" ] \
-    && magpie_rc_add_path "$MAGPIE_RC" "/Library/Frameworks/GAMS.framework/Resources"; then
+    && [ -d "$MAGPIE_GAMS_FRAMEWORK_DIR" ] \
+    && magpie_rc_add_path "$MAGPIE_RC" "$MAGPIE_GAMS_FRAMEWORK_DIR"; then
     magpie_log "GAMS registered in $MAGPIE_RC"
   fi
 }
 
 # ---------------- licence ----------------
 
-# Where GAMS reads gamslice.txt (no env var needed):
-# Linux: the GAMS system folder. macOS: first user data dir - the pkg
-# folder is root-owned, mode 600 impossible there.
+# Where the course gamslice gets written - the folder GAMS reads:
+# Linux: the resolved system folder. macOS: the framework folder
+# while it holds a gamslice.txt (such a gamslice outranks the user data
+# dir - unverified on a real Mac, the post-write probe is the safety
+# net), else the user data dir (a plain pkg install has no gamslice).
 magpie_licence_dir() {
   if [ "$MAGPIE_OS" = "darwin" ]; then
+    if [ -f "$MAGPIE_GAMS_FRAMEWORK_DIR/gamslice.txt" ]; then
+      printf '%s\n' "$MAGPIE_GAMS_FRAMEWORK_DIR"
+      return 0
+    fi
     printf '%s\n' "$HOME/Library/Application Support/GAMS"
     return 0
   fi
@@ -1636,40 +1715,159 @@ magpie_install_licence() {
     return 1
   fi
   target="$dir/gamslice.txt"
-  # No embedded licence: never touch what is there - the demo slice
-  # that the GAMS installer ships stays as it is.
-  magpie_licence_available || return 1
+  # Ask the RESOLVED binary (the one the checks run) which licence GAMS
+  # actually reads: its banner is the ground truth for WHAT IS INSTALLED,
+  # the embedded gamslice for WHAT WE WANT. No binary to ask: fall back
+  # to comparing the file itself (an installed but not yet runnable GAMS).
+  gout=$(magpie_probe_gams_banner)
+  gprobe=$?
+  if [ "$gprobe" = 2 ]; then
+    magpie_say "GAMS licence probe needs a temp folder - free space in /tmp and rerun this file."
+    magpie_report "setup: WARNING licence probe needs a temp folder"
+    return 1
+  fi
+  # Classify that banner ONCE, demo/expired FIRST: the real demo banner
+  # itself reads "Licensee: GAMS Demo ..." plus "The installed license
+  # is valid.", so neither phrase may outrank it. Here that is STRICTER
+  # than the check ladder, which ranks the course licensee name above a
+  # demo word: this step decides provenance of a file it may rewrite, so
+  # a banner that mentions demo or expiry is never trusted.
+  lic_state=unknown
+  if [ "$gprobe" = 1 ]; then
+    lic_state=noprobe
+  elif printf '%s\n' "$gout" | grep -qiE "demo|expired"; then
+    lic_state=bad
+  elif [ -n "$MAGPIE_COURSE_LICENSEE" ] \
+    && printf '%s\n' "$gout" | grep -qiF "$MAGPIE_COURSE_LICENSEE"; then
+    lic_state=course
+  elif printf '%s\n' "$gout" | grep -qiE "license is valid|licensee"; then
+    lic_state=foreign
+  fi
+  # A banner that already reports a working licence: the reason to keep
+  # the file as it is, decided once and logged on every path that does.
+  lic_keep=""
+  case $lic_state in
+    course)
+      lic_keep="course licence: already in place (banner shows the course licensee)"
+      ;;
+    foreign)
+      # Replacing a foreign VALID gamslice could break a working install.
+      # Trade-off: a foreign gamslice missing magpie's solvers only shows
+      # mid-run - the full run is the check then.
+      lic_keep="keeping the foreign valid gamslice (banner lacks the course licensee)"
+      ;;
+  esac
+  if ! magpie_licence_embedded; then
+    # Nothing to write: a licence that works stays as it is.
+    if [ -n "$lic_keep" ]; then
+      magpie_log "$lic_keep"
+      return 0
+    fi
+    # Demo/expired/missing banner and no licence to write: warn + feed.
+    magpie_licence_available
+    return 1
+  fi
   tmp=$(mktemp) || return 1
+  # The licence text is sensitive before it reaches its target folder.
+  chmod 600 "$tmp"
   magpie_licence_text > "$tmp"
+  # With the gamslice embedded, THAT text is authoritative: a file that
+  # already matches it byte for byte is never rewritten - whatever the
+  # banner said. No .bak clobber, no false replacement post, no sudo
+  # prompt per run.
   if [ -f "$target" ] && cmp -s "$tmp" "$target"; then
     rm -f "$tmp"
+    if [ "$lic_state" = unknown ]; then
+      magpie_log "course gamslice in place but gams banner unreadable"
+    fi
     magpie_log "course licence: already in place"
     return 0
   fi
-  # A missing dir is created below; only an EXISTING folder that
-  # refuses writes is a dead end (e.g. a root-owned /opt GAMS).
-  if [ -e "$dir" ] && [ ! -w "$dir" ]; then
+  if [ -n "$lic_keep" ]; then
+    magpie_log "$lic_keep"
     rm -f "$tmp"
-    magpie_say "GAMS folder $dir is not writable - the licence needs a rerun of this file."
-    magpie_report "setup: WARNING licence dir not writable"
-    return 1
+    return 0
   fi
-  mkdir -p "$dir"
-  if [ "$MAGPIE_OS" = "darwin" ]; then
-    chmod 700 "$dir"
-  fi
+  # Demo/expired (bad), unreadable banner (unknown) or no binary to ask
+  # (noprobe): the course gamslice goes in. An expired course licence is
+  # bad too, so it is replaced here as well.
+  # A DIFFERENT gamslice sits there - usually the demo licence the GAMS
+  # installer ships. Existence alone must never skip the course
+  # licence (that kept the 2026-11 machine on the demo forever); the
+  # course gamslice replaces it, the old copy survives as .bak.
+  replacing=""
   if [ -f "$target" ]; then
-    # A DIFFERENT slice sits there - usually the demo licence the GAMS
-    # installer ships. Existence alone must never skip the course
-    # licence (that kept the 2026-11 machine on the demo forever); the
-    # course slice replaces it, the old copy survives as .bak.
-    cp "$target" "$target.bak" 2>/dev/null || true
+    replacing=1
+  fi
+  if [ -e "$dir" ] && [ ! -w "$dir" ]; then
+    # Root-owned sysdir (e.g. /opt GAMS, the macOS framework): the
+    # sudo path - credentials are warm while this step runs (before
+    # magpie_stop_keepalive). The student owns the file afterwards.
+    if [ -n "$replacing" ] && ! sudo cp "$target" "$target.bak"; then
+      rm -f "$tmp"
+      magpie_say "GAMS folder $dir is not writable even with sudo - tell the TA."
+      magpie_report "setup: FAIL licence dir not writable"
+      return 1
+    fi
+    # SC2024: both redirects run as the caller - reading our own tmp
+    # file and /dev/null is exactly what is wanted here.
+    # shellcheck disable=SC2024
+    if ! sudo tee "$target" < "$tmp" > /dev/null; then
+      rm -f "$tmp"
+      magpie_say "GAMS folder $dir is not writable even with sudo - tell the TA."
+      magpie_report "setup: FAIL licence dir not writable"
+      return 1
+    fi
+    sudo chown "$USER" "$target" || magpie_log "could not chown $target to $USER"
+    chmod 600 "$target" || magpie_log "could not set mode 600 on $target"
+    # sudo tee copies instead of moving: the licence copy in TMPDIR is
+    # ours to remove.
+    rm -f "$tmp"
+  else
+    mkdir -p "$dir" || { rm -f "$tmp"; return 1; }
+    # The private mode fits student-owned folders only - never a
+    # system folder like the macOS framework dir.
+    if [ "$MAGPIE_OS" = "darwin" ]; then
+      case $dir in
+        "$HOME"|"$HOME"/*) chmod 700 "$dir" ;;
+      esac
+    fi
+    if [ -n "$replacing" ]; then
+      cp "$target" "$target.bak" 2>/dev/null || true
+    fi
+    mv "$tmp" "$target" || return 1
+    chmod 600 "$target"
+  fi
+  if [ -n "$replacing" ]; then
     magpie_log "replacing non-course gamslice.txt (old copy kept as $target.bak)"
     magpie_report "setup: replaced non-course gamslice.txt"
   fi
-  mv "$tmp" "$target"
-  chmod 600 "$target"
   magpie_log "course licence written to $target"
+  # Post-write verify (I10/I12 hardening): probe the same binary
+  # again. A botched teacher fill-in, a wrong-target write or a licence
+  # that is already expired lands here honestly instead of masquerading
+  # as "licence missing" in the checks below. demo/expired outranks the
+  # course licensee name here too (stricter than check 8, on purpose).
+  if [ "$gprobe" = 0 ]; then
+    verify_bad=""
+    if ! vout=$(magpie_probe_gams_banner); then
+      magpie_log "gamslice written but the verify probe needs gams and a scratch dir"
+      return 0
+    fi
+    if printf '%s\n' "$vout" | grep -qiE "demo|expired"; then
+      verify_bad="banner reports a demo or expired licence"
+    elif [ -n "$MAGPIE_COURSE_LICENSEE" ] \
+      && ! printf '%s\n' "$vout" | grep -qiF "$MAGPIE_COURSE_LICENSEE"; then
+      verify_bad="banner lacks the course licensee"
+    fi
+    if [ -n "$verify_bad" ]; then
+      magpie_log "gams rejected the written gamslice: $verify_bad"
+      magpie_say "FAIL: course gamslice rejected by gams - tell the TA."
+      magpie_report "setup: FAIL course gamslice rejected by gams - tell the TA"
+      return 1
+    fi
+    magpie_log "course licence confirmed in the gams banner"
+  fi
 }
 
 # ---------------- nono profile ----------------
@@ -1768,15 +1966,32 @@ magpie_build_nono_profile() {
     magpie_add_read_dir "$HOME/Library/TinyTeX"
     magpie_add_read_dir "$HOME/.TinyTeX"
     magpie_add_read_dir "$HOME/Library/Application Support/GAMS"
+    # A GAMS resolved OUTSIDE the pkg framework: its folder - holding
+    # the gamslice the licence step may write - must be readable in the
+    # sandbox too, INCLUDING under $HOME (a ~/Applications install is a
+    # sub-tree grant, like the TinyTeX trees above; only $HOME itself
+    # stays ungranted). $gfw - the framework root, derived here from
+    # MAGPIE_GAMS_FRAMEWORK_DIR (a hard-coded second copy of the default
+    # path went stale for any other layout) - is the read_extra entry and
+    # covers the framework's own Resources; the data dir dedupes against
+    # its entry.
+    gfw=${MAGPIE_GAMS_FRAMEWORK_DIR%%/GAMS.framework/*}/GAMS.framework
+    gd=$(magpie_gams_sysdir 2>/dev/null) || gd=""
+    case $gd in
+      ""|"$MAGPIE_GAMS_FRAMEWORK_DIR"|"$MAGPIE_GAMS_FRAMEWORK_DIR"/*|\
+        "$gfw"|"$gfw"/*|"$HOME") gd="" ;;
+    esac
+    magpie_add_read_dir "$gd"
     for d in $MAGPIE_TOOLCHAIN_DIRS_DARWIN; do
       magpie_add_read_dir "$d"
     done
   else
-    # A GAMS found outside ~/gams (any PATH install) must be readable
-    # in the sandbox too.
+    # A GAMS found outside ~/gams (any PATH install, symlink already
+    # resolved to its real folder) must be readable in the sandbox too
+    # - but never $HOME itself, which the profile deliberately hides.
     gd=$(magpie_gams_sysdir 2>/dev/null) || gd=""
     case $gd in
-      ""|"$HOME/gams"|"$HOME/gams"/*) gd="" ;;
+      ""|"$HOME/gams"|"$HOME/gams"/*|"$HOME") gd="" ;;
     esac
     magpie_add_read_dir "$HOME/gams"
     magpie_add_read_dir "$gd"
@@ -1837,11 +2052,16 @@ magpie_build_nono_profile() {
   done
   IFS=$oldIFS
   read_extra=""
-  # The GAMS.framework entry stays literal on macOS (not existence-
-  # gated): magpie_install_gams only reports success with that folder
-  # present, and the offline harness cannot fake /Library.
+  # The GAMS.framework entry is listed even when this machine lacks it
+  # (the harness cannot fake /Library, and magpie_install_gams only
+  # reports success with that folder present). Its Resources folder
+  # holds the gams the sandbox runs - and the gamslice.txt the licence
+  # step writes when a framework gamslice exists - so the whole
+  # framework stays readable. $gfw was derived from
+  # MAGPIE_GAMS_FRAMEWORK_DIR above, and the read list already excludes
+  # its sub-trees, so the root appears exactly once.
   if [ "$MAGPIE_OS" = "darwin" ]; then
-    read_extra="      \"/Library/Frameworks/GAMS.framework\",
+    read_extra="      \"$gfw\",
 "
   fi
   oldIFS=$IFS
@@ -2045,45 +2265,11 @@ magpie_clone_magpie() {
 
 # ---------------- renv library ----------------
 
-# The project library load test - shared by the checks and this step.
+# The project library load test - the R library check line's probe.
 magpie_renv_lib_ok() {
   ( cd "$HOME/magpie" \
     && Rscript -e 'suppressMessages(library(lucode2)); suppressMessages(library(gms))' \
   ) >/dev/null 2>&1
-}
-
-# The shipped renv/activate.R never asks anything - it only bootstraps
-# the renv package itself, so it is safe to run non-interactively.
-magpie_renv_restore_body() {
-  ( cd "$HOME/magpie" || exit 1
-    if ! Rscript -e 'quit(status = if (requireNamespace("renv", quietly = TRUE)) 0 else 1)' \
-      2>/dev/null; then
-      Rscript -e 'source("renv/activate.R")' || exit 1
-    fi
-    Rscript -e 'renv::restore(prompt = FALSE, restart = FALSE)' || exit 1
-  ) || return 1
-  magpie_renv_lib_ok
-}
-
-# Fill the renv library the clone ships, so checks and runs use it.
-# The root renv.lock never exists in course clones (start.R snapshots
-# into renv/archive only, and magpie gitignores a root lock), so this
-# step only fires on hand-built teacher/dev trees that copy one in.
-magpie_step_renv_restore() {
-  if [ ! -f "$HOME/magpie/renv.lock" ]; then
-    magpie_log "renv restore: no renv.lock - skipped"
-    return 0
-  fi
-  if magpie_renv_lib_ok; then
-    magpie_log "renv library: already populated"
-    return 0
-  fi
-  magpie_say_progress "R packages" "about 5-15 min, just wait"
-  if ! magpie_retry 3 magpie_renv_restore_body; then
-    magpie_step_failed "renv restore"
-  fi
-  magpie_say "OK: R packages installed"
-  magpie_report "setup: renv restored"
 }
 
 # ---------------- checks (unsandboxed + sandbox child) ----------------
@@ -2097,50 +2283,48 @@ $1 $2"
 magpie_run_checks() {
   MAGPIE_CHECK_RESULTS=""
 
-  if gbin=$(magpie_find_gams); then
-    # GAMS writes into its work folder: probe only inside a scratch
-    # dir (removed afterwards), never where this script happens to run.
-    gtmp=$(mktemp -d 2>/dev/null) || gtmp=""
-    gout=""
-    if [ -n "$gtmp" ]; then
-      # shellcheck disable=SC2015  # any failure must still yield output, not abort.
-      gout=$( cd "$gtmp" && "$gbin" 2>&1 || true )
-      rm -rf "$gtmp"
-    fi
+  gout=$(magpie_probe_gams_banner)
+  gprobe=$?
+  lic_named=""
+  lic_banner=""
+  if [ "$gprobe" = 1 ]; then
+    magpie_check_line FAIL "gams not installed - rerun this file"
+  elif [ "$gprobe" = 2 ]; then
+    magpie_check_line FAIL "gams licence check needs a temp folder - free space in /tmp and rerun this file"
+  else
     # The course-licence PASS reads the banner whenever the licensee
     # constant is set - embedded or not: a banner that carries the
     # course licensee IS the course licence, however it got installed
     # (rerun with a filled script, TA setup, magpie-opencode.sh).
-    # Without an embedded slice the banner must additionally show no
+    # Without an embedded gamslice the banner must additionally show no
     # demo/expired wording, so a demo can never pose as the course
     # licence. lic_named (constant + pasted licence) keeps the strict
-    # plan where the name outranks demo wording.
-    lic_named=""
+    # plan where the name outranks demo wording. A VALID banner with-
+    # out the course name PASSes with a tell-the-TA note: the student's
+    # licence works, only its owner is foreign - the TA confirms the
+    # solvers fit magpie.
     if [ -n "$MAGPIE_COURSE_LICENSEE" ] && magpie_licence_embedded; then
       lic_named=1
     fi
-    lic_banner=""
     if [ -n "$MAGPIE_COURSE_LICENSEE" ] \
       && printf '%s\n' "$gout" | grep -qiF "$MAGPIE_COURSE_LICENSEE"; then
       lic_banner=1
     fi
-    if [ -z "$gtmp" ]; then
-      magpie_check_line FAIL "gams licence check needs a temp folder - free space in /tmp and rerun this file"
-    elif [ -n "$lic_banner" ] \
+    if [ -n "$lic_banner" ] \
       && { [ -n "$lic_named" ] \
         || ! printf '%s\n' "$gout" | grep -qiE "demo|expired"; }; then
       magpie_check_line PASS "gams (course licence found)"
     elif printf '%s\n' "$gout" | grep -qiE "demo|expired"; then
       magpie_check_line FAIL "gams runs only with the free demo licence - the course licence file is missing - rerun this file"
-    elif [ -n "$lic_named" ]; then
-      magpie_check_line FAIL "gams licence is not the course licence (no $MAGPIE_COURSE_LICENSEE) - tell the TA"
     elif printf '%s\n' "$gout" | grep -qiE "license is valid|licensee"; then
-      magpie_check_line PASS "gams (license found)"
+      if [ -n "$MAGPIE_COURSE_LICENSEE" ]; then
+        magpie_check_line PASS "gams (licence not the course licence - tell the TA)"
+      else
+        magpie_check_line PASS "gams (license found)"
+      fi
     else
       magpie_check_line FAIL "gams found but its licence file is missing - rerun this file"
     fi
-  else
-    magpie_check_line FAIL "gams not installed - rerun this file"
   fi
 
   if command -v git >/dev/null 2>&1; then
@@ -2182,21 +2366,15 @@ magpie_run_checks() {
     magpie_check_line FAIL "tex not found - rerun this file"
   fi
 
-  # R libraries. With a renv.lock the pinned library has to load;
-  # without one (every course machine: start.R snapshots into the RUN
-  # folder, never into the repo root) the libraries only exist once the
-  # full run installed them - so the load test runs from the full-run
-  # marker onwards. Parent only: a Landlock denial on this probe would
-  # block the gate with a message the student cannot act on, and the
-  # sandboxed full run that follows tests the library far better.
+  # R libraries. The libraries only exist once the full run installed
+  # them - so the load test runs from the full-run marker onwards
+  # (a root renv.lock never exists in course clones: start.R snapshots
+  # into the run folder only). Parent only: a Landlock denial on this
+  # probe would block the gate with a message the student cannot act
+  # on, and the sandboxed full run that follows tests the library far
+  # better.
   fullrel=$(magpie_fullrel)
-  if [ -f "$HOME/magpie/renv.lock" ]; then
-    if magpie_renv_lib_ok; then
-      magpie_check_line PASS "renv R library (lucode2, gms load)"
-    else
-      magpie_check_line FAIL "renv R library incomplete - in ~/magpie run: Rscript -e 'renv::restore()'"
-    fi
-  elif [ -n "$fullrel" ] && [ -z "${MAGPIE_CHECK_ONLY:-}" ]; then
+  if [ -n "$fullrel" ] && [ -z "${MAGPIE_CHECK_ONLY:-}" ]; then
     if magpie_renv_lib_ok; then
       magpie_check_line PASS "R libraries (lucode2, gms load)"
     else
@@ -2305,6 +2483,29 @@ magpie_latest_full_run() {
   return 0
 }
 
+# Run one sandboxed course child: $1 = its PATH, $2 = the bash -c
+# payload, run from ~/magpie inside the course profile. The full run
+# and the library probe/repair share this exact invocation and env.
+# The start.R prompt answers are piped to every child: a read nobody
+# uses is harmless, a prompt left unfed crashes the session.
+# --allow-cwd is mandatory: without the flag the piped answers would
+# hit nono's cwd prompt instead of the child's.
+magpie_sandboxed_run() {
+  MAGPIE_FULL_RUN_ANSWERS=$(printf 'y\ny')
+  # macOS only: caffeinate keeps the machine awake through the hour.
+  local pre=""
+  if [ "$MAGPIE_OS" = "darwin" ]; then
+    pre="caffeinate -is"
+  fi
+  # $pre unquoted ON PURPOSE: empty expands to nothing, "caffeinate -is"
+  # expands to the two words - one command line instead of two copies.
+  # shellcheck disable=SC2086
+  printf '%s\n' "$MAGPIE_FULL_RUN_ANSWERS" | ( cd "$HOME/magpie" && $pre nono run --profile magpie-profile --allow-cwd -- \
+    env "MADRAT_MAINFOLDER=$MADRAT_MAINFOLDER" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
+    "PATH=$1" \
+    bash -c "$2" )
+}
+
 # $1: PATH for the sandboxed child (tex + GAMS dirs included).
 magpie_full_run_body() {
   # start.R's top block (renv active: every course machine) can ask
@@ -2323,35 +2524,66 @@ magpie_full_run_body() {
   # renv.lock, which never exists at the repo root by design (start.R
   # snapshots into renv/archive only; magpie's own .Rprofile says so).
   # Not </dev/null - EOF crashes the && in either prompt.
-  # --allow-cwd is mandatory here: without it the piped answers would
-  # hit nono's cwd prompt instead of start.R.
-  MAGPIE_FULL_RUN_ANSWERS=$(printf 'y\ny')
-  if [ "$MAGPIE_OS" = "darwin" ]; then
-    # shellcheck disable=SC2016  # $HOME expands in the sandbox child, not here.
-    printf '%s\n' "$MAGPIE_FULL_RUN_ANSWERS" | ( cd "$HOME/magpie" && caffeinate -is nono run --profile magpie-profile --allow-cwd -- \
-      env "MADRAT_MAINFOLDER=$MADRAT_MAINFOLDER" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
-      "PATH=$1" \
-      bash -c 'cd "$HOME/magpie" && Rscript start.R runscripts=default.R submit=direct' )
-  else
-    # shellcheck disable=SC2016  # $HOME expands in the sandbox child, not here.
-    printf '%s\n' "$MAGPIE_FULL_RUN_ANSWERS" | ( cd "$HOME/magpie" && nono run --profile magpie-profile --allow-cwd -- \
-      env "MADRAT_MAINFOLDER=$MADRAT_MAINFOLDER" "RENV_PATHS_CACHE=$RENV_PATHS_CACHE" \
-      "PATH=$1" \
-      bash -c 'cd "$HOME/magpie" && Rscript start.R runscripts=default.R submit=direct' )
-  fi
+  # shellcheck disable=SC2016  # $HOME expands in the sandbox child, not here.
+  magpie_sandboxed_run "$1" \
+    'cd "$HOME/magpie" && Rscript start.R runscripts=default.R submit=direct'
 }
 
-# One full default run inside the course sandbox. start.R swallows run
-# errors, so a NEW complete run folder decides, not the exit code -
-# with ONE sanctioned exception: the piped y may let "Update now?"
-# update packages that are already loaded, and piamenv then stops the
-# session ("Please restart R") AFTER the renv writes landed on disk.
-# That signature exit earns exactly one fresh-R retry, where the
-# prompts are silent and the model runs. Any other non-zero exit is a
-# real failure -> straight to the verdict, no second pass. The child
-# output streams through tee into a work-dir child log (still exactly
-# once in the run log, nothing on screen), so the signature is
-# greppable without log-offset arithmetic.
+# Load the two entry packages of the default run, sandboxed. On a
+# fresh clone magpie's project .Rprofile bootstrap (hydrate rmarkdown,
+# then all) executes inside this probe session: the same work the run
+# would do, just run earlier, where a failure costs minutes instead
+# of an announced hour (I11: a partial library never self-heals - the
+# bootstrap only fires on an exactly-renv library).
+magpie_probe_r_library() {
+  # shellcheck disable=SC2016  # $HOME expands in the sandbox child, not here.
+  magpie_sandboxed_run "$1" \
+    'cd "$HOME/magpie" && Rscript -e "suppressMessages(library(lucode2)); suppressMessages(library(gms))"'
+}
+
+# The one repair, mirroring that .Rprofile bootstrap: rmarkdown first
+# (only this order catches the Rmd-file dependencies), then all.
+magpie_repair_r_library() {
+  # shellcheck disable=SC2016  # \$HOME expands in the sandbox child, not here.
+  magpie_sandboxed_run "$1" \
+    "cd \"\$HOME/magpie\" && Rscript -e 'suppressMessages(renv::hydrate(\"rmarkdown\", prompt = FALSE)); suppressMessages(renv::hydrate(prompt = FALSE, report = FALSE))'"
+}
+
+# Readiness gate: $1 = PATH for the sandboxed child. Probe; on failure
+# exactly ONE hydrate repair, then re-probe. The hydrate can take tens
+# of minutes, so it is announced - never a silent long wait. Non-zero
+# = library not ready; the caller owns the verdict. Never more than
+# one repair per gate call.
+magpie_r_library_ready() {
+  magpie_say_progress "R packages" "about 10-30 min, just wait"
+  if magpie_probe_r_library "$1"; then
+    return 0
+  fi
+  magpie_log "R library probe failed - one hydrate repair (rmarkdown first)"
+  if ! magpie_repair_r_library "$1"; then
+    magpie_log "R library repair failed"
+    return 1
+  fi
+  if magpie_probe_r_library "$1"; then
+    return 0
+  fi
+  magpie_log "R library still incomplete after the repair"
+  return 1
+}
+
+# One full default run inside the course sandbox. Before it: the
+# readiness gate, so the hour is only announced over a library proven
+# to load. start.R swallows run errors, so a NEW complete run folder
+# decides, not the exit code - with TWO sanctioned signatures that
+# earn exactly one retry each: "Please restart R" (the piped y let
+# the update stop a loaded namespace AFTER the renv writes landed,
+# spec 6.10) and the loadNamespace/getLine crash frame (the run broke
+# a library the gate had just proven - the gate runs once more before
+# that retry). Any other non-zero exit is a real failure -> straight
+# to the verdict, no second pass. The child output streams through
+# tee into a work-dir child log (still exactly once in the run log,
+# nothing on screen), so the signatures are greppable without
+# log-offset arithmetic.
 magpie_step_full_run() {
   marker="$MAGPIE_SETUP_DIR/.setup-fullrun-ok"
   if [ "${MAGPIE_FULL_RUN:-1}" = "0" ]; then
@@ -2369,10 +2601,20 @@ magpie_step_full_run() {
   if [ -n "$texbin" ]; then
     runpath="$texbin:$runpath"
   fi
-  if [ "$MAGPIE_OS" = "linux" ]; then
-    gamsdir=$(magpie_gams_sysdir) && runpath="$gamsdir:$runpath"
-  elif [ -d "/Library/Frameworks/GAMS.framework/Resources" ]; then
-    runpath="/Library/Frameworks/GAMS.framework/Resources:$runpath"
+  # One resolution for every consumer: the folder of the same gams
+  # the checks probed (the framework Resources folder on macOS).
+  gamsrun=$(magpie_gams_sysdir 2>/dev/null) || gamsrun=""
+  if [ -n "$gamsrun" ]; then
+    runpath="$gamsrun:$runpath"
+  fi
+  # Honest verdict before the hour is announced (I11): a library that
+  # cannot load start.R's entry packages is a feed/library problem,
+  # not a model problem. A transient feed outage gets the standard retry
+  # pass (pass 2 skips the done steps through their markers, so it costs
+  # one more gate run); the gate below this run is already a retry, so
+  # it fails straight through.
+  if ! magpie_r_library_ready "$runpath"; then
+    magpie_step_failed "course R feed unreachable / R library incomplete - tell the TA"
   fi
   magpie_say "[$(magpie_now)] - full magpie run, about an hour, keep the laptop plugged in and awake"
   magpie_report "setup: full run start"
@@ -2383,6 +2625,19 @@ magpie_step_full_run() {
   if [ "$rc" -ne 0 ] && grep -q 'Please restart R' "$childlog"; then
     magpie_log "full run: R stopped after updating loaded packages - one fresh R session"
     magpie_say "[$(magpie_now)] - package update restarted R, model run starts now (still about an hour)"
+    magpie_full_run_body "$runpath" 2>&1 | tee "$childlog"
+    rc=${PIPESTATUS[0]}
+  elif [ "$rc" -ne 0 ] && grep -q loadNamespace "$childlog" \
+    && grep -q getLine "$childlog"; then
+    # Crash frame: a getLine prompt died on a missing namespace. Only
+    # the frame names are greppable - the message text is localized
+    # (observed in German). The gate proved gms loads before the run,
+    # so the run itself broke the library: gate once more (its probe
+    # is cheap, its repair still single) before the one retry.
+    magpie_log "full run: loadNamespace/getLine crash - library gate before one retry"
+    if ! magpie_r_library_ready "$runpath"; then
+      magpie_fail "course R feed unreachable / R library incomplete - tell the TA"
+    fi
     magpie_full_run_body "$runpath" 2>&1 | tee "$childlog"
     rc=${PIPESTATUS[0]}
   fi
@@ -2476,7 +2731,6 @@ magpie_setup_path() {
   magpie_pull_nono_profile
   magpie_step_magpie_profile
   magpie_clone_magpie
-  magpie_step_renv_restore
 
   # Reproducible-failure model: any check FAIL ends the run with the
   # failure verdict - the old "continue after FAIL" is gone.

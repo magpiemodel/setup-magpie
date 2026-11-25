@@ -126,7 +126,7 @@ build_template() {
   # Only these core tools exist for the tested script (host tex/pandoc/
   # Rscript/gams on PATH would shadow the stubs and trigger REAL downloads).
   for tool in bash cmp awk basename cat chmod cp cut date dirname env git \
-    head ln ls mkdir mv od rm sed sha256sum shasum sleep sort stat tail tar \
+    head ln ls mkdir mv od readlink rm sed sha256sum shasum sleep sort stat tail tar \
     tee gzip tr touch grep mktemp sh uname; do
     src=$(command -v "$tool" || true)
     [ -n "$src" ] && ln -sf "$src" "$MINBIN/$tool"
@@ -223,6 +223,17 @@ case "$1" in
         sh -c "$last"
         exit $?
         ;;
+      *"library(lucode2)"*|*"renv::hydrate"*)
+        # Readiness probe / hydrate repair request: replay the inner
+        # bash -c payload under a sandbox marker, so the stub Rscript
+        # scripts the library state (probe knobs, heal on repair).
+        MAGPIE_SANDBOX_CHILD=1
+        export MAGPIE_SANDBOX_CHILD
+        last=""
+        for a in "$@"; do last=$a; done
+        sh -c "$last"
+        exit $?
+        ;;
     esac
     exit 0
     ;;
@@ -294,16 +305,39 @@ case "$*" in
     echo "STUB-INSTALL-PACKAGES-MARKER"
     exit 0
     ;;
-  *requireNamespace*renv*) exit "${STUB_RENV_PKG_EXIT:-0}" ;;
-  *"renv/activate.R"*) exit "${STUB_RENV_ACTIVATE_EXIT:-0}" ;;
-  *"renv::restore"*)
-    # A restore makes the project library loadable from then on.
-    touch "$STATE/renv_restored"
-    exit "${STUB_RENV_RESTORE_EXIT:-0}"
-    ;;
   *"library(lucode2)"*)
-    if [ -f "$STATE/renv_restored" ]; then exit 0; fi
+    # The library load test (the nono replay marks sandbox children):
+    # scripted by STUB_PROBE_FAILS, broken by a crashing run, healed
+    # by a done repair; the unsandboxed check answers STUB_RENV_EXIT.
+    if [ -n "${MAGPIE_SANDBOX_CHILD:-}" ]; then
+      if [ -f "$STATE/lib_healed" ]; then exit 0; fi
+      if [ -f "$STATE/lib_broken" ]; then
+        echo "Error in loadNamespace(t, c('gms', 'getLine')):" >&2
+        echo "  there is no package called 'gms'" >&2
+        exit 1
+      fi
+      c="$STATE/probe_count"; n=$(cat "$c" 2>/dev/null || echo 0)
+      n=$((n + 1)); echo "$n" > "$c"
+      if [ "$n" -le "${STUB_PROBE_FAILS:-0}" ]; then
+        echo "Error in loadNamespace(t, c('gms', 'getLine')):" >&2
+        echo "  there is no package called 'gms'" >&2
+        exit 1
+      fi
+      exit 0
+    fi
     exit "${STUB_RENV_EXIT:-0}"
+    ;;
+  *"renv::hydrate"*"rmarkdown"*)
+    # The gate's repair: STUB_HYDRATE_EXIT=1 keeps the library broken.
+    if [ -n "${MAGPIE_SANDBOX_CHILD:-}" ]; then
+      if [ "${STUB_HYDRATE_EXIT:-0}" != "0" ]; then
+        echo "Error: hydrate failed - course feed unreachable" >&2
+        exit "${STUB_HYDRATE_EXIT}"
+      fi
+      : > "$STATE/lib_healed"
+      exit 0
+    fi
+    exit 0
     ;;
   *"start.R"*"runscripts=default.R"*)
     # Optional stdin capture: proves the caller feeds the prompt answers.
@@ -325,6 +359,23 @@ case "$*" in
     || { [ "${STUB_FULLRUN_RESTART:-0}" = 1 ] && [ "$n" = 1 ]; }; then
       echo "Error in piamenv::stopIfLoaded():"
       echo "  Please restart R."
+      exit 1
+    fi
+    # I11 crash frame: a getLine prompt died on a missing namespace
+    # (message text localized - the gate must key on the frame names
+    # only). The crash is also what breaks the library for the retry.
+    if [ "${STUB_FULLRUN_CRASH:-0}" = 2 ] \
+    || { [ "${STUB_FULLRUN_CRASH:-0}" = 1 ] && [ "$n" = 1 ]; }; then
+      echo "Error in loadNamespace(t, c('gms', 'getLine')):" >&2
+      echo "  es gibt kein Paket namens 'gms'" >&2
+      touch "$STATE/lib_broken"
+      exit 1
+    fi
+    # ONE frame name only: the retry signature is keyed on
+    # loadNamespace AND getLine - half a frame must never open it.
+    if [ "${STUB_FULLRUN_ONEFRAME:-0}" = 1 ]; then
+      echo "Error in loadNamespace(t, c('gms')):" >&2
+      echo "  there is no package called 'gms'" >&2
       exit 1
     fi
     if [ "${STUB_FULLRUN_NOTHING:-0}" = "1" ]; then exit 0; fi
@@ -349,10 +400,22 @@ EOS
 #!/bin/sh
 echo "gfortran-stub"
 EOS
-  # The banner text is env-switchable for the gams check table.
+  # The banner text is env-switchable for the gams check table. A
+  # gamslice.txt carrying the test course content - in the binary's
+  # own folder (sysdir, read first) or the macOS user data folder -
+  # flips the banner to the course one: licence scenarios ask the
+  # same stub before and after the write.
   cat > "$STATE/binlib/gams" <<'EOS'
 #!/bin/sh
-printf '%s\n' "${STUB_GAMS_BANNER:-GAMS 54.6.1 - Licensee: Potsdam-Institut fuer Klimafolgenforschung - the installed license is valid.}"
+banner="${STUB_GAMS_BANNER:-GAMS 54.6.1 - Licensee: Potsdam-Institut fuer Klimafolgenforschung - the installed license is valid.}"
+me=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+for s in "$me/gamslice.txt" "$HOME/Library/Application Support/GAMS/gamslice.txt"; do
+  if [ -f "$s" ] && grep -q TEST-LICENCE-CONTENT "$s" 2>/dev/null; then
+    banner="GAMS 54.6.1 - Licensee: Potsdam-Institut fuer Klimafolgenforschung - the installed license is valid."
+    break
+  fi
+done
+printf '%s\n' "$banner"
 EOS
   chmod 755 "$STATE/binlib"/*
 
@@ -376,6 +439,26 @@ fi
 if [ "$1" = "-k" ]; then
   rm -f "$STATE/sudo_stamp"
   exit 0
+fi
+# Root's DAC override is not reproducible for a plain user: with this
+# knob, write commands into the simulated "root-owned" (unwritable)
+# folder succeed by relaxing its mode around the real command, and
+# chown is a logged no-op - mirroring what real sudo would produce.
+if [ "${STUB_SUDO_AS_ROOT:-0}" = 1 ]; then
+  case "$1" in
+    chown) exit 0 ;;
+    cp|tee)
+      dst=""
+      for a in "$@"; do dst=$a; done
+      dst_dir=$(dirname "$dst")
+      mode=$(stat -c %a "$dst_dir" 2>/dev/null || echo "")
+      [ -n "$mode" ] && chmod u+w "$dst_dir"
+      "$@"
+      ret=$?
+      [ -n "$mode" ] && chmod "$mode" "$dst_dir"
+      exit "$ret"
+      ;;
+  esac
 fi
 exec "$@"
 EOS
@@ -564,12 +647,29 @@ EOS
   echo "fake pandoc x86"   > "$STATE/archives/pandoc-3.14-x86_64-macOS.pkg"
   echo "fake gams pkg"     > "$STATE/archives/GAMS54.6.1.pkg"
 
-  # Fake GAMS linux self-extractor: extracts a working gams stub.
+  # Fake GAMS linux self-extractor: extracts a working gams stub that
+  # shows the banner of the gamslice beside it - and, like the real
+  # installer, ships the demo gamslice with the fresh install.
   cat > "$STATE/archives/linux_x64_64_sfx.exe" <<'EOS'
 #!/bin/sh
 mkdir -p gams54.6.1_linux_x64_64_sfx
-printf '#!/bin/sh\nprintf "%%s\\n" "${STUB_GAMS_BANNER:-GAMS 54.6.1 - Licensee: Potsdam-Institut fuer Klimafolgenforschung - the installed license is valid.}"\n' \
-  > gams54.6.1_linux_x64_64_sfx/gams
+printf '%s\n' 'DEMO-SLICE-HANDS-OFF' > gams54.6.1_linux_x64_64_sfx/gamslice.txt
+cat > gams54.6.1_linux_x64_64_sfx/gams <<'EGAMS'
+#!/bin/sh
+banner="${STUB_GAMS_BANNER:-*** Error: no license file found}"
+me=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+for s in "$me/gamslice.txt" "$HOME/Library/Application Support/GAMS/gamslice.txt"; do
+  if [ -f "$s" ] && grep -q TEST-LICENCE-CONTENT "$s" 2>/dev/null; then
+    banner="GAMS 54.6.1 - Licensee: Potsdam-Institut fuer Klimafolgenforschung - the installed license is valid."
+    break
+  elif [ -f "$s" ] && grep -q DEMO-SLICE-HANDS-OFF "$s" 2>/dev/null; then
+    banner='Licensee: GAMS Demo, for EULA and demo limitations see G240131/0001CB-GEN
+The installed license is valid.'
+    break
+  fi
+done
+printf '%s\n' "$banner"
+EGAMS
 chmod 755 gams54.6.1_linux_x64_64_sfx/gams
 exit 0
 EOS
@@ -590,10 +690,9 @@ EOS
   git init --bare -q -b main "$STATE/origin.git"
   git clone -q "file://$STATE/origin.git" "$ENV/seed" 2>/dev/null
   echo "readme" > "$ENV/seed/README.md"
-  # Fixture: magpie master gitignores /renv.lock; the seed ships one so
-  # the restore branches and the renv checks run in E2E.
-  printf '%s\n' '{"R": {"Version": "4.4.0"}}' > "$ENV/seed/renv.lock"
-  git -C "$ENV/seed" add README.md renv.lock >/dev/null
+  # No root renv.lock in the seed: a root lock never exists in course
+  # clones, so the clone E2E must prove the flow without one.
+  git -C "$ENV/seed" add README.md >/dev/null
   git -C "$ENV/seed" -c user.email=t@t -c user.name=t commit -q -m init >/dev/null
   git -C "$ENV/seed" push -q origin main >/dev/null 2>&1
 
@@ -669,7 +768,7 @@ base_env() {
   # the host's /etc/os-release. Scenario args may re-export
   # MAGPIE_OS_RELEASE (they are applied after this default).
   export MAGPIE_OS_RELEASE="$STATE/os-release"
-  unset MAGPIE_SOURCED MAGPIE_SELF MAGPIE_PASS MAGPIE_PACK_FORCE
+  unset MAGPIE_SOURCED MAGPIE_SELF MAGPIE_PASS MAGPIE_PASS1_STEP MAGPIE_PACK_FORCE
   unset MAGPIE_CHECK_ONLY STUB_GAMS_BANNER MAGPIE_FULL_RUN
 }
 
@@ -747,7 +846,8 @@ run_fn() {
   RET=$?
 }
 
-# Tools that make the checks green (except renv: no lock = SKIP).
+# Tools that make the checks green (the library probe too: the stub
+# loads unless STUB_RENV_EXIT=1).
 make_tools() {
   cp "$STATE/binlib/gams" "$FAKE_BIN/gams"
   cp "$STATE/binlib/Rscript" "$FAKE_BIN/Rscript"
@@ -759,6 +859,13 @@ make_tools() {
 # nono command on PATH for unit tests that call it directly
 # (E2E gets it via the install step + PATH export).
 put_nono() { cp "$STATE/binlib/nono" "$FAKE_BIN/nono"; }
+
+# The real GAMS demo banner shape (documented wording - no capture of a
+# live demo banner exists): the demo NAMES a licensee and calls itself
+# valid, so matching Licensee / "license is valid" alone can never keep
+# it. Demo/expired wording must outrank both.
+DEMO_BANNER='Licensee: GAMS Demo, for EULA and demo limitations see G240131/0001CB-GEN
+The installed license is valid.'
 
 
 # A finished install (for rerun/clone-guard tests).
@@ -776,6 +883,13 @@ make_installed() {
   chmod 755 "$FAKE_HOME/.opencode/bin/opencode" "$FAKE_HOME/.nono/bin/nono"
   echo '{"model":"hu/llm3"}' > "$FAKE_HOME/.config/opencode/opencode.json"
   echo '{"name":"opencode","version":"9.9.9"}' > "$FAKE_HOME/.config/nono/packages/nolabs-ai/opencode/package.json"
+  # GAMS installed WITH the course gamslice: reruns of the placeholder
+  # script must read a healthy machine (banner shows the course
+  # licensee), like after a filled-script install actually ran.
+  mkdir -p "$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx"
+  cp "$STATE/binlib/gams" "$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx/gams"
+  printf '%s\n' 'TEST-LICENCE-CONTENT' \
+    > "$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx/gamslice.txt"
 }
 
 map_target
@@ -984,13 +1098,63 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_st
 ret_is "pass 2 in a fresh process completes setup" 0
 grep_ok "auto retry heads-up" "$STATE/screen.txt" "retrying automatically"
 grep_ok "run finished fed" "$STATE/feed.log" "run finished"
+# The same step failing in both passes (the real pass-2 shape: the pass-1
+# step name arrives through the environment).
 new_env
-FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; MAGPIE_PASS=2 magpie_step_failed teststep' \
-  run_fn
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_PASS=2 MAGPIE_PASS1_STEP=teststep magpie_step_failed teststep' run_fn
 ret_is "pass 2 failure blocks" 1
 grep_ok "failure verdict after pass 2" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible)"
 grep_ok "failed step named" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): teststep"
 grep_ok "code name in verdict" "$STATE/screen.txt" "code name: T1"
+# "twice, reproducible" needs the SAME step in both passes: pass 1 died
+# at the sandbox gate, pass 2 at something else. The TA still has to see
+# that a retry pass happened, and after which step.
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_PASS=2 MAGPIE_PASS1_STEP=sandbox\ gate magpie_fail "full magpie run"' run_fn
+ret_is "other step in pass 2 blocks" 1
+grep_no "no twice claim for a different step" "$STATE/screen.txt" "twice, reproducible"
+grep_ok "pass 2 names the pass-1 step" "$STATE/screen.txt" \
+  "SETUP FAILED (pass 2, after: sandbox gate): full magpie run"
+grep_ok "feed verdict carries the pass-1 step" "$STATE/feed.log" \
+  "FAILED STEP (pass 2, after: sandbox gate): full magpie run"
+# The same step again: the reproducible claim is earned.
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_PASS=2 MAGPIE_PASS1_STEP=sandbox\ gate magpie_fail "sandbox gate"' run_fn
+ret_is "same step in pass 2 blocks" 1
+grep_ok "twice claim for the same step" "$STATE/screen.txt" \
+  "SETUP FAILED (twice, reproducible): sandbox gate"
+# Pass 1 never claims a repetition, whatever the step.
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+magpie_fail "sandbox gate"' run_fn
+ret_is "pass 1 failure blocks" 1
+grep_ok "pass 1 verdict is plain" "$STATE/screen.txt" "SETUP FAILED: sandbox gate"
+# Pass 2 WITHOUT a recorded pass-1 step (an environment that never got the
+# handover): says pass 2, names no other step, claims no repetition.
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_PASS=2 magpie_fail "sandbox gate"' run_fn
+ret_is "pass 2 without a pass-1 step blocks" 1
+grep_ok "plain pass 2 verdict" "$STATE/screen.txt" "SETUP FAILED (pass 2): sandbox gate"
+grep_no "no after-clause without a recorded step" "$STATE/screen.txt" "pass 2, after:"
+grep_no "no twice claim without a recorded step" "$STATE/screen.txt" "twice, reproducible"
+# The pass-1 step name must reach the re-executed pass 2 (that is what
+# makes the verdict above decide).
+new_env
+make_tools
+cat > "$STATE/pass2env.sh" <<'EOS'
+#!/bin/sh
+echo "PASS=$MAGPIE_PASS PASS1STEP=$MAGPIE_PASS1_STEP" > "$STATE/pass2_env.txt"
+EOS
+chmod 755 "$STATE/pass2env.sh"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_failed "sandbox gate"' \
+  run_fn "MAGPIE_SELF=$STATE/pass2env.sh"
+file_ok "pass 2 re-exec recorded" "$STATE/pass2_env.txt"
+grep_ok "pass 2 knows its pass-1 step" "$STATE/pass2_env.txt" \
+  "PASS=2 PASS1STEP=sandbox gate"
 
 # ============================================================
 sec "sudo loop + keep-alive"
@@ -1003,7 +1167,8 @@ grep_no "no failure verdict" "$STATE/screen.txt" "SETUP FAILED"
 new_env
 FN_BODY='MAGPIE_HANDLE=T1; magpie_sudo_warm' run_fn STUB_SUDO_N_OK=0 STUB_SUDO_V_FAILS=99
 ret_is "sudo cap blocks" 1
-grep_ok "failure verdict at cap" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible)"
+grep_ok "failure verdict at cap" "$STATE/screen.txt" \
+  "SETUP FAILED: password was never accepted"
 cnt_is "6 rounds" "Password not accepted" "$STATE/screen.txt" 6
 new_env
 FN_BODY='MAGPIE_HANDLE=T1; magpie_sudo_warm' run_fn STUB_SUDO_N_OK=1
@@ -1419,7 +1584,7 @@ T="$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx/gamslice.txt"
 printf 'DEMO-SLICE-HANDS-OFF\n' > "$T"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' run_fn
 ret_is "placeholder blocks the write" 1
-grep_ok "demo slice untouched by placeholder run" "$T" "DEMO-SLICE-HANDS-OFF"
+grep_ok "demo gamslice untouched by placeholder run" "$T" "DEMO-SLICE-HANDS-OFF"
 nofile_ok "no bak from a placeholder run" "$T.bak"
 # Placeholder line deleted without a paste: blank heredoc = not
 # embedded (must not write an empty licence file).
@@ -1445,14 +1610,14 @@ grep_ok "licence content" "$T" "TEST-LICENCE-CONTENT"
 mode_is "licence mode 600" "$T" 600
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' run_fn
 grep_ok "rerun: already in place" "$FAKE_HOME/setup-magpie/setup-log.txt" "already in place"
-# The 2026-11 trap: the GAMS installer always ships a demo slice at
+# The 2026-11 trap: the GAMS installer always ships a demo gamslice at
 # this path, so existence must never skip the course licence - a
 # DIFFERENT file is replaced and survives as .bak.
 echo "OLD-DEMO-SLICE" > "$T"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' run_fn
-ret_is "demo slice replaced by course licence" 0
+ret_is "demo gamslice replaced by course licence" 0
 grep_ok "course licence in place" "$T" "TEST-LICENCE-CONTENT"
-grep_ok "old slice kept as bak" "$T.bak" "OLD-DEMO-SLICE"
+grep_ok "old gamslice kept as bak" "$T.bak" "OLD-DEMO-SLICE"
 grep_ok "replacement logged" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "replacing non-course gamslice.txt"
 # The spec promises the replacement as a FEED line too: the TA reads
@@ -1467,6 +1632,256 @@ T="$FAKE_HOME/Library/Application Support/GAMS/gamslice.txt"
 grep_ok "darwin licence content" "$T" "TEST-LICENCE-CONTENT"
 mode_is "darwin licence mode 600" "$T" 600
 mode_is "darwin licence dir mode 700" "$(dirname "$T")" 700
+# The resolved binary's banner drives the write (I10/I12 hardening).
+# Demo banner + embedded gamslice: the gamslice lands in the resolved
+# gams folder and the second probe (same binary) shows the course one.
+new_env
+SRC="$ENV/magpie_lic.sh"
+make_tools
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' \
+  run_fn STUB_GAMS_BANNER="$DEMO_BANNER"
+ret_is "demo banner: course gamslice written" 0
+grep_ok "gamslice in the resolved gams dir" "$FAKE_BIN/gamslice.txt" \
+  "TEST-LICENCE-CONTENT"
+mode_is "fresh gamslice mode 600" "$FAKE_BIN/gamslice.txt" 600
+nofile_ok "no .bak for a fresh write" "$FAKE_BIN/gamslice.txt.bak"
+grep_no "no replacement fed for a fresh write" "$STATE/feed.log" \
+  "replaced non-course gamslice.txt"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
+grep_ok "re-probe PASSes as course licence" "$STATE/screen.txt" \
+  "PASS gams (course licence found)"
+new_env
+SRC="$ENV/magpie_lic.sh"
+make_tools
+printf 'OLD-DEMO-SLICE\n' > "$FAKE_BIN/gamslice.txt"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' \
+  run_fn STUB_GAMS_BANNER="$DEMO_BANNER"
+ret_is "demo banner with old gamslice: replaced with .bak" 0
+grep_ok "course gamslice in place" "$FAKE_BIN/gamslice.txt" "TEST-LICENCE-CONTENT"
+grep_ok "old gamslice kept as bak" "$FAKE_BIN/gamslice.txt.bak" "OLD-DEMO-SLICE"
+grep_ok "replacement fed" "$STATE/feed.log" "replaced non-course gamslice.txt"
+mode_is "replaced gamslice mode 600" "$FAKE_BIN/gamslice.txt" 600
+# A foreign VALID licence stays untouched: no write, no .bak, and the
+# check ladder PASSes it with the tell-the-TA note (a1).
+new_env
+SRC="$ENV/magpie_lic.sh"
+make_tools
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' \
+  run_fn STUB_GAMS_BANNER="GAMS 54.6.1 - Licensee: ACME Corp - the installed license is valid."
+ret_is "foreign valid licence kept" 0
+nofile_ok "no write over a foreign valid licence" "$FAKE_BIN/gamslice.txt"
+nofile_ok "no .bak for a kept licence" "$FAKE_BIN/gamslice.txt.bak"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' \
+  run_fn STUB_GAMS_BANNER="GAMS 54.6.1 - Licensee: ACME Corp - the installed license is valid."
+ret_is "a1: foreign valid licence PASSes with note" 0
+grep_ok "a1 PASS note" "$STATE/screen.txt" \
+  "PASS gams (licence not the course licence - tell the TA)"
+# The real demo banner (Licensee + "license is valid" IN the demo
+# wording): the demo/expired wording outranks both, so the course
+# gamslice still goes in and the demo copy survives as .bak.
+new_env
+SRC="$ENV/magpie_lic.sh"
+make_tools
+printf 'OLD-DEMO-SLICE\n' > "$FAKE_BIN/gamslice.txt"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' \
+  run_fn STUB_GAMS_BANNER="$DEMO_BANNER"
+ret_is "real demo banner replaces the demo licence" 0
+grep_ok "course gamslice over a real demo banner" "$FAKE_BIN/gamslice.txt" \
+  "TEST-LICENCE-CONTENT"
+grep_ok "real demo gamslice kept as bak" "$FAKE_BIN/gamslice.txt.bak" \
+  "OLD-DEMO-SLICE"
+grep_ok "real demo replacement fed" "$STATE/feed.log" \
+  "replaced non-course gamslice.txt"
+# An expired licence (any owner) is not a valid one: replaced too.
+new_env
+SRC="$ENV/magpie_lic.sh"
+make_tools
+printf 'OLD-FOREIGN-SLICE\n' > "$FAKE_BIN/gamslice.txt"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' \
+  run_fn STUB_GAMS_BANNER="GAMS 54.6.1 - Licensee: ACME Corp - the installed license has expired"
+ret_is "expired foreign licence replaced" 0
+grep_ok "course gamslice over an expired licence" "$FAKE_BIN/gamslice.txt" \
+  "TEST-LICENCE-CONTENT"
+grep_ok "expired gamslice kept as bak" "$FAKE_BIN/gamslice.txt.bak" \
+  "OLD-FOREIGN-SLICE"
+grep_ok "expired replacement fed" "$STATE/feed.log" \
+  "replaced non-course gamslice.txt"
+# An EXPIRED course licence is broken too: the licensee name does not
+# save it (same precedence as the check ladder).
+new_env
+SRC="$ENV/magpie_lic.sh"
+make_tools
+printf 'OLD-COURSE-SLICE\n' > "$FAKE_BIN/gamslice.txt"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' \
+  run_fn STUB_GAMS_BANNER="GAMS 54.6.1 - Licensee: Potsdam-Institut fuer Klimafolgenforschung - the installed license has expired"
+ret_is "expired course licence replaced" 0
+grep_ok "fresh course gamslice in place" "$FAKE_BIN/gamslice.txt" \
+  "TEST-LICENCE-CONTENT"
+grep_ok "expired course gamslice kept as bak" "$FAKE_BIN/gamslice.txt.bak" \
+  "OLD-COURSE-SLICE"
+# Unreadable banner (gams printed nothing) + a file that already IS the
+# course gamslice: never rewritten - no .bak, no false replacement post.
+new_env
+SRC="$ENV/magpie_lic.sh"
+make_tools
+cat > "$FAKE_BIN/gams" <<'EOS'
+#!/bin/sh
+exit 0
+EOS
+chmod 755 "$FAKE_BIN/gams"
+printf 'TEST-LICENCE-CONTENT\n' > "$FAKE_BIN/gamslice.txt"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' run_fn
+ret_is "unreadable banner + course file in place: no rewrite" 0
+grep_ok "in place despite an unreadable banner" \
+  "$FAKE_HOME/setup-magpie/setup-log.txt" \
+  "course gamslice in place but gams banner unreadable"
+nofile_ok "no .bak without a rewrite" "$FAKE_BIN/gamslice.txt.bak"
+grep_no "no false replacement post" "$STATE/feed.log" \
+  "replaced non-course gamslice.txt"
+# "Root-owned" sysdir + symlinked gams: sudo writes beside the
+# RESOLVED target folder (NOT the symlink's own folder); the student
+# owns the result.
+new_env
+SRC="$ENV/magpie_lic.sh"
+mkdir -p "$ENV/opt/gams" "$ENV/lic-tmp"
+REAL=$(readlink -f "$ENV/opt/gams")
+cp "$STATE/binlib/gams" "$ENV/opt/gams/gams"
+printf 'OLD-DEMO-SLICE\n' > "$ENV/opt/gams/gamslice.txt"
+chmod 555 "$ENV/opt/gams"
+ln -sf "$ENV/opt/gams/gams" "$FAKE_BIN/gams"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' \
+  run_fn STUB_SUDO_AS_ROOT=1 TMPDIR="$ENV/lic-tmp" \
+  STUB_GAMS_BANNER="$DEMO_BANNER"
+chmod 700 "$ENV/opt/gams"
+ret_is "sudo path writes the unwritable resolved sysdir" 0
+grep_ok "gamslice beside the resolved target" "$REAL/gamslice.txt" \
+  "TEST-LICENCE-CONTENT"
+grep_ok "old gamslice kept as bak" "$REAL/gamslice.txt.bak" "OLD-DEMO-SLICE"
+nofile_ok "nothing beside the symlink" "$FAKE_BIN/gamslice.txt"
+mode_is "sudo-written gamslice mode 600" "$REAL/gamslice.txt" 600
+if [ "$(stat -c %U "$REAL/gamslice.txt")" = "$(id -un)" ]; then
+  ok "gamslice owned by the student"
+else
+  no "gamslice owned by the student (owner $(stat -c %U "$REAL/gamslice.txt"))"
+fi
+grep_ok "sudo cp made the .bak" "$STATE/sudo.log" "sudo cp"
+grep_ok "sudo tee wrote the gamslice" "$STATE/sudo.log" "sudo tee"
+grep_ok "sudo chown hands it over" "$STATE/sudo.log" "sudo chown"
+# The sudo path has no mv to hand the tmp file over: it must be removed
+# (scenario TMPDIR holds only script temp files, all of them gone).
+ls -A "$ENV/lic-tmp" > "$STATE/lic_tmp_left.txt" 2>/dev/null
+cnt_is "sudo path leaves no tmp file" "" "$STATE/lic_tmp_left.txt" 0
+# A written gamslice that gams still rejects (botched fill-in, wrong
+# target): the honest FAIL - never "rerun this file".
+new_env
+SRC="$ENV/magpie_lic.sh"
+make_tools
+cat > "$FAKE_BIN/gams" <<'EOS'
+#!/bin/sh
+printf '%s\n' 'Licensee: GAMS Demo, for EULA and demo limitations see G240131/0001CB-GEN' \
+  'The installed license is valid.'
+EOS
+chmod 755 "$FAKE_BIN/gams"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' run_fn
+ret_is "rejected course gamslice FAILs" 1
+grep_ok "rejected-by-gams message" "$STATE/screen.txt" \
+  "course gamslice rejected by gams - tell the TA"
+grep_no "rejected never claims a rerun" "$STATE/screen.txt" "rerun this file"
+grep_ok "rejected fed" "$STATE/feed.log" "course gamslice rejected by gams"
+# Same for a teacher licence that is already EXPIRED: naming the course
+# licensee must not let it through the post-write verify.
+new_env
+SRC="$ENV/magpie_lic.sh"
+make_tools
+cat > "$FAKE_BIN/gams" <<'EOS'
+#!/bin/sh
+printf '%s\n' 'Licensee: Potsdam-Institut fuer Klimafolgenforschung - the installed license has expired'
+EOS
+chmod 755 "$FAKE_BIN/gams"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' run_fn
+ret_is "expired course licence FAILs the verify probe" 1
+grep_ok "expired verify message" "$STATE/screen.txt" \
+  "course gamslice rejected by gams - tell the TA"
+grep_ok "expired verify fed" "$STATE/feed.log" "course gamslice rejected by gams"
+# macOS (I12): a framework gamslice is what GAMS reads first, so the
+# framework folder owns the licence - even via sudo there.
+new_env
+SRC="$ENV/magpie_lic.sh"
+FW="$ENV/Frameworks/GAMS.framework/Resources"
+mkdir -p "$FW"
+cp "$STATE/binlib/gams" "$FW/gams"
+printf 'OLD-FW-SLICE\n' > "$FW/gamslice.txt"
+chmod 555 "$FW"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_HANDLE=T1; magpie_install_licence' \
+  run_fn MAGPIE_GAMS_FRAMEWORK_DIR="$FW" STUB_SUDO_AS_ROOT=1 \
+  STUB_GAMS_BANNER="$DEMO_BANNER"
+chmod 700 "$FW"
+ret_is "darwin: framework gamslice replaced via sudo" 0
+grep_ok "course gamslice in the framework folder" "$FW/gamslice.txt" \
+  "TEST-LICENCE-CONTENT"
+grep_ok "framework gamslice kept as bak" "$FW/gamslice.txt.bak" "OLD-FW-SLICE"
+mode_is "framework gamslice mode 600" "$FW/gamslice.txt" 600
+grep_ok "sudo tee wrote the framework gamslice" "$STATE/sudo.log" "sudo tee"
+nofile_ok "user data dir untouched" \
+  "$FAKE_HOME/Library/Application Support/GAMS/gamslice.txt"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_HANDLE=T1; magpie_run_checks' \
+  run_fn MAGPIE_GAMS_FRAMEWORK_DIR="$FW"
+grep_ok "darwin re-probe PASSes as course licence" "$STATE/screen.txt" \
+  "PASS gams (course licence found)"
+new_env
+SRC="$ENV/magpie_lic.sh"
+FW="$ENV/Frameworks/GAMS.framework/Resources"
+mkdir -p "$FW"
+cp "$STATE/binlib/gams" "$FW/gams"
+printf 'FOREIGN-OWNED-SLICE\n' > "$FW/gamslice.txt"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_HANDLE=T1; magpie_install_licence' \
+  run_fn MAGPIE_GAMS_FRAMEWORK_DIR="$FW" \
+  STUB_GAMS_BANNER="GAMS 54.6.1 - Licensee: ACME Corp - the installed license is valid."
+ret_is "darwin: foreign framework gamslice kept" 0
+grep_ok "framework gamslice untouched" "$FW/gamslice.txt" "FOREIGN-OWNED-SLICE"
+nofile_ok "no .bak for a kept gamslice" "$FW/gamslice.txt.bak"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_HANDLE=T1; magpie_run_checks' \
+  run_fn MAGPIE_GAMS_FRAMEWORK_DIR="$FW" \
+  STUB_GAMS_BANNER="GAMS 54.6.1 - Licensee: ACME Corp - the installed license is valid."
+grep_ok "darwin a1 PASS note" "$STATE/screen.txt" \
+  "PASS gams (licence not the course licence - tell the TA)"
+# No framework gamslice: the user data dir stays the target (unchanged).
+new_env
+SRC="$ENV/magpie_lic.sh"
+FW="$ENV/Frameworks/GAMS.framework/Resources"
+mkdir -p "$FW"
+cp "$STATE/binlib/gams" "$FW/gams"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_HANDLE=T1; magpie_install_licence' \
+  run_fn MAGPIE_GAMS_FRAMEWORK_DIR="$FW" \
+  STUB_GAMS_BANNER="*** Error: no license file found"
+ret_is "darwin: no framework gamslice -> user data dir" 0
+grep_ok "user data gamslice written" \
+  "$FAKE_HOME/Library/Application Support/GAMS/gamslice.txt" \
+  "TEST-LICENCE-CONTENT"
+nofile_ok "no gamslice written into the framework" "$FW/gamslice.txt"
+# No scratch dir for the licence probe either: the honest warning,
+# gams never runs where the script stands, and nothing is written
+# without a banner (the check ladder reports the real problem later).
+# Only the probe's `mktemp -d` fails - the feed body file still works.
+new_env
+SRC="$ENV/magpie_lic.sh"
+make_tools
+cat > "$FAKE_BIN/mktemp" <<EOS
+#!/bin/sh
+case " \$* " in
+  *" -d "*) exit 1 ;;
+esac
+exec "$MINBIN/mktemp" "\$@"
+EOS
+chmod 755 "$FAKE_BIN/mktemp"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_install_licence' \
+  run_fn STUB_GAMS_BANNER="$DEMO_BANNER"
+ret_is "licence step without a scratch dir returns honest" 1
+grep_ok "licence temp folder warning on screen" "$STATE/screen.txt" \
+  "licence probe needs a temp folder"
+grep_ok "licence temp folder warning fed" "$STATE/feed.log" \
+  "licence probe needs a temp folder"
+nofile_ok "no blind write without a probe" "$FAKE_BIN/gamslice.txt"
 
 # ============================================================
 sec "checks table (gams banner + tools)"
@@ -1512,25 +1927,22 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' \
   run_fn STUB_GAMS_BANNER="*** Error: no license file found"
 ret_is "unlicensed banner FAIL" 1
 grep_ok "licence missing line" "$STATE/screen.txt" "FAIL gams found but its licence file is missing"
+# A truly empty banner (gams prints nothing) is unparseable too.
+new_env
+make_tools
+cat > "$FAKE_BIN/gams" <<'EOS'
+#!/bin/sh
+EOS
+chmod 755 "$FAKE_BIN/gams"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
+ret_is "empty banner FAILs" 1
+grep_ok "empty banner missing line" "$STATE/screen.txt" \
+  "FAIL gams found but its licence file is missing"
 new_env
 make_tools
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn STUB_R_OLD=1
 ret_is "old R FAILs" 1
 grep_ok "R version line" "$STATE/screen.txt" "FAIL R older than 4.3"
-new_env
-make_tools
-mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
-touch "$FAKE_HOME/magpie/renv.lock"
-FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn
-ret_is "renv.lock green library PASS" 0
-grep_ok "renv PASS" "$STATE/screen.txt" "PASS renv R library"
-new_env
-make_tools
-mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
-touch "$FAKE_HOME/magpie/renv.lock"
-FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' run_fn STUB_RENV_EXIT=1
-ret_is "renv.lock broken library FAIL" 1
-grep_ok "renv FAIL" "$STATE/screen.txt" "FAIL renv R library incomplete"
 # Licence name check (licence embedded): the banner must show the
 # course licensee; a foreign valid licence or the demo fallback FAIL.
 new_env
@@ -1545,14 +1957,14 @@ make_tools
 SRC="$ENV/magpie_lic.sh"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' \
   run_fn STUB_GAMS_BANNER="GAMS 54.6.1 - The installed license is valid."
-ret_is "foreign valid licence FAILs name check" 1
-grep_ok "not-the-course-licence line" "$STATE/screen.txt" \
-  "FAIL gams licence is not the course licence"
+ret_is "a1: foreign valid licence PASSes with note" 0
+grep_ok "a1 PASS note" "$STATE/screen.txt" \
+  "PASS gams (licence not the course licence - tell the TA)"
 new_env
 make_tools
 SRC="$ENV/magpie_lic.sh"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' \
-  run_fn STUB_GAMS_BANNER="GAMS/Demo GAMS Development Corp - demo license"
+  run_fn STUB_GAMS_BANNER="$DEMO_BANNER"
 ret_is "demo banner FAILs (embedded)" 1
 grep_ok "demo licence FAIL line" "$STATE/screen.txt" \
   "FAIL gams runs only with the free demo licence"
@@ -1569,14 +1981,14 @@ grep_ok "named PASS despite demo word" "$STATE/screen.txt" \
 new_env
 make_tools
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' \
-  run_fn STUB_GAMS_BANNER="GAMS/Demo GAMS Development Corp - demo license"
+  run_fn STUB_GAMS_BANNER="$DEMO_BANNER"
 ret_is "demo banner FAILs (placeholder licence too)" 1
 grep_ok "demo FAIL line (placeholder)" "$STATE/screen.txt" \
   "FAIL gams runs only with the free demo licence"
-# Without an embedded slice, naming the licensee is NOT enough: a demo
-# slice registered with the institute name (banner shows both) must
-# never pose as the course licence. With an embedded slice the name
-# outranks the demo word (scenario above) - without one it must not.
+# Without an embedded gamslice, naming the licensee is NOT enough: a
+# demo gamslice registered with the institute name (banner shows both)
+# must never pose as the course licence. With an embedded gamslice the
+# name outranks the demo word (scenario above) - without one it must not.
 new_env
 make_tools
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_run_checks' \
@@ -1743,7 +2155,8 @@ nofile_ok "no tex below the 0.46 floor" "$FAKE_HOME/.TinyTeX"
 # failure verdict text is the one every other step uses.
 new_env
 cp "$STATE/binlib/Rscript" "$FAKE_BIN/Rscript"
-FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; MAGPIE_PASS=2 magpie_step_tinytex' \
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_PASS=2 MAGPIE_PASS1_STEP="TinyTeX install" magpie_step_tinytex' \
   run_fn STUB_TINYTEX_VERSION=0.36
 ret_is "gate failure fails the step at the cap" 1
 grep_ok "step failure verdict" "$STATE/screen.txt" \
@@ -1771,7 +2184,8 @@ grep_ok "pack pinned" "$STATE/nono.log" "nono pin nolabs-ai/opencode"
 # post-pull version check must catch it and fail the step at the cap.
 new_env
 put_nono
-FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; MAGPIE_PASS=2 magpie_pull_nono_profile' \
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_PASS=2 MAGPIE_PASS1_STEP="nono profile pull" magpie_pull_nono_profile' \
   run_fn STUB_NONO_PULL_WRONG_VER=8.8.8
 ret_is "wrong pack version fails" 1
 grep_ok "wrong version logged" "$FAKE_HOME/setup-magpie/setup-log.txt" \
@@ -1958,6 +2372,109 @@ grep_ok "gams framework entry is literal" "$PJSON" "/Library/Frameworks/GAMS.fra
 grep_no "no gfortran entry without folder" "$PJSON" "gfortran"
 grep_no "no tinytex entry without folders" "$PJSON" 'TinyTeX"'
 grep_no "no licence entry without folder" "$PJSON" "Application Support/GAMS"
+# The framework entry FOLLOWS MAGPIE_GAMS_FRAMEWORK_DIR (it used to be a
+# second, hard-coded copy of the default path).
+new_env
+put_nono
+FWROOT="$ENV/Fw/GAMS.framework"
+mkdir -p "$FWROOT/Resources"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1
+MAGPIE_GAMS_FRAMEWORK_DIR="$ENV/Fw/GAMS.framework/Resources"
+magpie_step_magpie_profile' run_fn
+ret_is "darwin profile with an overridden framework dir" 0
+PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+grep_ok "framework root follows the override" "$PJSON" "\"$FWROOT\""
+grep_no "no hard-coded framework root left" "$PJSON" "/Library/Frameworks/GAMS.framework"
+# A gams binary sitting directly IN that framework root (not under
+# Resources): the derived root entry and the resolved-sysdir entry are
+# the same folder - it may be granted only once.
+new_env
+put_nono
+FWROOT="$ENV/Fw2/GAMS.framework"
+mkdir -p "$FWROOT/Resources"
+cp "$STATE/binlib/gams" "$FWROOT/gams"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1
+MAGPIE_GAMS_FRAMEWORK_DIR="$ENV/Fw2/GAMS.framework/Resources"
+PATH="$ENV/Fw2/GAMS.framework:$PATH"
+magpie_step_magpie_profile' run_fn
+ret_is "darwin profile with gams in the framework root" 0
+PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+cnt_is "framework root granted once" "\"$FWROOT\"," "$PJSON" 1
+# A GAMS whose PATH entry is a SYMLINK (macOS layouts do this too): the
+# real binary's folder is what needs granting and what the run PATH
+# carries. Relative and absolute link, each to its OWN real folder - the
+# answers must differ, or the second grep could ride on the first line.
+new_env
+put_nono
+mkdir -p "$ENV/optreal/gams" "$ENV/optreal2/gams" "$ENV/linkbin" "$ENV/linkbin2"
+cp "$STATE/binlib/gams" "$ENV/optreal/gams/gams"
+cp "$STATE/binlib/gams" "$ENV/optreal2/gams/gams"
+ln -sf ../optreal/gams/gams "$ENV/linkbin/gams"
+ln -sf "$ENV/optreal2/gams/gams" "$ENV/linkbin2/gams"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_HANDLE=T1; PATH="$ENV/linkbin:$PATH"
+magpie_gams_sysdir' run_fn
+grep_ok "relative link resolves to the real folder" \
+  "$FAKE_HOME/setup-magpie/setup-log.txt" "$ENV/optreal/gams"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_HANDLE=T1; PATH="$ENV/linkbin2:$PATH"
+magpie_gams_sysdir' run_fn
+grep_ok "absolute link resolves to the real folder" \
+  "$FAKE_HOME/setup-magpie/setup-log.txt" "$ENV/optreal2/gams"
+new_env
+put_nono
+make_tools
+mkdir -p "$ENV/optreal/gams" "$ENV/linkbin"
+cp "$STATE/binlib/gams" "$ENV/optreal/gams/gams"
+ln -sf ../optreal/gams/gams "$ENV/linkbin/gams"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1
+PATH="$ENV/linkbin:$PATH"
+mkdir -p "$HOME/magpie" "$HOME/setup-magpie"
+magpie_step_magpie_profile; magpie_step_full_run' run_fn
+ret_is "symlinked gams: profile + full run" 0
+PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+grep_ok "symlinked gams: real folder granted" "$PJSON" "\"$ENV/optreal/gams\""
+grep_no "symlinked gams: link folder not granted" "$PJSON" "\"$ENV/linkbin\""
+grep_ok "symlinked gams: run PATH uses the real folder" "$STATE/nono.log" \
+  "PATH=$ENV/optreal/gams"
+# GAMS installed under $HOME on macOS: the folder is granted like the
+# TinyTeX tree under ~ - only $HOME itself never is.
+new_env
+put_nono
+mkdir -p "$FAKE_HOME/Applications/GAMS54"
+cp "$STATE/binlib/gams" "$FAKE_HOME/Applications/GAMS54/gams"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1
+PATH="$HOME/Applications/GAMS54:$PATH"
+magpie_step_magpie_profile' run_fn
+ret_is "darwin profile with GAMS under home" 0
+PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+grep_ok "home GAMS folder granted" "$PJSON" "\"$FAKE_HOME/Applications/GAMS54\""
+if grep -qE "^ *\"$FAKE_HOME\",$" "$PJSON"; then
+  no "HOME itself never granted [got: $FAKE_HOME as an entry]"
+else
+  ok "HOME itself never granted"
+fi
+# Same machine, licence dir = GAMS data dir: one entry, not two.
+new_env
+put_nono
+mkdir -p "$FAKE_HOME/Library/Application Support/GAMS"
+cp "$STATE/binlib/gams" "$FAKE_HOME/Library/Application Support/GAMS/gams"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1
+PATH="$HOME/Library/Application Support/GAMS:$PATH"
+magpie_step_magpie_profile' run_fn
+ret_is "darwin profile with GAMS in the data dir" 0
+PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+cnt_is "GAMS data dir listed once" "\"$FAKE_HOME/Library/Application Support/GAMS\"," \
+  "$PJSON" 1
+# A gams binary sitting DIRECTLY in $HOME (PATH holds ~ itself): the
+# resolved sysdir IS $HOME - never grantable, subtree rule or not.
+new_env
+put_nono
+cp "$STATE/binlib/gams" "$FAKE_HOME/gams"
+FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1
+PATH="$HOME:$PATH"
+magpie_step_magpie_profile' run_fn
+ret_is "darwin profile with gams directly in HOME" 0
+PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+grep_no "HOME itself not granted (gams in HOME)" "$PJSON" "\"$FAKE_HOME\","
 new_env
 mkdir -p "$FAKE_HOME/.config/nono/profiles"
 echo "changed by student" > "$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
@@ -1984,7 +2501,7 @@ OFP
 put_nono
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_magpie_profile' run_fn
 ret_is "stale generated profile regenerated" 0
-grep_ok "regenerated content current" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json" "(setup v11)"
+grep_ok "regenerated content current" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json" "(setup v12)"
 grep_ok "stale copy kept as bak" "$FAKE_HOME/.config/nono/profiles/magpie-profile.json.bak" "/stale/old/path"
 grep_ok "regeneration logged" "$FAKE_HOME/setup-magpie/setup-log.txt" "regenerated"
 # Rerun right after regeneration: content is current now, so the cmp
@@ -2030,6 +2547,31 @@ SRC="$ENV/magpie_lic.sh"
 cp "$STATE/binlib/gams" "$FAKE_BIN/gams"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_licence_dir' run_fn
 grep_ok "licence dir follows PATH-gams" "$FAKE_HOME/setup-magpie/setup-log.txt" "$FAKE_BIN"
+# Symlinked PATH gams: the sandbox reads the REAL folder (readlink -f
+# resolution), and the marker shows the current schema.
+new_env
+put_nono
+mkdir -p "$ENV/opt/gams"
+REAL=$(readlink -f "$ENV/opt/gams")
+cp "$STATE/binlib/gams" "$ENV/opt/gams/gams"
+ln -sf "$ENV/opt/gams/gams" "$FAKE_BIN/gams"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+magpie_step_magpie_profile' run_fn
+ret_is "profile with symlinked PATH-gams builds" 0
+PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+grep_ok "profile reads the resolved sysdir" "$PJSON" "$REAL"
+grep_ok "schema marker current" "$PJSON" "(setup v12)"
+# Linux mirror of the darwin rule: a stray gams DIRECTLY in $HOME
+# must never make the profile readable at $HOME itself.
+new_env
+put_nono
+cp "$STATE/binlib/gams" "$FAKE_HOME/gams"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+PATH="$HOME:$PATH"
+magpie_step_magpie_profile' run_fn
+ret_is "linux profile with gams directly in HOME" 0
+PJSON="$FAKE_HOME/.config/nono/profiles/magpie-profile.json"
+grep_no "HOME itself not granted (linux, gams in HOME)" "$PJSON" "\"$FAKE_HOME\","
 new_env
 make_tools
 put_nono
@@ -2242,7 +2784,7 @@ grep_ok "diagnostic lists the new pkg tree" "$FAKE_HOME/setup-magpie/setup-log.t
 grep_ok "diagnostic lists the legacy tree" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "legacy $FAKE_HOME/legacy-gf/bin: (gfortran-6"
 # Off-PATH pkg target: the dir must land in rc + this run's PATH, or
-# renv restore compiles fail and sandboxed children never see gfortran.
+# renv compiles fail and sandboxed children never see gfortran.
 # No R yet here, so the pkg-target probe decides.
 new_env
 mkdir -p "$FAKE_HOME/opt-gf/bin"
@@ -2328,16 +2870,20 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_gams_body_linux' run_fn
 ret_is "reinstall extract ok" 0
 file_ok "other version folder untouched" "$FAKE_HOME/gams/gams47.6.0_linux_x64_64_sfx/KEEPME"
 file_ok "pinned folder re-extracted" "$FAKE_HOME/gams/gams54.6.1_linux_x64_64_sfx/gams"
-# A root-owned GAMS folder (outside ~/gams): licence write warns, no crash.
+# A root-owned GAMS folder (outside ~/gams): the sudo path is tried;
+# a sudo that cannot write (no knob) ends honest - no crash, no gamslice.
 new_env
 SRC="$ENV/magpie_lic.sh"
 mkdir -p "$ENV/ro-gams"
 cp "$STATE/binlib/gams" "$ENV/ro-gams/gams"
 chmod 555 "$ENV/ro-gams"
-FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; PATH="$ENV/ro-gams:$PATH"; magpie_install_licence' run_fn
-ret_is "non-writable gams dir warns" 1
-grep_ok "not writable message" "$STATE/screen.txt" "is not writable"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; PATH="$ENV/ro-gams:$PATH"; magpie_install_licence' \
+  run_fn STUB_GAMS_BANNER="$DEMO_BANNER"
+ret_is "unwritable gams dir: failed sudo write FAILs" 1
+grep_ok "sudo attempt on screen" "$STATE/screen.txt" "is not writable even with sudo"
 grep_ok "not writable fed" "$STATE/feed.log" "licence dir not writable"
+grep_ok "sudo tee attempted" "$STATE/sudo.log" "sudo tee"
+nofile_ok "no gamslice written into the unwritable dir" "$ENV/ro-gams/gamslice.txt"
 chmod 755 "$ENV/ro-gams"
 
 # ============================================================
@@ -2502,58 +3048,6 @@ FN_BODY='mkdir -p "$HOME/magpie"; magpie_clone_body && magpie_clone_body' run_fn
 ret_is "clone body idempotent twice" 0
 
 # ============================================================
-sec "renv restore step"
-# ============================================================
-# No renv.lock: skip quietly, no R calls.
-new_env
-make_tools
-mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
-FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_renv_restore' run_fn
-ret_is "no renv.lock skips quietly" 0
-grep_no "no restore attempt" "$STATE/rscript.log" "renv"
-grep_no "no heads-up when skipped" "$STATE/screen.txt" "installing"
-# Library already loads: skip, restore never called.
-new_env
-make_tools
-mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
-touch "$FAKE_HOME/magpie/renv.lock"
-FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_renv_restore' run_fn
-ret_is "populated library skips restore" 0
-grep_no "no restore call" "$STATE/rscript.log" "renv::restore"
-grep_no "no heads-up when skipped" "$STATE/screen.txt" "installing"
-# Load test fails: restore runs, verify passes, feed + OK line.
-new_env
-make_tools
-mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
-touch "$FAKE_HOME/magpie/renv.lock"
-FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_renv_restore' \
-  run_fn STUB_RENV_EXIT=1 STUB_RENV_PKG_EXIT=1
-ret_is "broken library gets restored" 0
-grep_ok "activate.R bootstrapped" "$STATE/rscript.log" "renv/activate.R"
-grep_ok "restore called unprompted" "$STATE/rscript.log" "renv::restore(prompt = FALSE, restart = FALSE)"
-grep_ok "restore heads-up" "$STATE/screen.txt" "installing R packages, about 5-15 min"
-grep_ok "OK line" "$STATE/screen.txt" "OK: R packages installed"
-grep_ok "restore fed" "$STATE/feed.log" "setup: renv restored"
-new_env
-make_tools
-mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
-touch "$FAKE_HOME/magpie/renv.lock"
-FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_renv_restore' \
-  run_fn STUB_RENV_EXIT=1
-grep_no "no bootstrap when renv present" "$STATE/rscript.log" "renv/activate.R"
-grep_ok "restore still called" "$STATE/rscript.log" "renv::restore"
-new_env
-make_tools
-mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
-touch "$FAKE_HOME/magpie/renv.lock"
-FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
-MAGPIE_PASS=2 magpie_step_renv_restore' \
-  run_fn STUB_RENV_EXIT=1 STUB_RENV_RESTORE_EXIT=1
-ret_is "persistent restore failure blocks" 1
-grep_ok "renv step named" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): renv restore"
-cnt_is "3 restore attempts" "renv::restore" "$STATE/rscript.log" 3
-
-# ============================================================
 sec "full run step"
 # ============================================================
 # Success path: sandbox command shape + marker + artifacts + feed.
@@ -2571,6 +3065,9 @@ grep_ok "bash -c payload" "$STATE/nono.log" "bash -c"
 grep_ok "default run script selected" "$STATE/nono.log" "runscripts=default.R submit=direct"
 grep_ok "full run sandboxed with allow-cwd" "$STATE/nono.log" "--allow-cwd"
 grep_ok "R script invoked" "$STATE/rscript.log" "start.R runscripts=default.R submit=direct"
+# One command line, one optional prefix: caffeinate is the darwin half
+# of that prefix only - a linux run must never wrap the call.
+grep_no "no caffeinate wrapper on linux" "$STATE/caffeinate.log" "caffeinate"
 grep_ok "keep-alive dead at full run" "$STATE/keepalive_at_gate.txt" "dead"
 grep_ok "hour heads-up" "$STATE/screen.txt" "full magpie run, about an hour"
 grep_ok "OK line" "$STATE/screen.txt" "OK: full magpie run finished"
@@ -2582,6 +3079,32 @@ grep_ok "marker names run folder" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok" \
 RUNDIR=$(sed -n 1p "$FAKE_HOME/setup-magpie/.setup-fullrun-ok")
 file_ok "fulldata.gdx present" "$FAKE_HOME/magpie/$RUNDIR/fulldata.gdx"
 file_ok "report.rds present" "$FAKE_HOME/magpie/$RUNDIR/report.rds"
+# Readiness gate FIRST: the probe's sandboxed R call precedes the run
+# (nono.log + rscript.log order), and the hydrate announce precedes
+# the hour heads-up (screen order) - never a silent long wait.
+grep_ok "probe announce printed" "$STATE/screen.txt" \
+  "installing R packages, about 10-30 min, just wait"
+PN=$(grep -n "library(lucode2)" "$STATE/nono.log" | head -n 1 | cut -d: -f1)
+RN=$(grep -n "runscripts=default.R" "$STATE/nono.log" | head -n 1 | cut -d: -f1)
+if [ -n "$PN" ] && [ -n "$RN" ] && [ "$PN" -lt "$RN" ]; then
+  ok "probe sandboxed before the full run"
+else
+  no "probe sandboxed before the full run"
+fi
+PR=$(grep -n "library(gms)" "$STATE/rscript.log" | head -n 1 | cut -d: -f1)
+SR=$(grep -n "start.R runscripts" "$STATE/rscript.log" | head -n 1 | cut -d: -f1)
+if [ -n "$PR" ] && [ -n "$SR" ] && [ "$PR" -lt "$SR" ]; then
+  ok "probe loaded the libraries before start.R ran"
+else
+  no "probe loaded the libraries before start.R ran"
+fi
+AN=$(grep -n "installing R packages, about 10-30 min" "$STATE/screen.txt" | head -n 1 | cut -d: -f1)
+HN=$(grep -n "full magpie run, about an hour" "$STATE/screen.txt" | head -n 1 | cut -d: -f1)
+if [ -n "$AN" ] && [ -n "$HN" ] && [ "$AN" -lt "$HN" ]; then
+  ok "announce before the hour heads-up and the run start report"
+else
+  no "announce before the hour heads-up and the run start report"
+fi
 # Both prompts start.R's top block can ask ("Update now?" + fixDeps)
 # read the piped line, treat an empty one as YES - and WANT yes: a
 # skipped bound fix kills the run mid-way, and an update that stops the
@@ -2626,15 +3149,18 @@ grep_no "no R run" "$STATE/rscript.log" "start.R"
 grep_ok "skip logged" "$FAKE_HOME/setup-magpie/setup-log.txt" "full run: marker verified"
 grep_no "no heads-up on skip" "$STATE/screen.txt" "full magpie run, about an hour"
 # Non-zero sandbox exit: straight to the failure verdict, no marker.
+# A pass-2 arrival here can only be some OTHER step's retry (the run step
+# itself never requests one), so the recorded pass-1 step is realistic.
 new_env
 make_tools
 put_nono
 mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
-MAGPIE_PASS=2 magpie_step_full_run' run_fn STUB_FULLRUN_FAIL=1
+MAGPIE_PASS=2 MAGPIE_PASS1_STEP="sandbox gate" magpie_step_full_run' run_fn STUB_FULLRUN_FAIL=1
 ret_is "non-zero sandbox exit fails" 1
-grep_ok "failure verdict" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible)"
-grep_ok "step named" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
+grep_ok "failure verdict names the pass-1 step" "$STATE/screen.txt" \
+  "SETUP FAILED (pass 2, after: sandbox gate)"
+grep_ok "step named" "$STATE/screen.txt" "SETUP FAILED (pass 2, after: sandbox gate): full magpie run (check the run folder under ~/magpie)"
 grep_ok "FAIL fed" "$STATE/feed.log" "setup: FAIL full magpie run"
 cnt_is "no retry without the restart signature" "runscripts=default.R" "$STATE/nono.log" 1
 nofile_ok "no marker on failure" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
@@ -2660,20 +3186,141 @@ make_tools
 put_nono
 mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
-MAGPIE_PASS=2 magpie_step_full_run' run_fn STUB_FULLRUN_RESTART=2
+MAGPIE_PASS=2 MAGPIE_PASS1_STEP="sandbox gate" magpie_step_full_run' run_fn STUB_FULLRUN_RESTART=2
 ret_is "restart retry is capped at one" 1
 cnt_is "capped at two sessions" "start.R runscripts=default.R submit=direct" "$STATE/rscript.log" 2
-grep_ok "capped failure verdict" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
+grep_ok "capped failure verdict" "$STATE/screen.txt" "SETUP FAILED (pass 2, after: sandbox gate): full magpie run (check the run folder under ~/magpie)"
 nofile_ok "no marker after capped retries" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
+# I11 gate: a partial library (piamenv there, gms NOT) never
+# self-heals, and start.R dies 7 s after the hour was announced.
+# The probe catches it BEFORE the run; one rmarkdown-first hydrate
+# repair mirrors magpie's .Rprofile bootstrap (a bare hydrate misses
+# Rmd-file deps).
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' \
+  run_fn STUB_PROBE_FAILS=1
+ret_is "probe fail + repair ok: run proceeds" 0
+file_ok "marker written (after repair)" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
+grep_ok "repair logged" "$FAKE_HOME/setup-magpie/setup-log.txt" \
+  "R library probe failed - one hydrate repair"
+grep_ok "repair runs both hydrates, rmarkdown first" "$STATE/rscript.log" \
+  'renv::hydrate("rmarkdown".*renv::hydrate(prompt = FALSE, report = FALSE)'
+grep_ok "finished fed (after repair)" "$STATE/feed.log" "setup: full run finished"
+cnt_is "two probes (initial + re-probe)" "library(gms)" "$STATE/rscript.log" 2
+cnt_is "one repair only" "renv::hydrate" "$STATE/rscript.log" 1
+# Repair failure = the STANDARD retry pass, still before the hour is
+# announced: a transient feed outage gets pass 2 (a re-exec), and no run
+# start ever reaches the feed.
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
+cat > "$STATE/pass2gate.sh" <<'EOS'
+#!/bin/sh
+echo "PASS2 STEP=$MAGPIE_PASS PASS1STEP=$MAGPIE_PASS1_STEP" > "$STATE/pass2_gate.txt"
+EOS
+chmod 755 "$STATE/pass2gate.sh"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' \
+  run_fn "MAGPIE_SELF=$STATE/pass2gate.sh" STUB_PROBE_FAILS=1 STUB_HYDRATE_EXIT=1
+ret_is "gate failure hands over to pass 2" 0
+grep_ok "pass 2 re-exec names the gate step" "$STATE/pass2_gate.txt" \
+  "PASS2 STEP=2 PASS1STEP=course R feed unreachable / R library incomplete - tell the TA"
+grep_ok "retry pass 2 announced on the feed" "$STATE/feed.log" \
+  "setup: retry pass 2 after: course R feed unreachable / R library incomplete"
+grep_ok "auto retry heads-up" "$STATE/screen.txt" "retrying automatically"
+grep_no "no failure verdict in pass 1" "$STATE/screen.txt" "SETUP FAILED"
+grep_no "no full run start upload" "$STATE/feed.log" "setup: full run start"
+grep_no "no hour announce on gate failure" "$STATE/screen.txt" "full magpie run, about an hour"
+nofile_ok "no marker on gate failure" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
+cnt_is "no second repair" "renv::hydrate" "$STATE/rscript.log" 1
+cnt_is "no re-probe after failed repair" "library(gms)" "$STATE/rscript.log" 1
+# Same gate still broken in pass 2: the honest verdict, still before any
+# run start, still one repair.
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_PASS=2 MAGPIE_PASS1_STEP="course R feed unreachable / R library incomplete - tell the TA" magpie_step_full_run' \
+  run_fn STUB_PROBE_FAILS=1 STUB_HYDRATE_EXIT=1
+ret_is "gate failure blocks in pass 2" 1
+grep_ok "gate verdict on screen" "$STATE/screen.txt" \
+  "SETUP FAILED (twice, reproducible): course R feed unreachable / R library incomplete - tell the TA"
+grep_ok "gate verdict fed" "$STATE/feed.log" \
+  "setup: FAIL course R feed unreachable / R library incomplete - tell the TA"
+grep_no "no full run start upload (pass 2)" "$STATE/feed.log" "setup: full run start"
+grep_no "no hour announce on gate failure (pass 2)" "$STATE/screen.txt" \
+  "full magpie run, about an hour"
+nofile_ok "no marker on gate failure (pass 2)" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
+cnt_is "no second repair (pass 2)" "renv::hydrate" "$STATE/rscript.log" 1
+cnt_is "no re-probe after failed repair (pass 2)" "library(gms)" "$STATE/rscript.log" 1
+# Crash frame (loadNamespace + getLine in the child log, message text
+# localized): the gate proved the library loads, so the RUN broke it -
+# probe (+ one repair) before the same single retry.
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_PASS=2 MAGPIE_PASS1_STEP="sandbox gate"
+magpie_step_full_run' run_fn STUB_FULLRUN_CRASH=1
+ret_is "crash frame earns gate + one retry" 0
+file_ok "marker written (after crash retry)" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
+grep_ok "crash signature logged" "$FAKE_HOME/setup-magpie/setup-log.txt" \
+  "loadNamespace/getLine crash"
+grep_ok "crash repair logged" "$FAKE_HOME/setup-magpie/setup-log.txt" \
+  "R library probe failed - one hydrate repair"
+grep_ok "finished fed (after crash retry)" "$STATE/feed.log" "setup: full run finished"
+cnt_is "crash retry is the one and only retry" "start.R runscripts=default.R submit=direct" "$STATE/rscript.log" 2
+cnt_is "probes: run gate + retry gate probe + re-probe" "library(gms)" "$STATE/rscript.log" 3
+cnt_is "crash repair runs once" "renv::hydrate" "$STATE/rscript.log" 1
+# Second crash: the retry stays capped, the verdict is the run one.
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_PASS=2 MAGPIE_PASS1_STEP="sandbox gate"
+magpie_step_full_run' run_fn STUB_FULLRUN_CRASH=2
+ret_is "second crash hits the verdict" 1
+grep_ok "crash verdict named" "$STATE/screen.txt" \
+  "SETUP FAILED (pass 2, after: sandbox gate): full magpie run (check the run folder under ~/magpie)"
+nofile_ok "no marker after second crash" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
+cnt_is "still one retry" "start.R runscripts=default.R submit=direct" "$STATE/rscript.log" 2
+cnt_is "still one repair" "renv::hydrate" "$STATE/rscript.log" 1
+cnt_is "no probe without a retry left" "library(gms)" "$STATE/rscript.log" 3
+# Only ONE frame name in the child log: the signature is keyed on
+# loadNamespace AND getLine - half a frame never earns gate or retry.
+new_env
+make_tools
+put_nono
+mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
+FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
+MAGPIE_PASS=2 MAGPIE_PASS1_STEP="sandbox gate" magpie_step_full_run' \
+  run_fn STUB_FULLRUN_ONEFRAME=1
+ret_is "one frame name alone does not earn the retry" 1
+grep_ok "one-frame verdict is the run verdict" "$STATE/screen.txt" \
+  "SETUP FAILED (pass 2, after: sandbox gate): full magpie run (check the run folder under ~/magpie)"
+grep_no "one-frame log carries no getLine frame" \
+  "$FAKE_HOME/setup-magpie/.setup-fullrun-child.log" "getLine"
+grep_ok "one-frame log has the other frame" \
+  "$FAKE_HOME/setup-magpie/.setup-fullrun-child.log" "loadNamespace"
+cnt_is "one-frame: no retry" "start.R runscripts=default.R submit=direct" "$STATE/rscript.log" 1
+cnt_is "one-frame: no second gate" "library(gms)" "$STATE/rscript.log" 1
+cnt_is "one-frame: no repair" "renv::hydrate" "$STATE/rscript.log" 0
+nofile_ok "no marker on one-frame failure" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 # Exit 0 but swallowed run error (no output artifacts): artifacts fail it.
 new_env
 make_tools
 put_nono
 mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
-MAGPIE_PASS=2 magpie_step_full_run' run_fn STUB_FULLRUN_NO_OUTPUT=1
+MAGPIE_PASS=2 MAGPIE_PASS1_STEP="sandbox gate" magpie_step_full_run' run_fn STUB_FULLRUN_NO_OUTPUT=1
 ret_is "missing postprocessing artifacts fail" 1
-grep_ok "artifact failure named" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
+grep_ok "artifact failure named" "$STATE/screen.txt" "SETUP FAILED (pass 2, after: sandbox gate): full magpie run (check the run folder under ~/magpie)"
 nofile_ok "no marker without artifacts" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 grep_no "no finished feed line" "$STATE/feed.log" "setup: full run finished"
 # An OLD complete run folder is not accepted as the NEW one (no-op run).
@@ -2687,7 +3334,7 @@ touch "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/fulldata.gdx \
   "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.rds \
   "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00"/report.mif
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
-MAGPIE_PASS=2 magpie_step_full_run' run_fn STUB_FULLRUN_NOTHING=1
+MAGPIE_PASS=2 MAGPIE_PASS1_STEP="sandbox gate" magpie_step_full_run' run_fn STUB_FULLRUN_NOTHING=1
 ret_is "old folder is not accepted as new" 1
 nofile_ok "no marker without a new folder" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 # Non-zero inner Rscript exit despite COMPLETE artifacts: the exit code
@@ -2697,9 +3344,9 @@ make_tools
 put_nono
 mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
 FN_BODY='MAGPIE_OS=linux; MAGPIE_RC="$HOME/.bashrc"; MAGPIE_HANDLE=T1
-MAGPIE_PASS=2 magpie_step_full_run' run_fn STUB_FULLRUN_RSCRIPT_EXIT=1
+MAGPIE_PASS=2 MAGPIE_PASS1_STEP="sandbox gate" magpie_step_full_run' run_fn STUB_FULLRUN_RSCRIPT_EXIT=1
 ret_is "non-zero exit with complete artifacts fails" 1
-grep_ok "exit-code failure named" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): full magpie run (check the run folder under ~/magpie)"
+grep_ok "exit-code failure named" "$STATE/screen.txt" "SETUP FAILED (pass 2, after: sandbox gate): full magpie run (check the run folder under ~/magpie)"
 nofile_ok "no marker on non-zero exit" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 grep_ok "exit-code FAIL fed" "$STATE/feed.log" "setup: FAIL full magpie run"
 # An old complete folder plus a NEW complete folder: the marker names
@@ -2737,7 +3384,6 @@ new_env
 make_tools
 put_nono
 mkdir -p "$FAKE_HOME/magpie" "$FAKE_HOME/setup-magpie"
-: > "$FAKE_HOME/magpie/renv.lock"
 FN_BODY='MAGPIE_OS=darwin; MAGPIE_RC="$HOME/.zshrc"; MAGPIE_HANDLE=T1; magpie_step_full_run' \
   run_fn STUB_FULLRUN_CAPTURE=1
 ret_is "darwin full run through caffeinate" 0
@@ -2804,6 +3450,12 @@ sec "R library check line"
 # line: with a marker there is a library to test, before it there is
 # none - and the probe never runs in the gate child, where a Landlock
 # denial would block the setup on a message the student cannot act on.
+# The root renv.lock assumption is gone entirely (a root lock never
+# exists in course clones): no restore step, no lock-keyed check
+# branch - pinned on the source text.
+grep_no "no renv restore step in the script" "$SCRIPT" "magpie_step_renv_restore"
+grep_no "no renv restore body in the script" "$SCRIPT" "magpie_renv_restore_body"
+grep_no "no root lock branch in the script" "$SCRIPT" 'magpie/renv.lock'
 put_complete_run() {
   mkdir -p "$FAKE_HOME/magpie/output/default_2026-01-01_00.00.00" \
     "$FAKE_HOME/setup-magpie"
@@ -2991,7 +3643,9 @@ grep_no "PATH plumbing off screen" "$S" "Added opencode to PATH"
 grep_ok "PATH add logged" "$FAKE_HOME/setup-magpie/setup-log.txt" \
   "added opencode to PATH"
 grep_ok "clone OK line" "$S" "OK: magpie downloaded"
-cnt_is "exactly 7 heads-ups" "installing" "$S" 7
+# 8 = the seven install announces + the readiness probe's hydrate
+# heads-up (the full run's library gate).
+cnt_is "exactly 8 heads-ups" "installing" "$S" 8
 grep_no "apt skipped no heads-up" "$S" "installing git + curl"
 grep_no "no failure verdict" "$S" "SETUP FAILED"
 grep_ok "greet logs the handle on first run" "$FAKE_HOME/setup-magpie/setup-log.txt" \
@@ -3001,14 +3655,14 @@ grep_no "no CONOPT note in the green run" "$S" "CONOPT"
 grep_no "no blind sudo prompt" "$S" "Type it blind"
 grep_ok "all checks PASS" "$S" "PASS gams"
 grep_ok "check block names the code name" "$S" "code name: "
-grep_ok "renv PASS (lock in clone, loads)" "$S" "PASS renv R library"
+grep_no "no renv R library line (root lock gone)" "$S" "renv R library"
+grep_no "no library line before the marker" "$S" "R libraries"
 grep_no "no full run line before the marker" "$S" "SKIP full run"
 grep_ok "full run heads-up" "$S" "full magpie run, about an hour"
 grep_ok "full run OK line" "$S" "OK: full magpie run finished"
 grep_ok "verdict block" "$S" "SETUP COMPLETE - MAgPIE is installed, checked and working"
 grep_ok "verdict names the run folder" "$S" "default run: output/default_"
 grep_no "no ## banner on a green run" "$S" "##"
-grep_no "no manual renv line" "$S" "Rscript -e 'renv::restore()'"
 grep_no "old rerun-setup hint gone" "$S" "rerun this setup file"
 # feed protocol
 grep_ok "feed start" "$STATE/feed.log" "setup: start"
@@ -3106,6 +3760,22 @@ if tail -n 1 "$FAKE_HOME/setup-magpie/setup-log.txt" \
 else
   no "log's last line is the verdict (rerun) [got: $(tail -n 1 "$FAKE_HOME/setup-magpie/setup-log.txt")]"
 fi
+
+# Transient course-feed outage at the readiness gate: pass 1 gets the
+# standard retry pass, pass 2's gate passes, and the hour is announced
+# exactly once over the whole run (no double announcement after a
+# re-entry, and the run still lands).
+new_env
+E2E_SCRIPT="$ENV/magpie_lic.sh"
+run_e2e STUB_PROBE_FAILS=1 STUB_HYDRATE_EXIT=1
+ret_is "gate outage recovers through pass 2" 0
+grep_ok "gate retry fed" "$STATE/feed.log" \
+  "setup: retry pass 2 after: course R feed unreachable / R library incomplete"
+cnt_is "hour announced exactly once" "full magpie run, about an hour" "$STATE/screen.txt" 1
+file_ok "full run marker after the retry pass" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
+cnt_is "start.R ran once" "runscripts=default.R" "$STATE/rscript.log" 1
+grep_ok "verdict after the retry pass" "$STATE/screen.txt" \
+  "SETUP COMPLETE - MAgPIE is installed, checked and working"
 
 # ============================================================
 sec "version hash masks the teacher fill-ins"
@@ -3206,8 +3876,10 @@ nofile_ok "no marker written" "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
 grep_no "no start.R invocation" "$STATE/rscript.log" "runscripts=default.R"
 # Placeholder licence (plain script copy): the warning fires once per
 # run on screen and on the feed (setup_path early check + install_licence
-# share one cached result).
+# share one cached result). On a machine that already carries the course
+# gamslice (installed earlier), the run stays green.
 new_env
+make_installed
 run_e2e MAGPIE_FULL_RUN=0
 ret_is "placeholder run completes" 0
 cnt_is "licence warning once on screen" "not embedded" "$STATE/screen.txt" 1
@@ -3225,7 +3897,7 @@ rm -rf "$FAKE_HOME/magpie/$RUNREL"
 run_e2e
 ret_is "missing artifacts block the rerun" 1
 grep_ok "full run FAIL line" "$STATE/screen.txt" "FAIL full run artifacts missing - rerun this file"
-grep_ok "failure verdict" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible)"
+grep_ok "failure verdict" "$STATE/screen.txt" "SETUP FAILED: checks"
 grep_ok "FAIL fed" "$STATE/feed.log" "setup: FAIL checks"
 # Recovery: delete the marker, the step redoes the run.
 rm -f "$FAKE_HOME/setup-magpie/.setup-fullrun-ok"
@@ -3260,6 +3932,9 @@ ls "$FAKE_HOME/setup-magpie" | grep -q '^setup-dl-' \
   && no "crash leaves no setup-dl-*" || ok "crash leaves no setup-dl-*"
 nofile_ok "no help file written" "$FAKE_HOME/magpie/setup-help.txt"
 new_env
+# lic copy: a fresh install ships the demo gamslice, which only an
+# embedded course gamslice replaces - so the run can reach its verdict.
+E2E_SCRIPT="$ENV/magpie_lic.sh"
 run_e2e STUB_CURL_DL_FAILS=1
 ret_is "transient download failure heals" 0
 grep_no "no failure heads-up" "$STATE/screen.txt" "retrying automatically"
@@ -3343,12 +4018,26 @@ FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1; magpie_fail "cap step"' run_fn
 ret_is "capped fail exits 1" 1
 grep_ok "FAIL header keeps step" "$STATE/feed.log" "vunknown | setup: FAIL cap step"
 grep_ok "code name in the posted detail" "$STATE/feed.log" "code name: T1"
-grep_ok "FAILED STEP line in feed" "$STATE/feed.log" "FAILED STEP (twice, reproducible): cap step"
+grep_ok "FAILED STEP line in feed" "$STATE/feed.log" "FAILED STEP: cap step"
+grep_no "first pass never claims reproducibility" "$STATE/feed.log" \
+  "FAILED STEP (twice, reproducible)"
 grep_ok "log tail start survives cap" "$STATE/feed.log" "TAILKEEP"
 grep_no "deep tail cut by cap" "$STATE/feed.log" "TAILCUT"
-grep_ok "screen names the step" "$STATE/screen.txt" "SETUP FAILED (twice, reproducible): cap step"
+grep_ok "screen names the step" "$STATE/screen.txt" "SETUP FAILED: cap step"
+grep_no "no twice-claim on screen first pass" "$STATE/screen.txt" \
+  "SETUP FAILED (twice, reproducible)"
 grep_ok "screen points at the log" "$STATE/screen.txt" "everything else: "
 nofile_ok "no help file written" "$FAKE_HOME/magpie/setup-help.txt"
+# Pass 2 = the sequence really ran twice (same step in both passes):
+# the claim is honest again.
+new_env
+FN_BODY='MAGPIE_OS=linux; MAGPIE_HANDLE=T1
+MAGPIE_PASS=2 MAGPIE_PASS1_STEP="cap step" magpie_fail "cap step"' run_fn
+ret_is "pass-2 fail exits 1" 1
+grep_ok "pass-2 feed keeps the twice-claim" "$STATE/feed.log" \
+  "FAILED STEP (twice, reproducible): cap step"
+grep_ok "pass-2 screen keeps the twice-claim" "$STATE/screen.txt" \
+  "SETUP FAILED (twice, reproducible): cap step"
 
 # No feed at all (teacher left STATUS_URL empty, or no curl): nothing can
 # be uploaded, so the log tail must reach the screen instead of only the

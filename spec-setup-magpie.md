@@ -10,9 +10,9 @@ x86_64 dev host). Date: 2026-11-18.
 `bash setup-magpie.sh` on macOS (Apple Silicon or Intel) or in WSL Ubuntu,
 and the machine ends up ready for MAgPIE - git, opencode + nono + HU
 config, the course tool chain (R, gfortran, pandoc, TinyTeX, GAMS +
-course licence), the pinned nono profiles, a `~/magpie` clone, the
-restored renv R library, a checks block (unsandboxed + inside the
-sandbox gate), and ONE completed full default run (solve + default
+course licence), the pinned nono profiles, a `~/magpie` clone, a checks
+block (unsandboxed + inside the sandbox gate), and ONE completed full
+default run (solve + default
 output scripts) INSIDE the course sandbox. Exit 0 guarantees all of it.
 
 It replaces `setup-ubuntu.sh` and `setup-macos.sh` (see 3) and is built
@@ -202,7 +202,7 @@ feed), `magpie_licence_text()` - the single place the teacher pastes
 feed, nothing is written) - and `MAGPIE_COURSE_LICENSEE`
 (`Potsdam-Institut`): the substring the checks demand in the GAMS
 banner whenever it is set - embedded or not (see 6.6 and 8; without an
-embedded slice the banner must additionally carry no demo/expired
+embedded gamslice the banner must additionally carry no demo/expired
 wording); empty = weak generic check only. Both fill-ins are
 hash-neutral: the feed's version hash masks them (see 9), so a build
 keeps exactly one hash across filled copies.
@@ -237,8 +237,8 @@ tgz, AVX2/musl checks) -> nono install (pinned GitHub tarball to
 `~/.nono/bin`) -> PATH fixes -> opencode config -> HU key rc line ->
 cache folders + rc lines -> OS tool steps -> TinyTeX + tex PATH -> GAMS
 install + PATH -> licence -> stop keep-alive + `sudo -k` -> nono pack
-pull/pin -> `magpie-profile` build -> magpie clone -> renv library
-restore (6.9) -> checks -> (green: sandbox gate, full default run
+pull/pin -> `magpie-profile` build -> magpie clone -> checks -> (green:
+sandbox gate, full default run
 (6.10), the SETUP COMPLETE verdict, feed "run finished", exit 0). Every slow step that
 RUNS gets one `[HH:MM:SS] - installing ...` heads-up; installs print
 `OK:` lines. Screen lines stay student-readable: tool internals (rc
@@ -339,7 +339,7 @@ target is NOT on PATH by default: after skip OR install,
 resolved FC) in the rc + this run's PATH, falling back to the bin dir
 that actually holds the probed gfortran (`$MAGPIE_PKG_GDIR/bin` - this
 run's pkg target, `$MAGPIE_GFORTRAN_DIR_NEW` - then the legacy tree), or
-renv restore compiles and the sandboxed children never find gfortran.
+renv compiles and the sandboxed children never find gfortran.
 Download `setup-dl-<name>.pkg` -> `magpie_sudo_warm` ->
 sha re-check right before `sudo installer -pkg ... -target /` (root
 never reads a file that changed after verification) -> remove the
@@ -396,27 +396,75 @@ Pinned download per OS/arch (see 4). Linux: self-extractor run inside
 only (ARM-WRL = clean feed-reported failure verdict, by design). No
 gamsinst. macOS: `sudo installer -pkg`. GAMS PATH registered via
 `magpie_rc_add_path`. `magpie_gams_sysdir()` locates the GAMS SYSTEM folder -
-the binary's home and where GAMS reads `gamslice.txt`: Linux prefers
-the pinned `~/gams/gams*_linux_x64_64_sfx` folder (exact version
-first), else the folder of any `gams` found on PATH; macOS the pkg
-framework folder `/Library/Frameworks/GAMS.framework/Resources`.
-Licence: `gamslice.txt` goes into `magpie_licence_dir()` - the system
-folder on Linux, `~/Library/Application Support/GAMS` on macOS (dir
-chmod 700; the root-owned pkg folder cannot hold mode 600). File mode
-600. An embedded slice is installed only when it differs from what is
-already there: identical -> "already in place"; different (typically
-the demo slice the GAMS installer ships - existence alone must never
-skip the course licence) -> replaced, previous copy kept as
-`gamslice.txt.bak` + feed line. With NO embedded slice the existing
-file is never touched; a missing GAMS folder
+the binary's home and where GAMS reads `gamslice.txt`. Resolution is
+ONE path for everything (`magpie_find_gams`, PATH first; a symlink
+resolves to its real target ON EITHER OS with `magpie_realpath` - no
+`readlink -f`, which macOS lacks before 12.3 - so the folder that
+really holds the binary is the one holding the gamslice GAMS reads and
+the one the profile grants), so the probe, the licence write and the
+sandbox run-path
+never see different binaries. Without a resolvable binary Linux falls
+back to the pinned `~/gams/gams*_linux_x64_64_sfx` folder, macOS to
+the pkg framework folder `MAGPIE_GAMS_FRAMEWORK_DIR`
+(`/Library/Frameworks/GAMS.framework/Resources`).
+Licence: the course `gamslice.txt` goes into `magpie_licence_dir()` -
+the system folder on Linux; on macOS the framework folder WHILE it
+holds a `gamslice.txt` (the I12 machine showed such a gamslice outranks
+the user data dir - precedence unverified on a real Mac, the
+post-write probe is the safety net), else the user data dir
+`~/Library/Application Support/GAMS` (student-owned folders get dir
+mode 700). One shared banner probe (`mktemp -d` scratch, never in the
+folder the script stands in) plus the embedded gamslice decide, in THIS
+order: (1) probe - no scratch dir -> temp-folder warning + return;
+(2) classify the banner ONCE into `bad` (`demo|expired`,
+case-insensitive), `course` (carries `MAGPIE_COURSE_LICENSEE`),
+`foreign` (`license is valid|licensee`) or `unknown` (empty/odd
+banner), plus `noprobe` when there is no binary to ask. DEMO/EXPIRED
+WORDING OUTRANKS `Licensee` / `license is valid` - the real demo banner
+reads "Licensee: GAMS Demo ..." AND "The installed license is valid.",
+so those two phrases alone must never keep it (this is the 2026-11
+trap). Here that is deliberately STRICTER than check 8, which ranks an
+embedded course licensee name above demo wording: this step may rewrite
+the file, so a banner that mentions demo or expiry is never trusted -
+not for the decision and not in the post-write verify (a valid licence
+naming the course AND calling itself a demo therefore FAILs the verify
+here while check 8 PASSes it). (3) WITHOUT an embedded gamslice:
+`course`/`foreign` -> log + return, anything else -> the
+`magpie_licence_available` warning. (4) WITH one, the embedded text is
+authoritative: a file that already equals it byte for byte is NEVER
+REWRITTEN - for every state (no `.bak` clobber, no false feed line, no
+sudo prompt per run; an `unknown` banner logs "course gamslice in place
+but gams banner unreadable" and the check ladder reports the real
+problem). `foreign` -> KEPT untouched (trade-off: a foreign gamslice
+missing magpie's solvers only shows mid-run - the full run is the check
+then; check 8 PASSes it with a tell-the-TA note); `course` -> "already
+in place"; `bad`/`unknown`/`noprobe` -> write it (file mode 600), a
+different previous copy kept as `gamslice.txt.bak` + feed line
+`replaced non-course gamslice.txt`. An EXPIRED licence is `bad` whatever
+its owner, so an expired course licence is replaced too.
+An unwritable target folder (root-owned /opt GAMS, the macOS
+framework - the old "never write the framework dir" rule is reversed)
+goes the sudo way: `sudo cp` old to `.bak`, `sudo tee` the new file,
+`sudo chown "$USER"`, plain `chmod 600` - credentials are warm while
+this step runs (before `magpie_stop_keepalive`), the student owns the
+result; a sudo that cannot write feeds "licence dir not writable"
+(tell the TA, never rerun). The staged licence file is written `0600`
+and removed after a successful `sudo tee` (`tee` copies, no `mv` hands
+it over, so the copy in `TMPDIR` would survive the run). After a write
+the step RE-PROBES the same binary on BOTH paths: banner with
+`demo|expired` wording or without the course licensee -> FAIL "course
+gamslice rejected by gams - tell the TA" + feed line - botched or
+already-expired teacher fill-ins and wrong-target writes land here
+honestly, never as a mysterious "licence missing" below. With NO embedded gamslice the
+existing file is never touched; a missing GAMS folder
 yields the "rerun" note + feed line. `magpie_licence_embedded()`
 decides SILENTLY whether the teacher pasted real text (a blank
 heredoc counts as NOT embedded);
 `magpie_licence_available()` warns + feeds ONCE per run (cached in
 `MAGPIE_LIC_MISSING` - the early placeholder check and this step share
-one warning). A missing licence dir is created; an EXISTING dir that
-refuses writes gets a "licence dir not writable" warning + feed line,
-no write attempt. Whenever
+one warning). A missing licence dir is created on the plain path; an
+EXISTING dir that refuses writes goes the sudo way (above) - not the
+old warn-and-skip. Whenever
 `MAGPIE_COURSE_LICENSEE` is set, the checks demand that licensee in
 the GAMS banner - embedded or not (see 8). GAMS reads the file from
 there - no license env
@@ -431,23 +479,40 @@ name - the bare `"opencode"` fails validation on 0.81.0);
 plus the `MAGPIE_PROFILE_SCHEMA` version (bumped whenever the generated
 content changes - the marker identifies the file as ours, see below;
 `10` added the modern gfortran tree, `11` moved the `read_file`
-script/handle entries into the `~/setup-magpie` work dir below).
+script/handle entries into the `~/setup-magpie` work dir below, `12`
+resolves the GAMS sysdir like the licence step does (symlink followed,
+on macOS too), lists it on macOS as well, grants a sysdir under `$HOME`,
+and derives the framework grant from `MAGPIE_GAMS_FRAMEWORK_DIR`).
 Read list: Linux `$HOME/gams` + `$HOME/.TinyTeX`, plus one extra entry
 when `magpie_gams_sysdir()` reports a GAMS folder OUTSIDE `$HOME/gams`
-(any PATH install); macOS
+(any PATH install, symlink already resolved to its real folder - but a
+resolved sysdir that IS `$HOME` ITSELF is never listed on either OS:
+the sandbox must not read the home); macOS
 `/Library/Frameworks/GAMS.framework`, `/Library/Frameworks/
 R.framework`, BOTH gfortran trees - `$MAGPIE_GFORTRAN_DIR_NEW`
 (`/opt/gfortran`, the target of the pinned pkg and where a modern R's FC
 plus its `f951`/run-time libraries live) and the legacy
 `MAGPIE_GFORTRAN_DIR` (`/usr/local/gfortran`, the 6.x-era tree) - ,
 `$HOME/Library/TinyTeX`,
-`$HOME/.TinyTeX`, the licence dir. An optional read folder is listed
+`$HOME/.TinyTeX`, the licence dir, plus one extra entry when
+`magpie_gams_sysdir()` resolves a GAMS folder OUTSIDE the framework
+tree - a sub-tree of `$HOME` is granted like the TinyTeX trees above
+(a `~/Applications/GAMS54` install works in the sandbox), only `$HOME`
+ITSELF is never listed (schema 12; the framework grant already
+covers `Resources/` - the gams the sandbox runs and the gamslice the
+licence step may write there; a sysdir that IS the licence dir dedupes
+against its entry; a sysdir that IS the framework ROOT or sits below it
+is dropped too, so a binary directly inside `GAMS.framework` cannot
+grant that root twice). An optional read folder is listed
 only when it EXISTS on disk - validation rejects a policy path that is
 missing (`~/.TinyTeX` stays absent when apt provides texlive, the macOS
 licence dir when no licence is embedded, the pkg framework/gfortran
 folders when a tool came from elsewhere or is a generation older than
 the other tree). Only
-`/Library/Frameworks/GAMS.framework` is literal: `magpie_install_gams`
+the GAMS framework root is literal (existence aside): it is DERIVED
+from `MAGPIE_GAMS_FRAMEWORK_DIR`
+(`%%/GAMS.framework/*` + `/GAMS.framework`, so an overridden layout
+keeps its grant) and `magpie_install_gams`
 on macOS succeeds only with that folder present. R must be VISIBLE in
 the sandbox, not only executable: apt R keeps `Renviron` and the base
 library under its home (`/usr/lib/R`), the course stack under a
@@ -602,26 +667,6 @@ no note, no failure - a clone that still resolves HEAD is kept, a
 broken one goes to the clone body, which adds the configured remote.
 Any other origin: foreign-origin failure.
 
-### 6.9 renv library restore
-
-Runs right after the clone. Skips (log only) when `~/magpie/renv.lock`
-is missing - the normal course state, since the root lock never exists
-in a clone (6.10) and this step only fires on hand-built teacher/dev
-trees that copy one in - or when the library already loads; the load test is
-exactly the checks' one (`cd ~/magpie` subshell,
-`Rscript -e 'suppressMessages(library(lucode2));
-suppressMessages(library(gms))'`, helper `magpie_renv_lib_ok`).
-Otherwise, inside `~/magpie`: bootstrap `renv` via
-`Rscript -e 'source("renv/activate.R")'` when plain Rscript cannot
-`requireNamespace("renv")` (magpie's shipped activate.R, renv 1.2.4,
-never asks anything), then
-`Rscript -e 'renv::restore(prompt = FALSE, restart = FALSE)'`.
-Wrapped in `magpie_retry 3`, failure -> `magpie_step_failed "renv
-restore"`. Real restores feed "setup: renv restored"; screen wording is
-student-facing ("installing R packages, about 5-15 min" / "OK: R
-packages installed"). Fills `$RENV_PATHS_CACHE`, so the sandboxed
-run-folder renv restores (6.10) only copy from the cache.
-
 ### 6.10 full default run (sandboxed)
 
 Runs after the gate, before the verdict. `MAGPIE_FULL_RUN=0`:
@@ -641,8 +686,35 @@ wrapped in `caffeinate -is`; one sanctioned fresh-R retry below):
 ```
 
 Feed "setup: full run start" before, heads-up "about an hour, keep the
-laptop plugged in and awake" (a first run restarts R once - see below).
-The run's own output goes to the log only - the R noise stays off the
+laptop plugged in and awake" (a first run restarts R once - see below) -
+but only AFTER the readiness gate below has proven the library loads.
+**Readiness gate (I11).** Before that announce, sandboxed probe (same
+nono invocation and env as the run, helper `magpie_sandboxed_run`):
+`cd ~/magpie && Rscript -e 'suppressMessages(library(lucode2));
+suppressMessages(library(gms))'`. On a fresh clone the project
+`.Rprofile` bootstrap (hydrate rmarkdown, then all) executes INSIDE
+this probe session - the probe does not replace the initial hydration,
+it runs it earlier, where a failure costs minutes, not an announced
+hour (observed: a library holding `piamenv` but not `gms` never
+self-heals - the bootstrap fires only on an exactly-renv library, the
+piamenv rescue only below 0.5.5 - and `start.R` then dies 7 s in on a
+`gms::getLine` prompt: `loadNamespace ... no package 'gms'`). The
+hydrate can take tens of minutes, so it is announced first:
+`magpie_say_progress "R packages" "about 10-30 min, just wait"` -
+never a silent long wait. Probe fails: exactly ONE repair, mirroring
+the `.Rprofile` bootstrap - hydrate `rmarkdown` first (only this order
+catches Rmd-file dependencies), then all, both `prompt = FALSE` - then
+re-probe. Never a second repair. Still failing:
+`magpie_step_failed "course R feed unreachable / R library incomplete -
+tell the TA"` - the STANDARD retry pass (a feed outage is often
+transient; pass 2 skips the finished steps through their markers, so it
+costs one more gate run), and only pass 2's failure is the verdict.
+Either way this happens BEFORE the run is announced, so no
+`full run start` upload ever misleads the feed, and a pass-2 re-entry
+cannot announce the hour twice: the marker short-circuit at the top of
+the step covers a run that already finished. No OS branches, no
+repo/env changes (the failing `bin/macosx/...` PACKAGES URL in that
+crash is benign macOS binary-tree noise). The run's own output goes to the log only - the R noise stays off the
 screen - but it is `tee`d into the work dir child log
 `~/setup-magpie/.setup-fullrun-child.log` so the step can grep its own
 child output for the restart signature without log-offset arithmetic.
@@ -685,7 +757,7 @@ must never be set: it would run the update unasked. The `git config
 --global credential.helper cache` "Permission denied" line the bootstrap
 emits inside the sandbox is expected and benign (the profile does not
 cover `~/.gitconfig`; `gert` carries on).
-**ONE retry, on one signature.** start.R swallows run errors, so SUCCESS
+**ONE retry, on two signatures.** start.R swallows run errors, so SUCCESS
 IS DECIDED BY ARTIFACTS: a NEW `~/magpie/output/default_<timestamp>`
 folder (pattern pinned from magpie master: `cfg$results_folder <-
 "output/:title::date:"` with `:date:` = `_%Y-%m-%d_%H.%M.%S`, title =
@@ -698,16 +770,23 @@ script of the default postprocessing `cfg$output <- c("output_check",
 "extra/disaggregation", "rds_report")`, which the run-folder
 `submit.R` runs automatically via `sys.source("output.R")` - no extra
 `output.R` call needed). A non-zero child exit normally fails
-regardless of artifacts - with ONE exception: if the child log contains
-`Please restart R`, the update-to-latest stopped a loaded namespace as
-described above, and the step runs ONE fresh R session (screen line
-"package update restarted R, model run starts now"). In that second
-session the prompts are silent (versions now current) and the model
-runs. The retry is capped at one and keyed to that signature only: an
-`updateRenv()` that dies on a download/build error has no signature and
-is a real failure, and retrying a swallowed model error would burn an
-hour to reproduce it. After the retry, a non-zero exit or a missing
-new complete folder fails the step. Any failure:
+regardless of artifacts - with TWO exceptions: if the child log
+contains `Please restart R`, the update-to-latest stopped a loaded
+namespace as described above, and the step runs ONE fresh R session
+(screen line "package update restarted R, model run starts now", the
+prompts there are silent - versions now current); if the child log
+shows the I11 crash frame - BOTH `loadNamespace` AND `getLine` present
+(the message TEXT is localized, the observed German variant proves
+grepping messages unsafe - only the frame names are) - then the run
+itself broke the library the gate had just proven, so the gate runs
+once more before the retry (probe; one repair when it fails; repair
+fails = the gate verdict, no retry). STILL ONE retry in total: the
+signatures are tested on the first attempt only, and after the retry a
+non-zero exit or a missing new complete folder fails the step. The
+signatures are keyed narrowly on purpose: an `updateRenv()` that dies
+on a download/build error has no signature and is a real failure, and
+retrying a swallowed model error would burn an hour to reproduce it.
+Any failure:
 `magpie_fail "full magpie run (check the run folder under ~/magpie)"`,
 exit 1. Verified success writes the marker, prints the OK line and
 feeds "setup: full run finished".
@@ -719,7 +798,8 @@ Partial/failed run folders stay where they are (decision: never clean).
   --connect-timeout 15 --max-time 900`, `-C -` resume, intact-temp skip,
   checksum mismatch = delete + retry.
 - Step retry 3x (10 s / 30 s waits), then pass 2 in a fresh process
-  (`MAGPIE_PASS=2 exec bash <self>`; lock self-re-adoption, warm sudo
+  (`MAGPIE_PASS=2 MAGPIE_PASS1_STEP=<step> exec bash <self>`; lock
+  self-re-adoption, warm sudo
   timestamp survives). Pass 2 failure = the failure verdict, exit 1.
   Never a third pass.
 - `magpie_fail` additionally feeds `setup: FAIL <step>` + the detail
@@ -736,6 +816,16 @@ Partial/failed run folders stay where they are (decision: never clean).
   (that is where the Ubuntu/WSL hint already lives). Without a feed
   (`STATUS_URL` empty or no curl - nothing can be uploaded) the last 25
   log lines go to the screen instead of the feed pointer line.
+  The `(twice, reproducible)` part is honest only when the SAME step
+  failed in both passes, so it needs `MAGPIE_PASS=2` AND
+  `<step> = $MAGPIE_PASS1_STEP` (the name `magpie_step_failed` exports
+  before the re-exec). Any other pass-2 failure says
+  `(pass 2, after: <pass-1 step>)` - the TA still sees a retry happened -
+  and a pass-2 failure with no recorded pass-1 step just says
+  `(pass 2)`. A direct first-pass fail prints
+  `FAILED STEP: <step>` / `SETUP FAILED: <step>` - calling a single run
+  "reproducible" was a lie for every direct `magpie_fail` (the full-run
+  path had run once).
 - sudo: blind retry loop, cap 6, keep-alive only after a real prompt:
   `sudo -n true` every 60 s, cap 720 ticks (12 h), self-exit once the
   owner process is gone - the loop watches `$$`, captured BEFORE the
@@ -753,25 +843,27 @@ stands in, because GAMS writes there; no scratch dir = FAIL; with
 `MAGPIE_COURSE_LICENSEE` set, a banner naming that licensee PASSes as
 `gams (course licence found)` - embedded or NOT: a machine whose course
 licence is already installed survives a rerun of the unfilled script;
-without an embedded slice the banner must additionally carry no
+without an embedded gamslice the banner must additionally carry no
 `demo|expired` wording (a demo can never pose as the course licence;
 with an embedded one the name outranks it); else a banner matching
-`demo|expired` FAILs (demo licence); else, with the licence embedded
-and the name missing, FAIL "not the course
-licence"; else the weak match `license is valid|licensee` (GAMS 54 +
-legacy wordings) PASSes as `gams (license found)`; else FAIL - licence file missing),
+`demo|expired` FAILs (demo licence); else the weak match
+`license is valid|licensee` (GAMS 54 + legacy wordings) PASSes - with
+`MAGPIE_COURSE_LICENSEE` set as
+`gams (licence not the course licence - tell the TA)`: a valid foreign
+licence WORKS, only its owner is foreign, so it no longer hard-FAILs
+(the TA confirms the solvers fit magpie); with the licensee constant
+empty it stays the weak `gams (license found)` fallback; else FAIL - licence file missing),
 `git >= 2.23` (integer compare), `Rscript >= 4.3` (probed with
 `Rscript --vanilla`: the pure version test must not depend on the
 project `.Rprofile`/renv - the gate child runs checks from `~/magpie`
 where a not-yet-bootstrapped renv would otherwise fail the probe),
 `pandoc`, `tex`, the R library check (lucode2+gms via a
-`cd ~/magpie` subshell - the load test is what `start.R` needs): with
-`~/magpie/renv.lock` it always runs (`PASS renv R library` / FAIL
-"renv R library incomplete ... renv::restore()"); WITHOUT a lockfile -
-every course machine, because `start.R` snapshots into `renv/archive/`
-only and a root lock never exists by design (6.10) - it runs from the full-run marker onwards as
+`cd ~/magpie` subshell, helper `magpie_renv_lib_ok` - the load test is
+what `start.R` needs): it runs from the full-run marker onwards as
 `R libraries (lucode2, gms load)`, and a failure says "in ~/magpie run:
-Rscript start.R once". Nothing is printed before the marker exists:
+Rscript start.R once". A root `renv.lock` never exists in course clones
+by design (`start.R` snapshots into `renv/archive/` only, 6.10), so
+nothing branches on one. Nothing is printed before the marker exists:
 there is no library to test yet, and a SKIP line announcing that is
 noise on every first run. Parent only (`MAGPIE_CHECK_ONLY` unset): a
 Landlock denial on this probe would block the gate with a message the
@@ -844,7 +936,7 @@ reaches the log either: `curl -s -o /dev/null`. Sanitizing third-party
 output is best-effort; handles stay pseudonymous.
 
 Milestones: "setup: start"; installs (opencode, nono, gams <ver>,
-profile pulled); "setup: renv restored"; "setup: full run start" /
+profile pulled); "setup: full run start" /
 "setup: full run finished" / "setup: full run skipped
 (MAGPIE_FULL_RUN=0)"; warnings (licence placeholder, low disk);
 "setup: retry pass 2 after: <step>" when the fresh-process retry
@@ -975,16 +1067,28 @@ uploads nothing, combined FAIL
 detail with 3200 B cap (deep tail cut; the screen gets only the verdict
 + log path, and with `STATUS_URL=""` the log tail goes to the screen
 instead of the feed pointer - pinned both ways: with a live feed the
-tail must stay off the screen),
+tail must stay off the screen; the `(twice, reproducible)` claim only
+at `MAGPIE_PASS=2` AND for the step `magpie_step_failed` re-ran - a
+first-pass direct fail feeds `FAILED STEP:
+<step>` and screens `SETUP FAILED: <step>`, the same fail at pass 2
+keeps the claim both ways, a DIFFERENT step at pass 2 says
+`(pass 2, after: <pass-1 step>)` without the claim, a pass-2 fail with NO
+recorded pass-1 step says plain `(pass 2)` - no after-clause, no claim -
+and the pass-1 step name must reach the re-executed process),
 CRASH on unexpected exit (3, silent 1; none after a FAIL post, none
 in the check-only child), retry-pass-2 announce; config
 write incl. foreign `.bak` and the vLLM keep guard (marker kept
 byte-identical, no `.bak`, repair included, course config carries
 no marker); HU key dedupe; cache dirs created + rc
 lines deduped; rc appends survive a missing final newline; licence placeholder/
-blank-heredoc/pasted/mode-600/demo-slice-replacement
-(with `.bak` + feed line)/darwin-700; checks table (licensee-name PASS, demo FAIL,
-foreign-licence FAIL, weak-check fallback, unlicensed FAIL, a
+blank-heredoc/pasted/mode-600/demo-gamslice-replacement
+(with `.bak` + feed line, proven against the REAL demo banner wording
+that names a licensee and calls itself valid)/darwin-700; expired
+foreign AND expired course licences replaced; unreadable banner + an
+identical file -> "already in place", no `.bak`, no feed line; a written
+licence the banner still reports as demo/expired FAILs the verify; the
+sudo path leaves no licence tmp file; checks table (licensee-name PASS, demo FAIL,
+foreign-licence PASS with the tell-the-TA note, weak-check fallback, unlicensed FAIL, a
 licensee-naming demo FAILs WITHOUT embedding (only the embedded name
 outranks demo wording), probe temp dir
 cleaned, no-scratch-dir FAIL, R/pandoc/tex/git lines, R library check
@@ -1007,7 +1111,12 @@ the step, never a silent pass) + profile build/
 validate/keep-modified/stale-generated-regenerates-with-`.bak` (+ cache
 write-list on both OSes, the R user dirs asserted as read entries
 INSIDE the `read` block - the same path in `write` must never satisfy
-them - and as write entries; PATH-gams extra read entry);
+them - and as write entries; PATH-gams extra read entry, the framework
+grant derived from `MAGPIE_GAMS_FRAMEWORK_DIR` (an override must not keep
+the default `/Library` root), a symlinked PATH-gams granted and
+run-pathed at its REAL folder on macOS too (relative and absolute link),
+a GAMS sysdir under `$HOME` granted while `$HOME` itself never is, the
+licence dir listed once even when it IS the sysdir);
 9P relocation (Windows-drive copies relocate `MAGPIE_SELF` to the
 native copy and the original stays untouched, the copy lands 600 under
 a 022 umask with its folder 700, native reruns do not recopy, a missing
@@ -1032,10 +1141,7 @@ skip + the FC bin dir registered, FC unresolved = retry + fail with
 ONE diagnostic line listing BOTH bin dirs; the snippet's mechanisms -
 first-token scan, `file.access` executability gate, bare-name
 `Sys.which` - pinned on the SOURCE text for the same reason);
-GAMS linux self-extractor; renv step (no renv.lock skip,
-already-populated skip, broken library restored incl. activate.R
-bootstrap, no bootstrap when renv present, persistent failure -> the
-failure verdict, 3 attempts); clone guards (foreign dir,
+GAMS linux self-extractor; clone guards (foreign dir,
 foreign origin, ssh/`.git`/trailing-slash/fork origin accepted, removed
 origin proceeds, interrupted heal, and every legacy `~/magpie` name
 tolerated by the guard as a UNIT (`magpie_clone_magpie` run with all
@@ -1057,8 +1163,22 @@ restart R` signature exit earns exactly one fresh-R retry (second
 session lands the marker; two such exits = capped, verdict), swallowed run error
 caught by missing artifacts, old folder not accepted as new, newest of
 two complete folders wins into the marker, escape hatch, caffeinate
-wrap on darwin);
-E2E day-one green run (7 heads-ups, OK lines, rc dedupe, licence
+wrap on darwin and NO wrapper on linux; readiness gate before the run (hydrate announce
+precedes the probe, probe precedes the run sandbox call and the hour
+announce, all order-pinned: probe first in nono.log + rscript.log,
+announce first on screen), failed probe + successful rmarkdown-first
+repair (both hydrate calls, rmarkdown first, pinned on the repair
+command) re-probes and proceeds, failed repair = the standard pass-2
+retry (re-exec, pass-1 step recorded, `retry pass 2 after: <gate>` fed)
+and in pass 2 the gate verdict fed + screened, both with NO
+`full run start` upload and no second repair or
+re-probe, the I11 crash frame (`loadNamespace` AND `getLine` in the
+child log, localized message text) earns gate + repair + the same ONE
+retry (repair heals, second session lands the marker; a second crash
+= the run verdict, never a second repair, never a probe without a
+retry left));
+E2E day-one green run (8 heads-ups - seven installs + the readiness
+probe announce - OK lines, rc dedupe, licence
 written, clone checked out, no `.setup-finished`, `setup-dl-*` cleaned,
 full run marker + artifacts,
 profile write-list, cache rc lines, greet line in the log and off
@@ -1068,6 +1188,10 @@ yes) are proven in the adjacent unit scenarios, incl. caffeinate on
 darwin)
 + second run all-skip (full run PASS line, verdict banner on screen
 and as the log's last line, start.R ran once)
++ E2E transient readiness-gate outage (first probe + repair fail): the
+standard retry pass takes it (`retry pass 2 after: <gate>` fed), pass 2's
+gate passes and the run lands with the hour announced EXACTLY once over
+both passes, one start.R call, marker + verdict
 + E2E MAGPIE_FULL_RUN=0 (green, skip notes, no marker)
 + E2E deleted artifacts -> FAIL -> marker removal heals
 + E2E reproducible failure -> pass 2 -> failure
