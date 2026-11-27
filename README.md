@@ -52,3 +52,7 @@ On mac open a terminal (press Cmd+Space, type Terminal, press Enter) and run:
 
 On Windows open Ubuntu/WSL (press the Windows key, type Ubuntu, press Enter; do NOT open powershell) and run:
 `bash /mnt/c/Users/*/Downloads/setup-magpie.sh`
+
+## License
+
+GPL-3.0-only - see [LICENSE](LICENSE).
